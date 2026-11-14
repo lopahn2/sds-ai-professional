@@ -1,186 +1,647 @@
-# LiveProbe K8S
+# 🛰️ LiveProbe 설치와 운영
 
-이 저장소는 2026-11-15 승인된 **플랫폼과 전체 테스트 시스템 소스의 공개 스냅샷**입니다. 현재 활성 환경은 `dev`와 `prd`이며, `stg`는 과거 이력 조회용입니다. 인증정보·개인 작업 기록·운영 원본 자료·기존 로컬 Git 이력은 포함하지 않습니다. 일부 문서의 증거 링크는 로컬 보존 자료를 가리킵니다. [공개 범위](docs/operations/github-repositories.md)를 참고하세요.
+2026-11-15 · LiveProbe 프로젝트 · Kubernetes / 자체 설치
 
-Kubernetes 이상 신호를 사건으로 묶고, 난이도·위험도·근거 충분도에 따라 AI Agents Group Workflow와 역할별 모델을 선택하는 로컬 운영 PoC다. 근거를 독립 검증한 뒤 허용된 Kubernetes 조치만 실행하거나 운영자에게 이관한다. 현재 기준은 **정책 C**, **Codex CLI 구독 호출 전용**이다. 과거 MVP-0의 “F1/F4·롤백만” 범위와 현재 구현을 구분한다.
+---
 
-| 제품 | 운영자가 사용하는 기능 | 로컬 접속 |
-| --- | --- | --- |
-| LiveProbe K8s | 클러스터 지도에서 장애를 열고, 선택된 Agent Group·모델·근거·검증과 안전 조치 또는 인계 결과를 확인 | [K8s 관제](http://liveprobe.localhost/) |
-| LiveProbe for Application | 서비스 로그와 소스 버전으로 코드 오류를 분석하고 수정·회귀 시험 후 dev에서 검증. 사용자가 시험한 버전만 prd 승인 | [Application 관제](http://application.liveprobe.localhost/) · 별도 설치 필요 |
+LiveProbe는 Kubernetes 장애를 감지하고, AI가 근거를 수집·분석한 뒤 허용된 복구 조치를 수행하거나 운영자에게 이관하는 프로젝트입니다. 이 공개 저장소에는 플랫폼과 테스트 시스템의 전체 소스가 들어 있습니다.
 
-2026-11-09 확인 시 K8s 화면에서 기존 사건 1,249건이 조회됐다. Application 주소는 404를 반환했고, 로컬 클러스터의 `liveprobe-system`에는 Application API의 Ingress·Service·Deployment가 없었다. 설치 상태와 소스의 검증 범위는 [Application 운영 문서](deploy/application/README.md)에서 확인한다.
+> 💡 **먼저 알아둘 점** — 소스를 `clone`하거나 `pull`하는 것만으로 실행되지는 않습니다. 설치자는 **자신의 Kubernetes 설정, 컨테이너 이미지, 저장소, AI 로그인, 인증서와 실행 권한**을 준비해야 합니다. 개발자의 인증·DB·운영 이력·로컬 이미지는 제공하지 않습니다. 아래 절차는 현재 코드와 배포 선언에 맞춘 설치 안내이며, 임의의 새 클러스터에서 전체 구성을 검증했다는 뜻은 아닙니다.
 
-삼성 트레이드·딜리버리·비즈니스는 두 제품이 관찰하는 업무 시스템이다. 과거 K8s 코드 변경 기록은 당시 사건에서 조회하고, 신규 코드 수정·시험·환경 승격은 Application에서 시작한다. 제품별 사건 ID와 권한을 독립적으로 관리한다. [기능 및 데이터 보존 검토](docs/reviews/project-direction-2026-11-09.md) · [저장소 공개 정책](docs/operations/github-repositories.md)
+## 목차
 
-- [시스템 구조도: draw.io 3페이지](docs/diagrams/liveprobe_agent.drawio)
-- [P12 결과보고서](docs/plans/revamp/P12-final-report.md) · [정책 C](docs/plans/revamp/P12-agent-action-policy.md) · [P13 신규 사례](docs/plans/revamp/P13-results.md)
-- [시험 사례별 결과표](docs/plans/revamp/P14-case-table.md) · [CSV](docs/plans/revamp/P14-case-table.csv)
-- [과제계획서 대비 차이](docs/plans/revamp/P14-plan-gap.md) · [P14 통합·검증 기록](docs/plans/revamp/P14-execution.md)
+1. [제품 구성과 설치 범위](#1-제품-구성과-설치-범위)
+2. [설치 전에 준비할 것](#2-설치-전에-준비할-것)
+3. [소스와 클러스터 설정](#3-소스와-클러스터-설정)
+4. [이미지 빌드와 배포 주소](#4-이미지-빌드와-배포-주소)
+5. [AI 로그인과 비밀정보](#5-ai-로그인과-비밀정보)
+6. [Kubernetes 관제 설치](#6-kubernetes-관제-설치)
+7. [관측 연결과 자동 복구 권한](#7-관측-연결과-자동-복구-권한)
+8. [dev/prd 전체 테스트 시스템](#8-devprd-전체-테스트-시스템)
+9. [Application 관제와 실행기](#9-application-관제와-실행기)
+10. [설치 완료 확인](#10-설치-완료-확인)
+11. [자주 막히는 지점](#11-자주-막히는-지점)
+12. [업데이트·백업·개발](#12-업데이트백업개발)
 
-## 현재 구조와 소스
+## 1. 제품 구성과 설치 범위
 
-```text
-Kubernetes Event / Pod / Endpoint 감시 + Alertmanager + Hubble drop/error
-  → 사건 병합 → 실시간 상태·지표·로그·변경 근거 수집
-  → 규칙 + LLM Router (SIMPLE / NORMAL / COMPLEX / HIGH_RISK)
-  → 수준별 Agents Group + 런북·공개 문서 RAG
-  → 독립 근거 검증 / 필요한 역할만 승격 / 조기 종료
-  → 안전 실행기 또는 운영자 이관
-  → PostgreSQL/pgvector 기록 + SSE → React 대시보드
-
-Kubernetes 자원·Hubble 흐름·환경별 연계 계약 → 자체 서비스 연결 지도
-Hubble → 자원·네트워크 지도 + NetworkDrop 사건(HIGH_RISK 이관)
-```
-
-| 경로 | 역할 |
-|---|---|
-| `liveprobe/app/main.py`, `models.py`, `db.py`, `liveprobe/alembic/` | FastAPI, 사건·호출·근거·감사 저장, DB 마이그레이션 |
-| `watcher.py`, `incidents.py`, `evidence.py`, `k8s.py` (`liveprobe/app/`) | 신호 감시, 사건 병합, Kubernetes/Prometheus/Loki 근거 수집 |
-| `router.py`, `engine.py`, `agent_groups.py`, `config.py` (`liveprobe/app/`) | 라우팅, 수준별 실행 흐름, 역할·모델·예산·승격 규칙 |
-| `model_settings.py`, `network_signals.py` (`liveprobe/app/`) | 버전형 그룹 모델 배치·실행 스냅샷, 대상 Deployment의 네트워크 신호 연결 |
-| `rag.py`, `rag_ingest.py`, `liveprobe/runbooks/` | pgvector 검색, 런북·공개 문서·정제된 종료 사건 인덱싱 |
-| `actions.py`, `safety.py`, `rollback_controller.py`, `policy.py` (`liveprobe/app/`) | 타입 조치, 권한·정책·동시성·원복 검증, 검토 장부 |
-| `dashboard/src/` | K8s 서비스 연결 지도, 장애 대응·기존 사건 이력, 검토 기록, 설정 |
-| `deploy/base/`, `deploy/overlays/`, `deploy/optional/` | Kustomize 리소스, 환경별 값·이미지 pin, 선택적 쓰기 실행 계정 |
-| `services/order/`, `services/inventory/` | Spring 참조 서비스와 DB 경로 |
-| `liveprobe/app/application/`, `liveprobe/application_runner/`, `deploy/application/` | Application 전용 분석 API·화면, 실행기, 독립 저장소와 배포 선언 |
-| `chaos/`, `evaluation/` | 장애 사례·주입/원복 장치, 비교 방식·원본 저장·결정적 지표 계산 |
-| `scripts/export_case_results.py` | 기존 평가 원본 → Markdown/CSV, 오프라인·LLM 호출 없음 |
-
-### 모델과 Workflow
-
-운영 기본값은 `liveprobe/app/config.py`의 다음 라인업이다. 품질·처리량 점수는 설정상 상대 추정치이며 벤치마크 보장이 아니다.
-
-| 계층 | 모델 ID | 대표 역할·추론 강도 |
+| 구성 | 하는 일 | 별도로 필요한 설정 |
 |---|---|---|
-| 낮음 | `gpt-6-luna` | Router·신호 분석·로그 요약 / low |
-| 중간 | `gpt-6.1-sol` | 근거 정리·진행 조정·복구 계획·결과 확인 / low 또는 medium |
-| 최고 | `gpt-6-astra` | Kubernetes 분석·원인 추론·반론 검토 / high, 안전 검증 / xhigh |
+| **LiveProbe K8s** | Kubernetes 장애 감지, 서비스 지도, AI 분석·진행 스트리밍, 제한된 복구, 사건·감사 이력 | Kubernetes 읽기 권한, 관측 연결, DB, AI 인증, 복구용 별도 권한 |
+| **LiveProbe for Application** | 애플리케이션 오류 분석, 소스 수정, 재현·회귀 시험, dev 배포, 사용자 시험과 prd 승인 | 독립 DB·인증·AI 저장소, 서비스 프로필, 호스트 실행기 |
+| **테스트 시스템** | 주문·재고·상품·결제·배송·알림 및 트레이드·딜리버리·비즈니스 시스템 | 서비스 이미지, 업무 DB, Kafka, 내부 인증·TLS, 환경별 배포 |
 
-- SIMPLE: 신호 분석 + 결과 확인. NORMAL: 로그 요약·Kubernetes 분석·조정·독립 검증. COMPLEX: Kubernetes/로그 분석·원인 추론·복구 계획·반론·독립 검증. HIGH_RISK: 근거 정리·안전 검증 후 이관.
-- 근거 위조·누락·낮은 신뢰도는 해당 역할만 승격하거나 이관한다. 호출 수·비용·시간·재추론 횟수 상한이 있다.
-- **P10~P13 평가 기록은 이전 `gpt-6-luna` / `gpt-5.6-terra` / `gpt-6-sol` 조합**이다. 새 모델명이나 현재 가격으로 과거 결과를 덮어쓰지 않는다. 비용은 기록된 토큰 환산 추정치이며 구독 청구액이 아니다.
-- 코드에는 다른 공급자 어댑터도 있지만, 이 프로젝트의 현재 운영·평가 경로는 **`codex_cli`만 사용**한다. 제한·실패 시 API 키나 다른 공급자로 우회하지 않는다.
-- **그룹 모델 편집**: `/settings`에서 네 수준의 역할별 모델·추론 강도와 공통 분류 역할을 수정한다. 주 분석 모델은 기본 `라우터 자동 선택`이며 `직접 지정`에서만 고정한다. `/api/model-settings`에 revision 기반으로 저장하고 충돌은 409로 거절한다. 새 설정은 **신규 실행부터** 적용하며 진행 중 실행·평가 arm·과거 기록은 바꾸지 않는다. 기본 구성도 revision 0으로 기록한다. 검증 역할의 모델·추론 안전 하한과 가격·승격 사다리 검증은 완화할 수 없다.
-- 기획과 실제 검증은 [그룹 모델 설정 기획](docs/plans/revamp/P14-group-model-settings.md), [실행 기록](docs/plans/revamp/P14-execution.md)에 분리했다. 실제 사건 #990에서 저장 버전 3의 astra/high·astra/xhigh 호출을 확인한 뒤 기본 배치를 버전 4로 복원했다.
-- [Decisions API·Jev 기술 검토](docs/plans/revamp/P14-technology-review.md): 공식 기술을 비교했으나 별도 API 인증·과금·데이터 처리 경계가 Codex CLI 구독 전용 제약과 달라 현재는 도입하지 않았다.
+현재 활성 환경은 **`dev`와 `prd`**입니다. `stg`는 과거 기록을 조회하기 위한 퇴역 환경입니다. 새 실험은 dev에서 시작하고 prd에는 설치 확인 목적으로 장애를 주입하지 않습니다.
 
-### 정책 C와 안전 경계
+설치 범위는 다음과 같이 구분합니다.
 
-- SIMPLE·NORMAL·COMPLEX는 검증된 조치를 기본 auto로 제안할 수 있다. 전역/사건별 `approval`, `suggest_only`는 이를 더 엄격하게 제한한다. 근거 부족·저신뢰·앱 코드/외부 의존성 원인은 이관한다.
-- 평가 기본 프로필 `assessment`에서 **HIGH_RISK는 자동 실행도 승인 실행도 하지 않고 이관**한다. 별도 `poc_autonomy`는 고정된 PoC 클러스터에서만 허용되며, 여기서도 HIGH_RISK는 자동 실행이 아니라 운영자 승인 또는 제안에 머문다. 활성 상태는 `/api/policy/profile`로 확인한다.
-- 현재 기본 allowlist: `rollout_undo`, `rollout_restart`, `pod_delete`, `scale_replicas`, `set_memory_limit`. 복제 수 1..2, 메모리 256..768Mi, 대상 소유권·범위·신뢰도·독립 검증·resourceVersion 등을 통과해야 한다.
-- `configmap_restore` 핸들러는 있지만 기본 allowlist에 없고 승인된 불변 버전 목록도 비어 있으므로 **현재 실행 가능 조치로 세지 않는다**.
-- API 관찰 계정과 쓰기 계정은 분리한다. 롤백은 전용 컨트롤러 경로, 타입 조치는 선택적 `safe-action-executor` 경로다. 실행 계정 토큰이 없으면 타입 조치는 닫힌 채로 거부된다. AI가 자유형 셸·kubectl·YAML을 실행하는 경로는 없다.
-- NetworkPolicy·RBAC·admission 제한이 있다. 단, 구독 CLI를 위한 공개 HTTPS egress 허용은 데이터 유출 방지 경계가 아니며 프로덕션용 도메인 제한을 대신하지 않는다.
+- **기본 구성:** `deploy/base`와 사용자 overlay로 관제 API·대시보드·DB·관측 도구 및 `liveprobe-target`의 주문/재고 참조 서비스를 설치합니다. 이것만으로 dev/prd 전체 시스템이나 Application 관제가 설치되지는 않습니다.
+- **현재 전체 구성:** 기본 구성을 준비한 뒤 [8장](#8-devprd-전체-테스트-시스템)의 dev/prd 업무 환경과 [9장](#9-application-관제와-실행기)의 Application을 구성합니다. 기존 서비스 관제만 필요하면 업무 테스트 시스템 설치를 생략하고 자신의 서비스에 맞게 감시·권한·관측 설정을 변경합니다.
 
-## 실행 환경과 설치
+K8s의 과거 코드 변경 이력은 보존합니다. 신규 코드 수정·시험·승격은 Application이 담당합니다. Jira 연결은 필요하지 않습니다.
 
-기준 환경은 **로컬 Rancher Desktop / Kubernetes / Docker**다. `kubectl`, `docker`, `bash`, `openssl`, Python **3.12**, `uv`, 프런트 개발용 Node/npm이 필요하다. 관측 환경의 Prometheus·Loki·Hubble 연결 여부도 확인한다. 호스트 실행 도구와 이미지/모델 다운로드에는 네트워크가 필요하다.
+## 2. 설치 전에 준비할 것
 
-**설치·갱신은 클러스터 쓰기 작업**이다. 아래는 운영자가 승인된 로컬 환경에서 실행할 절차이며, README/결과표 생성 작업 자체는 배포나 LLM 실호출을 하지 않는다.
-
-1. 대상 context, namespace, 기존 데이터 보존·백업, 이미지 digest와 자원 여유를 먼저 확인한다. 기본 설치 대상은 `rancher-desktop`, `liveprobe-system`·`liveprobe-observability`·`liveprobe-target`과 프로젝트 RBAC/admission 리소스다. `KUBE_CONTEXT`, `OVERLAY`로 바꿀 수 있으므로 기본값만 믿지 않는다.
-2. 구독 Codex CLI 인증과 설치 스크립트가 요구하는 운영자 소유 비밀 파일을 **로컬에서 안전하게 준비**한다. Secret·인증 파일·토큰·비밀번호를 화면/로그/문서/채팅에 출력하지 않는다. `scripts/create-secrets.sh`가 설치 과정에서 Secret을 준비한다. 인증 갱신 시 PVC에 복사된 Codex home의 반영 방식도 확인한다.
-3. `deploy/overlays/rancher-desktop/platform.yaml`의 ingress/storage/API·Node CIDR와 실제 환경이 일치하는지 확인한다. `portable-example`은 예시이며 검증된 새 환경 설치로 간주하지 않는다.
-4. 기본 overlay의 API/controller/대상 서비스는 digest pin을 사용한다. **`scripts/build-images.sh`로 `:dev`를 빌드하는 것만으로 pin이 바뀌지 않는다.** 신규 설치에 필요한 pin 이미지가 로컬 런타임에 있어야 하며, 없다면 실제 OCI manifest/index digest를 확보하고 overlay와 롤백 이미지 정책을 함께 검토해야 한다.
-
-```sh
-# 저장소 루트에서, 승인된 환경과 비밀 입력을 준비한 후
-scripts/validate-manifests.sh
-KUBE_CONTEXT=rancher-desktop OVERLAY=deploy/overlays/rancher-desktop scripts/install.sh
-scripts/rbac-matrix.sh
-scripts/netpol-check.sh
-
-# 읽기 전용 상태 확인
-kubectl --context rancher-desktop -n liveprobe-system get pods
-kubectl --context rancher-desktop -n liveprobe-observability get pods
-kubectl --context rancher-desktop -n liveprobe-target get pods
-curl --fail http://liveprobe.localhost/api/healthz
-curl --fail http://liveprobe.localhost/api/readyz
-```
-
-`install.sh`는 base stack을 적용하지만 **선택적 실행 계정과 Hubble 관측 구성은 별도로 준비한다**. `deploy/optional/safe-action-executor/`는 기본 base에 포함되지 않는다. 정책 C 쓰기를 재현하려면 해당 계정·RBAC·admission·토큰 마운트와 런타임 활성 상태를 별도 승인·검증해야 한다. 관측 컴포넌트가 없으면 지도에 실측 흐름이 미관측으로 표시된다. 상세 운영 조건은 [재현·운영 게이트](docs/operations/kan57-reproduction.md)를 참고하되, 그 문서의 과거 cookie 인증 설명보다 현재 `auth.py`와 아래 로컬 접근 규칙을 우선한다.
-
-### 접속 경로
-
-| URL/경로 | 기능 |
+| 항목 | 설치자가 확인할 내용 |
 |---|---|
-| `http://liveprobe.localhost/` | **Kubernetes 서비스 연결 지도** |
-| `/map` | 첫 화면 지도(`/`)로 이동 |
-| `/incidents`, `/incidents/:id` | 사건 목록·근거·라우팅·호출·조치·대화/지시·인수 |
-| `/ledger` | 운영자 검토 장부 (평가 결과 UI가 아님) |
-| `/settings` | 자동화 설정·상태, 그룹별 역할 모델·추론 강도 편집 |
-| `http://application.liveprobe.localhost/` | 별도 설치된 Application 사건·수정·시험·승인 |
-| `/api/docs`, `/api/openapi.json` | 현재 FastAPI 인터페이스 |
-| `/api/status`, `/api/policy/profile`, `/api/llm/accounts` | 시스템·정책·구독 계정 상태 |
-| `/api/incidents`, `/api/incidents/{id}`, `/api/incidents/{id}/events` | 사건 조회·상세·이벤트 스트림 |
-| `/api/stream`, `/api/topology` | 전역 SSE·자원/흐름 정보 |
-| `/api/settings`, `/api/review-ledger`, `/api/review-ledger.csv` | 운영 설정·검토 장부 |
-| `/api/model-settings` | 그룹 모델 버전형 설정 조회·저장(동일 출처 쓰기 가드) |
+| Kubernetes | `admissionregistration.k8s.io/v1`의 `ValidatingAdmissionPolicy`를 지원하는 클러스터. 이 API는 Kubernetes 1.30부터 안정 기능입니다. 버전 숫자뿐 아니라 API 활성화와 실제 정책 집행을 확인합니다. |
+| 설치 권한 | namespace, Deployment, StatefulSet, PVC, Secret, ConfigMap, RBAC, NetworkPolicy, admission 정책을 설치할 권한. 관제 실행 계정에 설치자의 관리자 자격을 전달하지 않습니다. |
+| 네트워크 | NetworkPolicy를 집행하는 CNI, CoreDNS, Ingress controller. DNS·API 서버·노드 주소·관측 서비스·모델 서비스로의 통신 허용이 필요합니다. |
+| 저장소 | 실제 사용 가능한 StorageClass와 영속 볼륨. DB 및 AI 인증 PVC의 용량·접근 권한·백업 정책을 정합니다. |
+| 이미지 배포 | 노드 CPU 아키텍처와 맞는 이미지, 노드가 접근 가능한 레지스트리 또는 각 노드에 이미지를 반입하는 절차. 비공개 레지스트리는 `imagePullSecrets`도 설정합니다. |
+| AI 계정 | 본인이 사용할 수 있는 ChatGPT/Codex 계정과 모델. 이 프로젝트의 기본 경로는 **ChatGPT 로그인 기반 `codex_cli`**입니다. |
+| 호스트 도구 | Git, Bash, kubectl의 Kustomize 지원, Docker/Buildx, OpenSSL, Python 3.12, uv. 프런트 개발은 Node.js 22와 npm. 선택적 관측 설치에는 Helm 등 해당 도구가 필요합니다. |
+| 자원 여유 | 배포 YAML의 requests/limits 합계 외에 이미지 빌드·Maven·AI 프로세스·관측 데이터의 여유 공간을 확보합니다. 이 저장소는 범용 최소 CPU/RAM이나 HA 구성을 보장하지 않습니다. |
 
-Grafana(`grafana.localhost`)는 2026-11-14 퇴역했다(LP-OBS-20261114). 장애 관제는 Prometheus·Alertmanager webhook·Loki/Alloy·Hubble Relay(Retina)·Envoy 지표를 LiveProbe가 직접 읽는다. 저장 자료 PVC `grafana-data`는 유지되며, 비활성 복구 매니페스트는 `deploy/retired/grafana`에 있다. 상세: `docs/operations/liveprobe-observability-minimal-2026-11-14.md`.
+기존 검증 환경은 로컬 Rancher Desktop/K3s이며 여러 도구가 이 환경을 전제로 합니다. 다른 클러스터에는 `portable-example`을 복사해 맞춥니다. **이 예제는 렌더링 검증용이지 범용 설치 완료 템플릿이 아닙니다.**
 
-현재 로컬 PoC는 **사용자 로그인/계정 인증이 없다**. API의 Host allowlist와 쓰기 요청의 same-origin/Fetch-Metadata·`X-LiveProbe-Client` 검사만으로 접근을 제한하며, 이는 사용자 인증/권한 관리가 아니다. Alertmanager webhook 토큰 검증은 별도다. 네트워크에 공개하지 않는다. 프로덕션 사용 전 사용자 인증·권한·TLS·egress·백업/복구·다중 replica 제어를 별도로 검증해야 한다.
+기본 K8s 대시보드에는 사용자 로그인 기능이 없습니다. Host·동일 출처 검사는 사용자 인증을 대신하지 않습니다. 공유 환경에 서비스하려면 HTTPS와 외부 인증·접근 통제를 먼저 구성합니다. 프로젝트 공개와 실행 서비스의 인터넷 공개는 별개입니다.
 
-## 개발·검증·갱신
+참고: [Kubernetes admission 정책](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/), [컨테이너 이미지와 pull 정책](https://kubernetes.io/docs/concepts/containers/images/).
 
-```sh
-# 백엔드 Python 3.12 환경 준비
-cd liveprobe
-uv sync --group dev
-# 전체 API 테스트: LIVEPROBE_TEST_DB_ADMIN이 가리키는 전용 pgvector 테스트 DB 필요
-# 전용 시험 서버의 CREATEDB 권한으로 이번 세션 전용 DB를 새로 만든다.
-uv run pytest
-cd ..
+## 3. 소스와 클러스터 설정
 
-# 평가 도구 단위 테스트: DB/클러스터/LLM 호출 없음
-PYTHONDONTWRITEBYTECODE=1 liveprobe/.venv/bin/python -m pytest -p no:cacheprovider evaluation/tests -q
+### 3.1 소스 받기
 
-# 프런트
-cd dashboard
-npm ci
-npm test
-npm run build
-cd ..
+처음에는 clone, 이후에는 기존 checkout에서 pull합니다. 아래 명령은 Bash에서 순서대로 실행하며 예시 값을 실제 값으로 바꾸고, 오류가 나면 다음 단계로 넘어가지 않습니다. 여러 터미널에서는 필요한 `LP_*` 변수를 각각 설정합니다.
+
+```bash
+set -euo pipefail
+git clone https://github.com/lopahn2/sds-ai-professional.git
+cd sds-ai-professional
+
+# 이후 업데이트할 때: 로컬 변경을 먼저 보존하고 실행
+# git pull --ff-only origin main
+
+export LP_CONTEXT='your-kube-context'
+export LP_OVERLAY='deploy/overlays/my-cluster'
+
+kubectl --context "$LP_CONTEXT" cluster-info
+kubectl --context "$LP_CONTEXT" get nodes -o wide
+kubectl --context "$LP_CONTEXT" get storageclass,ingressclass
+kubectl --context "$LP_CONTEXT" api-resources --api-group=admissionregistration.k8s.io
+
+# Python 도구 의존성 준비; 클러스터를 설치하지 않는 단계
+(cd liveprobe && uv sync --frozen --group dev)
+# install.sh 내부의 python3도 같은 의존성을 사용하도록 설정
+export PATH="$PWD/liveprobe/.venv/bin:$PATH"
 ```
 
-프런트 개발 서버는 `cd dashboard && npm run dev`로 실행한다. Vite 개발 프록시/현재 API 도달성을 함께 확인한다. API의 일반 운영 경로는 인클러스터 kube/DB/설정·RAG와 연결되므로 `uvicorn`만 실행해 완전한 로컬 데모가 된다고 가정하지 않는다.
+### 3.2 자신의 overlay 만들기
 
-코드를 갱신할 때는 관련 테스트 → 프런트 빌드 → 필요한 이미지 빌드(`scripts/build-images.sh liveprobe dashboard` 등) → **실제 배포 digest 및 overlay/롤백 정책 동기화** → 변경 리소스 diff 검토 → 승인된 범위 적용 → rollout·readyz·UI·활성 정책/모델 read-back 순서로 확인한다. Docker config ID를 배포 manifest digest와 혼동하지 않는다. `:dev` 이미지 교체나 설치 스크립트 재실행만으로 최신 소스가 실행 중이라고 주장하지 않는다. 전체 overlay 재적용은 변경 범위·webhook CA·불변 ConfigMap/PVC 영향을 먼저 검토한다.
-
-P14는 기존 rancher-desktop에 배포했다. E8은 실제 배정 노드 상태, E9는 실제 참조 ConfigMap의 키·해시·변경 시각·승인 버전 일치만 제공하며 값·주석은 제외한다. 근거 수집은 Kubernetes/Prometheus/Loki 3개 작업자로 병렬화하고 전체 30초·개별 조회 제한시간과 완료 부분결과를 보존한다. 이벤트/로그는 반복 수를 유지해 중복 집계한다. 같은 경로의 drop/error 5건은 NetworkDrop 사건으로 연결하고 규칙상 HIGH_RISK는 LLM 응답과 관계없이 유지한다. 감지·전달 지연은 성능저하로 표시하며 결과 불명 신호는 중복 재전송하지 않는다.
-
-P14 당시 검증: API 631개, 평가·chaos 96개(부분 시험 18개 별도), 프런트 단위 29개, 브라우저 75개 통과. 실제 NetworkPolicy 차단 시험 #990은 HIGH_RISK 인계·자동 조치 0건, 정책·연결·시험 자원·모델 배치 복원 확인. 프런트의 약 512KB 청크 경고는 남아 있다. 전체 평가 재실행이나 목표 수치 개선을 뜻하지 않는다. 상세 근거와 제한은 [P14 실행 기록](docs/plans/revamp/P14-execution.md)에서 확인한다.
-
-### 기존 평가 원본으로 결과표 재생성 (오프라인)
-
-```sh
-python3 scripts/export_case_results.py
-python3 scripts/export_case_results.py --check
-PYTHONDONTWRITEBYTECODE=1 liveprobe/.venv/bin/python -m pytest -p no:cacheprovider evaluation/tests/test_case_export.py -q
+```bash
+# my-cluster가 없는 첫 준비 때만 실행
+cp -R deploy/overlays/portable-example "$LP_OVERLAY"
 ```
 
-- 원본: `.e2e-tmp/revamp-P10/store-pilot`(A 64), `.e2e-tmp/revamp-P11b/store-chaos`(B 176), `.e2e-tmp/revamp-P12/store-policyC`(C 88), `store-p13`(24), `store-p13-n103`(2; 두 P13 경로는 revamp-P12 아래).
-- 결과: **354행**, 구간별로 분리한다. 이는 서로 다른 case×arm 354개가 아니다. P13 수정 전/후 N1-03도 각 실행으로 보존한다. smoke/trial 13쌍과 A의 실패 attempt 1건은 본 표에서 제외하고 별도 내역을 남긴다.
-- `manifest.json`·`progress.jsonl`의 해시, start/done, 입력·출력 대응, 완료/원복, 구간별 행수를 검증한다. CSV의 출처 줄 번호·줄 해시로 원본을 추적할 수 있다.
-- 별도 사건 수준·라우팅 선택 이유·실제 인용/로그 본문은 progress에 없어 **미수집**으로 밝힌다. Workflow/결과 사유/근거 판정 건수로 대신 꾸며내지 않는다. 빈 목록·null·키 부재는 구분한다. DB 보충이나 현재 모델·단가 재계산은 하지 않는다.
-- `.e2e-tmp` 원본은 로컬 자료라 clean checkout에는 없을 수 있다. 동일 원본을 복원해야 재생성할 수 있으며 누락 시 스크립트는 실패한다. `--check`는 기존 두 산출물과 바이트 단위로 대조하고 쓰지 않는다.
-- 현재 목표 전부를 달성한 것은 아니다. Workflow 정확도·비용 절감·복구/이관 100%는 과거 보고서에서 미달이며, 정책·사례·지표 수집 조건이 다른 구간을 합쳐 개선을 주장하지 않는다. 새 모델 라인업 재평가는 수행하지 않았다.
+`$LP_OVERLAY/platform.yaml`의 다음 값을 **실제 환경 값으로 모두 변경**합니다.
 
-### 실장애 시험은 별도 승인 필요
+| 키 | 의미와 확인 방법 |
+|---|---|
+| `ingressClassName` | 사용할 IngressClass 이름 |
+| `storageClassName` | 사용할 StorageClass 이름 |
+| `liveprobeHost` | 관제 웹/API 도메인. 해당 이름이 Ingress 주소로 해석되도록 DNS 또는 hosts 설정 |
+| `ingressNamespace` | Ingress controller Pod의 namespace |
+| `ingressPodName` | controller Pod의 실제 `app.kubernetes.io/name` 라벨 값 |
+| `apiserverCIDR` | Pod에서 접속하는 Kubernetes API endpoint 주소 범위. Service ClusterIP만 보고 정하지 않음 |
+| `nodeCIDR` | Prometheus가 kubelet 10250 포트로 접근할 노드 주소 범위. 다중 노드면 관련 정책도 점검 |
+| `imageRegistry` | 자체 이미지와 미러 이미지를 제공하는 레지스트리 |
 
-`chaos/`와 `scripts/eval-real.sh`는 실제 대상 변경과 구독 LLM 호출을 일으킨다. 자동으로 실행하지 않는다. 평가 lock·단일 주입 소유권·기준선·자원 여유·범위 백업을 확인하고 한 사례씩 주입 → 분석 → 원복 → 안정 상태를 증명한다. 불확실한 쓰기·원복 실패 시 즉시 중단한다. `scripts/e2e-mvp0.sh`는 예전 F1/F4 smoke 경로이며 전체 4 Family/60사례 검증을 대신하지 않는다. `scripts/uninstall.sh`는 namespace와 데이터를 삭제할 수 있으므로 데이터 보존 결정과 복구 가능한 백업 없이 실행하지 않는다.
+`registry.example.test`, `192.0.2.*`, `standard-rwo`, `nginx`는 그대로 사용할 값이 아닙니다. `$LP_OVERLAY/kustomization.yaml`의 `images`도 따로 변경해야 합니다. `imageRegistry` 한 항목이 모든 이미지 주소를 자동 변경하지는 않습니다.
 
-
-### 저장된 실행으로 역할별 비용 확인
-
-제품별 읽기 권한을 설정한 환경에서 저장소 루트를 기준으로 실행한다. 두 명령은 새 JSON 파일을 생성하고, 이미 있는 출력 파일에는 쓰기를 거절한다. 각 실행 당시 모델과 비용을 사용하며 미수집 비용은 결측으로 유지한다.
-
-```sh
-PYTHONPATH=liveprobe python -m app.snapshot_export --out k8s-history.json
-PYTHONPATH=liveprobe python -m app.application.snapshot_export --out app-history.json
-python -m evaluation.offline utility --records k8s-history.json
-python -m evaluation.offline utility --records app-history.json
+```bash
+kubectl --context "$LP_CONTEXT" -n default get endpointslices \
+  -l kubernetes.io/service-name=kubernetes -o wide
+kubectl --context "$LP_CONTEXT" -n kube-system get pods --show-labels
 ```
+
+추가로 API Deployment의 환경 변수 **`LIVEPROBE_ALLOWED_HOSTS`**에 자신의 도메인을 JSON 배열로 설정합니다. Ingress 도메인만 변경하면 API가 요청을 거부할 수 있습니다. 다음 파일을 overlay의 `api-settings.yaml`로 만들고 `kustomization.yaml`의 `patches`에 `- path: api-settings.yaml`을 추가합니다.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liveprobe-api
+  namespace: liveprobe-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: LIVEPROBE_ALLOWED_HOSTS
+              value: '["liveprobe.your-domain.example","localhost","127.0.0.1"]'
+```
+
+`liveprobe.your-domain.example`도 자신의 이름으로 바꿉니다. Ingress TLS 설정은 플랫폼 자동 치환에 포함되지 않으므로 overlay에서 직접 추가합니다.
+
+## 4. 이미지 빌드와 배포 주소
+
+저장소에 기록된 `liveprobe/...@sha256:...`는 개발 환경에서 관측한 이미지입니다. GitHub에서 소스를 받았다고 그 이미지까지 내려받을 수 있는 것은 아닙니다. **직접 빌드·배포하고 확인한 manifest digest로 교체**합니다.
+
+아래는 자신이 쓰기 권한을 가진 레지스트리에 이미지를 올리는 예입니다. 먼저 해당 레지스트리에 로그인하고, 아키텍처와 값을 변경하세요. `git archive`를 사용하므로 로컬 `.env`, 인증 파일, 가상환경은 빌드 context에 들어가지 않습니다. 대상은 현재 커밋에 저장된 소스입니다.
+
+```bash
+export LP_REGISTRY='registry.your-domain.example/liveprobe'
+export LP_VERSION='2026-11-15-1'
+export LP_PLATFORM='linux/amd64'  # 노드에 맞게 linux/arm64 등으로 변경
+LP_BUILD_DIR=$(mktemp -d)
+git archive HEAD liveprobe dashboard services | tar -x -C "$LP_BUILD_DIR"
+
+for component in liveprobe dashboard; do
+  docker buildx build --platform "$LP_PLATFORM" --push \
+    -t "$LP_REGISTRY/$component:$LP_VERSION" "$LP_BUILD_DIR/$component"
+done
+
+docker buildx build --platform "$LP_PLATFORM" --push \
+  -f "$LP_BUILD_DIR/liveprobe/Dockerfile.rollback" \
+  -t "$LP_REGISTRY/rollback-controller:$LP_VERSION" "$LP_BUILD_DIR/liveprobe"
+
+# 기본 참조 서비스까지 설치할 때
+for component in order inventory; do
+  docker buildx build --platform "$LP_PLATFORM" --push \
+    -t "$LP_REGISTRY/$component:$LP_VERSION" "$LP_BUILD_DIR/services/$component"
+done
+
+# 각 이미지의 registry manifest/index digest 확인 예
+docker buildx imagetools inspect "$LP_REGISTRY/liveprobe:$LP_VERSION"
+```
+
+`$LP_OVERLAY/kustomization.yaml`의 각 이미지 항목을 실제 주소와 digest로 바꿉니다. `newTag`와 `digest`를 혼용하지 말고 기존 `newTag`를 제거합니다.
+
+```yaml
+# images 아래에 들어갈 한 항목의 형식 예시. 실제 digest로 교체해야 함.
+- name: liveprobe/liveprobe
+  newName: registry.your-domain.example/liveprobe/liveprobe
+  digest: sha256:<registry에서-확인한-64자리-manifest-digest>
+```
+
+API, 대시보드, rollback-controller, order, inventory를 모두 설정합니다. portable 예제는 pgvector·Prometheus·Alertmanager·Loki·Alloy·kube-state-metrics·busybox·curl 이미지까지 예제 레지스트리로 바꿉니다. 이 이미지들을 실제로 미러링하거나 사용 가능한 upstream 이미지 주소로 항목을 조정해야 합니다.
+
+- Docker config ID인 `.Id`를 배포 manifest digest로 간주하지 않습니다.
+- `scripts/build-images.sh`는 기본 네 이미지의 **로컬 태그**를 만들 뿐, registry push나 overlay의 digest 변경은 하지 않습니다. rollback-controller도 별도 빌드해야 합니다.
+- `Dockerfile.samsung`, `Dockerfile.applayer`, `Dockerfile.application` 등 증분 Dockerfile에는 로컬 기반 이미지 digest가 남아 있을 수 있습니다. 새 환경에서는 기반 이미지를 먼저 빌드하고 `FROM`을 자신의 이미지로 바꿉니다.
+- Docker/Kubernetes 런타임이 다른 경우 호스트에서 빌드한 이미지가 노드에 자동으로 생기지 않습니다. 모든 대상 노드가 접근할 수 있는 배포 경로를 확인합니다.
+
+## 5. AI 로그인과 비밀정보
+
+### 5.1 자신의 ChatGPT 계정으로 로그인
+
+기본 런타임은 `codex_cli`입니다. **ChatGPT 구독 로그인과 OpenAI API 키는 서로 다른 인증 경로**이며 이 설치 절차는 API 키를 요구하지 않습니다. 코드에 다른 공급자 어댑터가 존재하더라도 공급자를 임의로 바꾸지 않습니다.
+
+호스트에 Codex CLI를 설치한 뒤, 배포용으로 분리한 로컬 디렉터리에 로그인합니다. 실제 모델 사용 권한과 CLI 버전 호환성을 확인하세요. API Dockerfile에는 Codex CLI 버전이 고정되어 있습니다.
+
+```bash
+LP_AUTH_DIR="$HOME/.local/share/liveprobe/codex-bootstrap"
+mkdir -p "$LP_AUTH_DIR"
+chmod 700 "$LP_AUTH_DIR"
+
+# 브라우저에서 본인 계정으로 직접 로그인
+CODEX_HOME="$LP_AUTH_DIR" codex -c 'cli_auth_credentials_store="file"' login
+CODEX_HOME="$LP_AUTH_DIR" codex login status
+
+test -s "$LP_AUTH_DIR/auth.json"
+chmod 600 "$LP_AUTH_DIR/auth.json"
+export CODEX_AUTH_FILE="$LP_AUTH_DIR/auth.json"
+```
+
+브라우저 콜백을 사용할 수 없으면 계정에서 지원하는 `codex login --device-auth`를 사용합니다. 조직에서 인증 저장 방식을 제한했다면 그 정책에 맞는 전달 절차가 필요합니다. [공식 Codex 인증 안내](https://developers.openai.com/codex/auth)를 참고하세요.
+
+`auth.json`은 실제 OAuth 인증정보입니다. Git·Docker 이미지·채팅·로그에 포함하지 않습니다. 파일 내용 대신 존재 여부와 `login status`만 확인합니다. Kubernetes Secret으로 전달하면 클러스터에서 해당 Secret과 PVC를 읽을 수 있는 주체도 인증정보에 접근할 수 있으므로 접근 권한을 제한합니다.
+
+### 5.2 기본 Secret 생성
+
+새 설치의 namespace를 준비한 뒤 다음을 실행합니다.
+
+```bash
+kubectl --context "$LP_CONTEXT" apply -f deploy/base/namespaces/namespaces.yaml
+KUBE_CONTEXT="$LP_CONTEXT" CODEX_AUTH_FILE="$CODEX_AUTH_FILE" scripts/create-secrets.sh
+```
+
+이 스크립트는 DB 비밀번호, webhook 토큰, 참조 서비스 자격을 생성하고 `liveprobe-llm` Secret에 AI 인증 파일을 전달합니다. 인증 파일이 없으면 빈 Secret을 만들고 진행할 수 있으므로, 앞 단계의 `test -s`를 생략하지 않습니다.
+
+기존 Secret은 일반적으로 재사용하지만 **webhook Secret 쌍 중 하나가 없으면 두 쪽 토큰을 다시 맞추는 동작**이 있습니다. 기존 설치 갱신에 무조건 재실행하지 마세요. `--force`는 인증 갱신을 의도한 때만 사용합니다.
+
+API의 첫 실행에서는 Secret의 `auth.json`을 쓰기 가능한 `liveprobe-codex` PVC로 복사합니다. 이후 CLI가 PVC 안에서 인증을 갱신합니다. **Secret만 교체하거나 Pod만 재시작해도 기존 PVC의 인증이 자동으로 바뀌지는 않습니다.** 재로그인 시 실행을 정지하고 해당 인증 홈만 안전하게 갱신해야 하며 DB/PVC 전체 삭제로 해결하지 않습니다.
+
+### 5.3 모델 설정
+
+K8s의 `liveprobe-config` ConfigMap 안 `config.yaml`과 `/settings`의 그룹 모델 설정을 확인합니다. 기본 모델 ID는 `liveprobe/app/config.py`에 있지만 모든 계정에서 사용 가능하다는 보장은 아닙니다.
+
+자신의 모델로 변경할 때는 `llm.roles` 또는 `llm.provider_roles.codex_cli`뿐 아니라 그룹 모델·승격 순서·가격/품질 설정도 함께 맞춰야 합니다. `provider_roles`를 명시하면 해당 provider의 설정이 `roles`보다 우선합니다. 모델명을 한 곳에서만 바꾸고 모든 역할이 바뀐 것으로 판단하지 않습니다. 운영 시작 전 실제 역할 호출을 확인합니다.
+
+## 6. Kubernetes 관제 설치
+
+### 6.1 롤백 구성부터 준비
+
+> ⚠️ **설치 스크립트가 만들지 않는 필수 항목** — 기본 API는 `rollback-ca` ConfigMap과 `rollback-action-grant` Secret을 필수로 마운트합니다. rollback-controller도 TLS Secret과 승인 이미지 정책을 요구합니다. `create-secrets.sh`만 실행한 상태에서 `install.sh`를 실행하면 이 항목 때문에 시작하지 못할 수 있습니다.
+
+| 대상 | 준비해야 하는 값 |
+|---|---|
+| Secret `rollback-admission-tls` | `tls.crt`, `tls.key`. 인증서 SAN에 `rollback-controller.liveprobe-system.svc` 포함 |
+| ConfigMap `rollback-ca` | 위 인증서를 검증할 CA 인증서 `ca.crt` |
+| Secret `rollback-action-grant` | 별도로 생성한 서명 키 `key` |
+| ConfigMap `rollback-image-policy` | 운영자가 확인한 order/inventory의 원복 이미지 digest. `immutable: true`로 관리 |
+| Webhook `rollback-controller-image-guard` | `clientConfig.caBundle`에 위 CA의 base64 값 |
+
+신규 설치에서, 조직 절차로 발급받은 인증서가 보호된 로컬 경로에 있다고 가정한 예입니다. 아래 경로는 설치자가 준비해야 하며 기존 파일이나 Secret을 덮어쓰지 않습니다.
+
+<details>
+<summary>조직 CA가 없는 격리된 로컬 실험: 자체 서명 인증서 준비 예</summary>
+
+클러스터 내부 롤백 서비스에만 사용하는 예입니다. 외부 Ingress 인증서나 조직 PKI를 대신하지 않습니다. 다른 터미널에서도 실패 시 중단되도록 설정하며 기존 파일이 있으면 멈춥니다.
+
+```bash
+set -euo pipefail
+LP_TLS_DIR="$HOME/.local/share/liveprobe/rollback-tls"
+mkdir -p "$LP_TLS_DIR"
+chmod 700 "$LP_TLS_DIR"
+test ! -e "$LP_TLS_DIR/tls.key"
+test ! -e "$LP_TLS_DIR/tls.crt"
+test ! -e "$LP_TLS_DIR/ca.crt"
+(umask 077; openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 90 \
+  -keyout "$LP_TLS_DIR/tls.key" -out "$LP_TLS_DIR/tls.crt" \
+  -subj '/CN=rollback-controller.liveprobe-system.svc' \
+  -addext 'subjectAltName=DNS:rollback-controller.liveprobe-system.svc')
+cp "$LP_TLS_DIR/tls.crt" "$LP_TLS_DIR/ca.crt"
+```
+
+유효기간과 갱신 담당자를 정하고 아래 CA 마운트와 Webhook caBundle을 같은 인증서로 구성합니다. 개인 키는 외부에 공유하지 않습니다.
+
+</details>
+
+```bash
+LP_TLS_DIR="$HOME/.local/share/liveprobe/rollback-tls"
+test -s "$LP_TLS_DIR/tls.crt"
+test -s "$LP_TLS_DIR/tls.key"
+test -s "$LP_TLS_DIR/ca.crt"
+test ! -e "$LP_TLS_DIR/grant-key"
+(umask 077; openssl rand 48 > "$LP_TLS_DIR/grant-key")
+
+kubectl --context "$LP_CONTEXT" -n liveprobe-system create secret tls rollback-admission-tls \
+  --cert="$LP_TLS_DIR/tls.crt" --key="$LP_TLS_DIR/tls.key"
+kubectl --context "$LP_CONTEXT" -n liveprobe-system create configmap rollback-ca \
+  --from-file=ca.crt="$LP_TLS_DIR/ca.crt"
+kubectl --context "$LP_CONTEXT" -n liveprobe-system create secret generic rollback-action-grant \
+  --from-file=key="$LP_TLS_DIR/grant-key"
+```
+
+overlay에 `rollback-image-policy.yaml`을 추가하고 `resources`에서 참조합니다. 새 환경에서는 개발자의 예전 이미지 정책 파일을 재사용하지 않습니다.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollback-image-policy
+  namespace: liveprobe-system
+immutable: true
+data:
+  order: registry.your-domain.example/liveprobe/order@sha256:<검증한-원복-digest>
+  inventory: registry.your-domain.example/liveprobe/inventory@sha256:<검증한-원복-digest>
+```
+
+Webhook CA도 overlay의 패치로 저장하여 매번 렌더링에 포함합니다. 아래 코드는 **공개 CA 인증서만** 읽어 패치 파일을 만들며 개인 키는 읽지 않습니다.
+
+```bash
+python3 - "$LP_TLS_DIR/ca.crt" "$LP_OVERLAY/rollback-ca-patch.yaml" <<'PY'
+import base64, pathlib, sys, yaml
+patch = {
+    "apiVersion": "admissionregistration.k8s.io/v1",
+    "kind": "ValidatingWebhookConfiguration",
+    "metadata": {"name": "rollback-controller-image-guard"},
+    "webhooks": [{"name": "rollback-controller.liveprobe.invalid",
+                  "clientConfig": {"caBundle": base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode()}}],
+}
+pathlib.Path(sys.argv[2]).write_text(yaml.safe_dump(patch, sort_keys=False))
+PY
+```
+
+`kustomization.yaml`의 `patches`에 `- path: rollback-ca-patch.yaml`을 추가합니다. 인증서 체인·서비스 DNS·유효기간을 확인하고 CA가 비어 있는 Webhook을 설치하지 않습니다. 나중에 원복 이미지를 바꾸면 새 이름의 immutable 정책을 만들고 controller 참조도 함께 바꿉니다.
+
+### 6.2 렌더링·사전 확인·설치
+
+기본 구성은 `liveprobe-target`의 참조 서비스까지 포함합니다. 이미지·TLS·Secret·도메인·스토리지 설정을 완료한 **신규 설치**에서 실행합니다.
+
+```bash
+python3 scripts/preflight.py --context "$LP_CONTEXT" --overlay "$LP_OVERLAY"
+kubectl kustomize "$LP_OVERLAY" > /tmp/liveprobe-install.yaml
+kubectl --context "$LP_CONTEXT" apply --dry-run=server -f /tmp/liveprobe-install.yaml
+
+# 위 결과를 검토한 다음 실제 설치. 이미지를 registry에 준비했으므로 로컬 재빌드 생략.
+KUBE_CONTEXT="$LP_CONTEXT" OVERLAY="$LP_OVERLAY" SKIP_BUILD=1 scripts/install.sh
+```
+
+`install.sh`는 Secret 준비, 렌더링 적용, rollout 대기, 참조 inventory DB 준비까지 수행합니다. **Application·dev/prd 전체 앱·Hubble·safe-action-executor를 일괄 설치하는 도구는 아닙니다.** 기존 클러스터 업그레이드에는 변경 리소스를 비교하고 적용해야 합니다.
+
+### 6.3 화면 열기
+
+설정한 Ingress 도메인으로 접속합니다. Ingress가 `/`는 `dashboard:80`, `/api`는 `liveprobe-api:8000`으로 보내는 구조입니다. **기본 dashboard nginx에는 API 프록시가 없으므로 대시보드 Service만 포트 포워딩하면 화면 틀은 보여도 API가 연결되지 않습니다.**
+
+API만 먼저 확인할 때는 다음과 같이 로컬 포트 포워딩을 사용할 수 있습니다.
+
+```bash
+kubectl --context "$LP_CONTEXT" -n liveprobe-system \
+  port-forward --address 127.0.0.1 service/liveprobe-api 8000:8000
+# 다른 터미널: curl --fail http://127.0.0.1:8000/api/readyz
+```
+
+로컬 프런트 개발이 필요하면 위 API 연결을 유지하고 `dashboard`에서 `npm ci` 후 `npm run dev -- --host 127.0.0.1`을 실행합니다. Vite 개발 서버는 `/api`를 로컬 8000 포트로 프록시합니다. 실제 배포의 HTTPS Ingress에서도 웹과 API를 같은 출처로 제공합니다.
+
+## 7. 관측 연결과 자동 복구 권한
+
+### 7.1 어떤 관측 도구가 필요한가
+
+| 도구 | 용도 | 설정 위치 |
+|---|---|---|
+| Prometheus + kube-state-metrics | 시계열 지표·워크로드 상태·경고 규칙 | `deploy/base/observability/prometheus`, `kube-state-metrics`, `LIVEPROBE_PROMETHEUS_URL` |
+| Alertmanager | 경고를 LiveProbe webhook으로 전달 | `deploy/base/observability/alertmanager`, 양쪽 webhook Secret |
+| Loki + Alloy | 수집 로그를 근거로 조회 | `deploy/base/observability/loki`, `alloy`, `LIVEPROBE_LOKI_URL` |
+| Hubble 호환 Relay / Retina | 실제 서비스 흐름과 네트워크 drop/error 관측 | `LIVEPROBE_HUBBLE_RELAY`, `deploy/optional/flow-observer/values.yaml` |
+| Istio/Envoy | 현재 참조 환경의 mesh 및 지연 지표 | `deploy/optional/istio`, 대상 환경별 scrape·정책 |
+
+Grafana 서버/UI는 기본 설치에서 제외되어 있습니다. 기존 Grafana 데이터를 보존하기 위한 PVC 선언은 남아 있습니다. 이미지 이름에 `grafana/loki`, `grafana/alloy`가 보이는 것은 Grafana UI 설치를 의미하지 않습니다.
+
+기존 Prometheus/Loki를 사용할 때는 **새 수집기를 무조건 중복 설치하지 말고** base 자원과 중복 대상을 검토한 뒤 URL·접근 정책·수집 라벨·경고 규칙을 맞춥니다. API URL만 바꾸면 해당 지표/로그가 자동으로 수집되는 것은 아닙니다.
+
+Hubble/Retina는 기본 overlay에서 설치되지 않습니다. 현재 CNI·커널·아키텍처에 맞는 관측기를 별도로 설치합니다. 저장된 Retina values는 개발 환경용 TLS 비활성 예제이므로 다른 환경의 보안 설정에 맞춰야 합니다. 연결하지 않은 네트워크 데이터는 **미관측**이며 정상으로 간주하지 않습니다. 기존 CNI를 교체할 필요가 있는지 확인 없이 교체하지 않습니다.
+
+### 7.2 자동 조치를 사용할 때
+
+관제 API의 `liveprobe` ServiceAccount는 읽기 계정입니다. 복구 기능은 별도 실행 계정·대상 범위·admission 정책을 사용합니다.
+
+- 타입 조치: `deploy/optional/safe-action-executor/`의 RBAC·정책·토큰 Secret과 API 마운트를 확인합니다.
+- 운영자가 확인한 명령: `deploy/base/liveprobe/operator-executor.yaml`의 별도 실행기와 토큰을 사용합니다.
+- 롤백: [6.1절](#61-롤백-구성부터-준비)의 controller·TLS·승인 이미지 정책을 사용합니다.
+- 대상 Deployment의 `liveprobe.io/managed: "true"` 라벨, namespace·소유 관계, replica/메모리 상한, 독립 검증을 함께 확인합니다. 쓰기 권한을 주기 위해 API 읽기 계정을 관리자 계정으로 바꾸지 않습니다.
+
+**기본 실행기 선언에는 `liveprobe-target` 범위가 포함되어 있으므로 dev/prd 또는 자신의 namespace에 그대로 적용했다고 복구 권한이 생기는 것은 아닙니다.** Role/RoleBinding·admission의 namespace 조건·NetworkPolicy·허용 대상과 API 마운트를 같은 범위로 구성하고 허용/거부를 모두 시험합니다.
+
+```bash
+# API 자체는 대상 Deployment 쓰기가 no여야 함
+kubectl --context "$LP_CONTEXT" auth can-i patch deployments \
+  --as=system:serviceaccount:liveprobe-system:liveprobe -n dev
+# 설치자가 허용한 실행기는 허용 대상에서만 yes여야 함
+kubectl --context "$LP_CONTEXT" auth can-i patch deployment/order \
+  --as=system:serviceaccount:liveprobe-system:safe-action-executor -n dev
+```
+
+이 명령은 점검만 합니다. 기본 `assessment` 정책의 HIGH_RISK는 이관합니다. 건강 재확인은 두 번의 최신 관측으로 검증하며, 실제 조치가 없으면 **“정상 상태 확인 · 원인 미확정 · AI 조치 없음”**으로 구분합니다. 권한·데이터 안전 경계나 정해진 자율 복구 소진을 무제한 재시도로 우회하지 않습니다.
+
+## 8. dev/prd 전체 테스트 시스템
+
+### 8.1 함께 맞출 설정 파일
+
+| 파일 | 변경할 내용 |
+|---|---|
+| `deploy/samsung/system-catalog.json` | 환경·시스템·서비스 소속. 활성 `dev/prd`, 퇴역 `stg` 구분 |
+| `deploy/samsung/images.json` | 직접 빌드한 서비스별 실제 manifest digest |
+| `deploy/samsung/application-profiles.json` | 서비스별 소스 루트·언어·시험 경로·이미지 저장소·업무 확인 경로 |
+| `deploy/samsung/infra-template.json` | Kafka/Postgres 이미지, 저장소 및 기반 설정 |
+| `deploy/environments/liveprobe-config.yaml` | K8s 감시 환경·의존성·모델·재분석 정책 |
+| `deploy/environments/actions.json`, `apps.json`, `observability.json` | dev/prd 대상 권한·네트워크·수집 설정 |
+| `liveprobe/app/systems.py` | 현재 참조 시스템의 표시·연계 정의. 완전히 다른 업무 시스템이면 코드의 고정 참조도 검토 |
+
+`deploy/base`의 `liveprobe-config`는 여전히 **참조용 `liveprobe-target`**을 선택합니다. dev/prd를 사용하려면 `deploy/environments/liveprobe-config.yaml` 내용을 ConfigMap **`liveprobe-config`의 `data.config.yaml`**에 넣도록 사용자 overlay를 구성합니다. 이 파일 자체는 ConfigMap 매니페스트가 아니므로 `kubectl apply -f`로 직접 설치하지 않습니다. 변경 후 API를 재시작하고 `/api/status`에서 실제 감시 대상을 확인합니다. ConfigMap 읽기 Role과 로그 수집·지표 정책도 새 대상에 맞춰야 합니다.
+
+### 8.2 서비스와 기반 준비
+
+1. `dev`, `prd` namespace의 기존 리소스와 데이터가 있는지 확인합니다. 타인의 환경을 초기화하거나 namespace를 삭제하지 않습니다.
+2. order/inventory 외에 catalog, payment, delivery, notification, samsung-domain 이미지를 해당 `services/<이름>/Dockerfile`에서 빌드합니다. samsung-domain 이미지는 `trade-member`, `delivery-member`, `business-api`가 모드를 나누어 사용합니다. 별도 `services/member` 소스도 공개되어 있지만 현재 이 세 역할의 대체 이미지로 임의 사용하지 않습니다.
+3. DB·Kafka·TLS·환경별 Secret을 준비합니다. 메모리 전용 시험 데이터와 영속 DB 데이터의 보존 방식은 구분합니다.
+4. 서비스별 digest와 프로필의 `image_repository`를 동일하게 맞춘 뒤 앱 선언을 렌더링합니다.
+
+```bash
+# 아래 기반 생성기는 본문에 명시한 환경 계약 불일치를 먼저 수정·검증한 후 실행
+# 두 명령 모두 비밀 생성·클러스터 변경 없이 신규 파일에 선언만 렌더링
+mkdir -p .e2e-tmp/install-review
+python3 scripts/samsung_infra.py --render --context "$LP_CONTEXT" \
+  --output .e2e-tmp/install-review/infra-review.json
+python3 scripts/render-samsung-environments.py \
+  --images deploy/samsung/images.json \
+  --output .e2e-tmp/install-review/apps-review.json
+```
+
+**현재 신규 전체 설치의 제한:** `scripts/samsung_infra.py`의 `ENVS`에는 아직 `dev/stg/prd`가 고정되어 있습니다. 기반 생성기는 로컬 Docker의 이미지 존재와 저장소 등에도 가정이 있습니다. 현재 카탈로그는 dev/prd이므로 **그대로 실행하면 `--render` 단계부터 환경 계약 불일치로 중단됩니다.** 이를 피하려고 퇴역한 stg를 활성 카탈로그에 다시 넣거나 `--execute`를 바로 실행하지 않습니다. 새 dev/prd 설치에는 이 생성기의 환경·이미지·스토리지 검증을 자신의 구성으로 조정하고 관련 시험을 통과시키거나, 같은 Secret/DB/Kafka 계약을 운영자가 별도 준비해야 합니다. 과거 DB에 보존된 stg 데이터를 지우라는 뜻은 아닙니다.
+
+`infra-review.json`은 `manifest`, `secret_refs` 등을 담은 묶음입니다. 전체 파일을 Kubernetes List로 간주해 `kubectl apply -f`에 넣지 않습니다. `apps-review.json`은 앱 선언이며 여기에 나오는 Secret·DB·정책이 실제로 준비됐는지 먼저 확인합니다. 전체 시스템의 신규 설치·데이터 이관·원복은 기본 설치 스크립트가 자동 수행하지 않습니다.
+
+자세한 계약: [업무 기반](docs/operations/samsung-infra.md), [업무 시스템](docs/operations/samsung-domain.md). 이 문서의 이전 개발 환경 경로·stg 설명보다 **현재 소스와 위 dev/prd 구분**을 우선합니다.
+
+## 9. Application 관제와 실행기
+
+### 9.1 독립 API·DB·인증
+
+Application은 K8s API 안에서 자동 활성화되지 않습니다. 별도 API `liveprobe-application-api`, DB `liveprobe-application-db`, 인증 PVC `liveprobe-application-codex`를 구성합니다. DB URL·사람 토큰·실행기 토큰을 K8s 관제와 공유하지 않습니다.
+
+`liveprobe/Dockerfile.application`의 `FROM`을 [4장](#4-이미지-빌드와-배포-주소)에서 만든 **자신의 API runtime digest**로 바꾸어 Application 이미지를 빌드합니다. 비root 사용자 `65532:65532`, 읽기 전용 rootfs, 8080 포트 설정은 유지합니다. 빌드할 때는 인증 파일이 없는 별도 context를 사용합니다.
+
+```bash
+# 실제 레지스트리에서 확인한 Application 이미지 주소로 바꿔 입력
+export LP_APP_IMAGE='registry.your-domain.example/liveprobe/application@sha256:<실제-digest>'
+python3 scripts/render-application-deploy.py --image "$LP_APP_IMAGE" \
+  --out .e2e-tmp/install-review/application
+python3 scripts/render-application-deploy.py --image "$LP_APP_IMAGE" \
+  --out .e2e-tmp/install-review/application --check
+```
+
+렌더러의 기본값은 `local-path`, `traefik`, `application.liveprobe.localhost`입니다. **기본 플랫폼 overlay의 값이 Application에 자동 전파되지 않습니다.** 자신의 StorageClass, Ingress/TLS, ingress controller namespace/라벨, registry, DNS와 egress에 맞게 별도 overlay/렌더러를 조정합니다. 생성 결과를 수동 편집했다면 원본 렌더러의 `--check`와 일치하지 않으므로 배포용 패치와 원본을 구분합니다.
+
+필수 환경 변수는 다음과 같습니다. 생성된 `30-api.yaml`에서 확인할 수 있습니다.
+
+| 변수 | 내용 |
+|---|---|
+| `APPLICATION_DATABASE_URL_FILE` | 전용 DB URL 파일 |
+| `APPLICATION_DATABASE_ISOLATED` | `true` |
+| `APPLICATION_IDENTITY_FILE` / `APPLICATION_MACHINE_IDENTITY_FILE` | 서로 다른 사람/실행기 인증 JSON |
+| `APPLICATION_PROFILES_FILE` / `APPLICATION_CATALOG_FILE` | API와 호스트 실행기가 동일하게 사용하는 프로필·카탈로그 |
+| `APPLICATION_CODEX_HOME` | `/var/lib/liveprobe/application-codex` 전용 쓰기 가능한 인증 홈 |
+| `APPLICATION_WORKER_ENABLED` | `true` |
+| `APPLICATION_MODEL`, `APPLICATION_<역할>_MODEL`, `APPLICATION_<역할>_EFFORT` | 실제 사용 가능한 모델·추론 강도. 공통 모델을 바꾸면 역할별 override도 확인 |
+
+신규 Secret 세 개는 다음 도구로 준비합니다. 기존 Secret이 있거나 조회 결과가 불명확하면 의도적으로 중단하는 **최초 생성 전용** 도구입니다.
+
+```bash
+python3 scripts/provision-application-secrets.py --context "$LP_CONTEXT" --dry-run
+# 실제 신규 생성. 생성되는 토큰 경로만 출력되며 값은 출력하지 않음.
+python3 scripts/provision-application-secrets.py --context "$LP_CONTEXT"
+```
+
+기본 사람 식별자 `hwany-tester`, `hwany-approver`는 예제 이름이므로 새 설치자는 생성 전 스크립트의 `SUBJECTS`와 운영 정책을 확인하여 자신의 식별자로 바꿉니다. 실행기 주체는 `application-runner`입니다. 사람과 실행기의 권한·토큰은 서로 대체하지 않습니다. 생성된 `.e2e-tmp/application/*.token`은 저장소에 올리지 않습니다.
+
+환경에 맞춘 최종 매니페스트를 서버 dry-run 후 설치합니다. 아래 경로가 실제로 검토·수정한 배포 파일을 가리키는지 확인합니다.
+
+```bash
+LP_APP_MANIFEST_DIR='.e2e-tmp/install-review/application'
+kubectl --context "$LP_CONTEXT" create --dry-run=server -f "$LP_APP_MANIFEST_DIR"
+# 충돌·권한·설정 확인이 끝난 신규 설치에서만 실행
+kubectl --context "$LP_CONTEXT" create -f "$LP_APP_MANIFEST_DIR"
+kubectl --context "$LP_CONTEXT" -n liveprobe-system rollout status \
+  statefulset/liveprobe-application-db --timeout=300s
+kubectl --context "$LP_CONTEXT" -n liveprobe-system rollout status \
+  deployment/liveprobe-application-api --timeout=300s
+```
+
+최초 설치에 사용하는 `kubectl create`가 부분 성공하면 이미 만든 자원·Secret·PVC를 조사하고 보존합니다. 실패했다고 Secret을 삭제하거나 무조건 `apply`로 덮어쓰지 않습니다. 구체적인 Secret 키·권한 목록은 [Application 배포 계약](deploy/application/README.md)에 있습니다.
+
+인증 PVC는 UID 65532가 쓰고 갱신할 수 있도록 스토리지 권한을 미리 준비합니다. API Pod가 시작된 후 그 전용 경로에 본인 계정으로 로그인할 수 있습니다.
+
+```bash
+kubectl --context "$LP_CONTEXT" -n liveprobe-system exec -it \
+  deployment/liveprobe-application-api -c api -- \
+  env CODEX_HOME=/var/lib/liveprobe/application-codex \
+  codex -c 'cli_auth_credentials_store="file"' login --device-auth
+```
+
+인증 홈 쓰기 실패를 컨테이너 전체 root 실행으로 우회하지 않습니다. `APPLICATION_CODEX_HOME`만 설정했다고 실제 로그인까지 완료된 것은 아닙니다.
+
+### 9.2 호스트 실행기를 계속 실행해야 함
+
+Application의 수집·시험·빌드·배포 실행기는 **호스트 프로세스**입니다. API Pod만 Ready여도 실행기가 없으면 `/api/application/v1/readyz`의 `runner`가 false입니다. 터미널 종료나 재부팅 후에도 동작하도록 자신이 쓰는 서비스 관리자에 실행기와 연결 프로세스를 등록합니다. 실행 상태 디렉터리는 임시 폴더가 아닌 영속 경로로 보존합니다.
+
+다음 두 연결은 별도 터미널/서비스로 유지합니다.
+
+```bash
+# Application API를 호스트에 연결
+kubectl --context "$LP_CONTEXT" -n liveprobe-system port-forward \
+  --address 127.0.0.1 service/liveprobe-application-api 18081:8080
+```
+
+```bash
+# 실행기 전용 SA의 제한된 신원으로만 Kubernetes 연결
+# 설치자는 해당 SA impersonation 권한이 있어야 함. 관리자 신원 proxy로 대체하지 않음.
+kubectl --context "$LP_CONTEXT" \
+  --as=system:serviceaccount:liveprobe-system:liveprobe-application-runner \
+  proxy --address=127.0.0.1 --port=18082
+```
+
+`LP_APP_STATE` 아래 `runtime.json`을 준비합니다. 다음은 **형식 예시**이며 digest·소켓 경로·`platform`을 실제 환경으로 바꿉니다. 현재 실행기는 platform을 생략하면 `linux/arm64`를 선택하므로 amd64 노드에서는 반드시 명시합니다.
+
+```json
+{
+  "kube_api": "http://127.0.0.1:18082",
+  "docker_host": "unix:///var/run/docker.sock",
+  "platform": "linux/amd64",
+  "test_images": {
+    "java": "your-java-test-image@sha256:<실제-digest>",
+    "python": "your-python-test-image@sha256:<실제-digest>",
+    "node": "your-node-test-image@sha256:<실제-digest>",
+    "domain": "your-domain-test-image@sha256:<실제-digest>"
+  },
+  "database_image": "your-postgres-test-image@sha256:<실제-digest>"
+}
+```
+
+시험 이미지는 프로필이 요구하는 Maven·Node·Python 의존성을 미리 갖춰야 합니다. 실행기는 격리된 환경에서 시험하며 테스트 중 인터넷 다운로드에 기대지 않습니다. 원본 서비스의 배포 이미지 digest도 호스트에서 실제 관측 가능해야 합니다.
+
+```bash
+export LP_APP_STATE="$HOME/.local/state/liveprobe-application"
+mkdir -p "$LP_APP_STATE"
+chmod 700 "$LP_APP_STATE"
+# 위 형식을 참고해 $LP_APP_STATE/runtime.json을 먼저 준비
+
+python3 scripts/liveprobe-application-runner.py run \
+  --state-dir "$LP_APP_STATE" --runtime-config "$LP_APP_STATE/runtime.json" \
+  --api-url http://127.0.0.1:18081 \
+  --machine-token-file .e2e-tmp/application/application-runner.token
+```
+
+다른 터미널/서비스에서 지속 감지도 실행합니다.
+
+```bash
+python3 scripts/liveprobe-application-runner.py watch \
+  --state-dir "$LP_APP_STATE" --runtime-config "$LP_APP_STATE/runtime.json" \
+  --api-url http://127.0.0.1:18081 \
+  --machine-token-file .e2e-tmp/application/application-runner.token
+```
+
+카탈로그가 바뀌면 API ConfigMap과 호스트 파일을 같은 내용으로 갱신합니다. `image_repository`와 `images.json` 주소도 일치해야 합니다. source→수정 전 실패→수정 후 통과→회귀 시험→실제 이미지→dev 업무 검증을 확인한 뒤 사용자 시험과 prd 승인으로 진행합니다.
+
+**다중 노드·원격 클러스터 제한:** 현재 Application 실행기는 로컬 Docker의 이미지·RepoDigest 관측과 공유 이미지 저장소 경로를 전제로 합니다. 새 빌드 결과를 임의의 레지스트리에 자동 게시하고 모든 원격 노드에 반입하는 범용 단계는 제공하지 않습니다. 이 배포 경로를 별도로 구현·검증하기 전에는 “외부 Kubernetes에서 자동 코드 수정·배포까지 설치 완료”로 판단하면 안 됩니다. 관제 API 설치와 이 실행기 이식 작업은 구분합니다.
+
+## 10. 설치 완료 확인
+
+도메인을 자신의 값으로 바꾸고, HTTPS를 구성했다면 `https://`로 확인합니다. `/healthz`만 성공하거나 화면만 뜨는 것은 완료 기준이 아닙니다.
+
+```bash
+kubectl --context "$LP_CONTEXT" -n liveprobe-system get pods,pvc
+kubectl --context "$LP_CONTEXT" -n liveprobe-observability get pods,pvc
+
+curl --fail http://liveprobe.your-domain.example/api/healthz
+curl --fail http://liveprobe.your-domain.example/api/readyz
+curl --fail http://liveprobe.your-domain.example/api/status
+curl --fail http://liveprobe.your-domain.example/api/policy/profile
+curl --fail http://liveprobe.your-domain.example/api/llm/accounts
+
+# Application을 설치했다면
+curl --fail http://application.your-domain.example/api/application/v1/healthz
+curl --fail http://application.your-domain.example/api/application/v1/readyz
+```
+
+- [ ] API·DB·관측 Pod가 준비되고 PVC가 Bound다.
+- [ ] K8s `/readyz`에서 DB와 백그라운드 처리기가 준비됐다. 실제 AI 역할 호출도 성공했다.
+- [ ] 지도에 자신의 대상 서비스가 표시되고 지표·로그·경고·네트워크 흐름의 수집 여부가 구분된다.
+- [ ] 활성 감시·실행 대상이 dev/prd 또는 의도한 namespace이며 stg에 신규 처리를 하지 않는다.
+- [ ] 실행 중 진행 상황과 공개 답변이 화면에 도착하고, 원문은 사용자가 펼칠 때만 표시된다.
+- [ ] 무해한 dev 시험 한 건에서 감지→분석→허용된 조치/정상 확인→검증→이력 저장을 확인했다.
+- [ ] 실제 권한·데이터 안전 경계는 자동으로 넘지 않으며, API 읽기 계정은 쓰기가 거부된다.
+- [ ] Application을 설치했다면 `database`, `human_identity`, `machine_identity`, `profiles`, `runner`, `model`이 모두 준비됐다. 실제 역할 호출과 dev 빌드·업무 검증도 성공했다.
+- [ ] Application의 prd 승인은 사용자 시험과 별도 승인 없이 진행되지 않는다.
+- [ ] 재시작 후 DB 이력·인증 갱신·실행기 상태가 보존된다.
+
+이 저장소의 과거 시험 수치나 개발 클러스터의 정상 상태는 **자신의 설치 완료 증거를 대신하지 않습니다.**
+
+## 11. 자주 막히는 지점
+
+| 증상 | 먼저 확인할 것 |
+|---|---|
+| `ImagePullBackOff` | 개발자 로컬 digest를 그대로 썼는지, registry 권한·아키텍처·노드 접근 가능 여부 |
+| PVC Pending / 인증 홈 쓰기 실패 | StorageClass, 용량, 접근 모드, Application UID 65532의 볼륨 권한 |
+| API Pod 시작 실패 | DB Secret 외에 `rollback-ca`, `rollback-action-grant`가 준비됐는지 |
+| 롤백이 거부됨 | TLS SAN·CA·만료, Webhook caBundle, immutable 이미지 정책, 승인 grant, 대상 범위 |
+| Ingress는 열리는데 API 403 | `LIVEPROBE_ALLOWED_HOSTS`, 웹/API 동일 출처, 프록시 Host 헤더 |
+| 로그인했는데 AI가 동작하지 않음 | 실제 사용하는 PVC 인증 홈, 모델 권한·CLI 버전, 인증 갱신, 계정 제한·egress. 인증 파일 존재만으로 성공 판정하지 않음 |
+| 설치 후 모든 사건이 이관됨 | 모델 오류, 근거 수집 실패, 실행기 토큰·RBAC·대상 정책 누락, 실제 안전 경계 여부 |
+| Application `/readyz` 503 | 응답의 `checks`를 확인. `runner:false`이면 호스트 실행기·API 포워딩·전용 proxy·카탈로그 일치 여부 점검 |
+| 지표/로그가 비어 있음 | 수집기와 대상 namespace/라벨, endpoint URL, NetworkPolicy, scrape 규칙 |
+| 네트워크 지도 미관측 | Hubble 호환 Relay 설치·주소·프로토콜·수집기 권한. 미관측을 장애 없음으로 해석하지 않음 |
+| Git pull 후 화면이 그대로 | 소스 pull은 실행 이미지 교체가 아님. 빌드·digest 갱신·배포·rollout 확인 필요 |
+| 과거 기록의 원문 파일 링크가 없음 | 운영 원본·스크린샷·개인 작업 기록은 공개본에서 제외됨. 소스 결함과 구분 |
+
+진단을 공유할 때 Secret 본문, `auth.json`, 원본 Pod 환경 변수, DB URL을 붙이지 않습니다. 필요한 상태·오류 분류만 비밀값을 제거해 공유합니다.
+
+## 12. 업데이트·백업·개발
+
+### 업데이트와 데이터 보존
+
+1. 자신의 overlay·이미지 digest·모델 설정·인증/실행기 설정을 보존합니다.
+2. DB와 영속 볼륨을 백업하고 복구 가능성을 확인합니다. 기존 자료는 삭제하지 않습니다.
+3. `git pull --ff-only origin main` 후 변경 범위와 마이그레이션을 확인합니다.
+4. 새 이미지를 빌드·게시하고 실제 digest를 overlay에 반영합니다. 롤백 승인 이미지는 별도로 검토합니다.
+5. 변경 리소스만 검토·적용하고 rollout, `/readyz`, UI, AI 호출, 업무 동작을 확인합니다.
+
+K8s API는 시작 때 DB 마이그레이션을 실행하고 Application은 독립 저장소를 초기화합니다. 이미지 원복만으로 DB 스키마 원복까지 보장하지 않습니다. `scripts/uninstall.sh`나 namespace/PVC 삭제는 일반적인 업그레이드·복구 방법이 아닙니다.
+
+`deploy/retired/`의 Grafana·stg 자료는 보존/복구 참고용입니다. 현재 설치 경로에 임의로 다시 포함하지 않습니다. Docker 런타임 패치 파일도 특정 개발 환경의 장애 대응 기록이며 다른 Docker 버전에 그대로 적용하는 설치 단계가 아닙니다.
+
+### 로컬 개발과 검증
+
+```bash
+(cd dashboard && npm ci && npm test && npm run build)
+(cd liveprobe && uv sync --frozen --group dev)
+
+# 운영 DB가 아닌 CREATEDB 권한을 가진 전용 시험 DB를 먼저 준비
+# LIVEPROBE_TEST_DB_ADMIN에는 그 시험 DB의 연결을 보호된 환경으로 설정
+(cd liveprobe && uv run pytest)
+```
+
+운영 자료를 공개하지 않았으므로 `docs/evidence`, `.e2e-tmp` 원본에 의존하는 과거 결과 재생성·일부 회귀 시험은 clean checkout에서 추가 자료가 필요할 수 있습니다. 실패를 피하려고 운영 DB를 시험 DB로 연결하지 않습니다. `chaos/`, `scripts/eval-real.sh`, fixture 배포 명령은 실제 장애·비용을 발생시킬 수 있으므로 설치 확인 과정에서 자동 실행하지 않습니다.
+
+### 참고 문서와 소스
+
+- [공개 범위와 기존 저장소 연동](docs/operations/github-repositories.md) · [보안 경계](SECURITY.md)
+- [플랫폼 파라미터 연결](deploy/components/platform/kustomization.yaml) · [이식 예제](deploy/overlays/portable-example/kustomization.yaml)
+- [Application 배포 상세](deploy/application/README.md) · [업무 기반](docs/operations/samsung-infra.md)
+- [시스템 구조도](docs/diagrams/liveprobe_agent.drawio) · [초기 과제계획서](과제계획서.md)
+- [개발 환경 실제 운영 기록](docs/operations/liveprobe-real-operation-dev-prd-2026-11-13.md) · [조기 이관 개선](docs/operations/liveprobe-premature-handoff-2026-11-14.md)
+
+초기 과제계획서는 초안입니다. 현재 동작은 소스·배포 설정·검증 기록을 함께 확인하세요. **이 README 변경은 설치 설명을 정리한 것이며 클러스터를 새로 배포하거나 기존 실행 상태를 바꾸지 않습니다.**
