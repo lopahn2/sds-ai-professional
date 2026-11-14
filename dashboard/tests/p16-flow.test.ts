@@ -66,7 +66,7 @@ test('연결 문구는 인접 깊이의 빈 공간에만 보이고 어두운 바
   assert.equal(edges[3].sourceHandle, 'st');
   assert.equal(edges[3].targetHandle, 'tb');
   for (const edge of edges) {
-    assert.equal(edge.labelBgStyle?.fill, '#0c1420');
+    assert.equal(edge.labelBgStyle?.fill, '#11181c');
     assert.ok(Number(edge.labelStyle?.fontSize) >= 12);
   }
 });

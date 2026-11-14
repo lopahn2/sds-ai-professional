@@ -231,6 +231,17 @@ function Room({ id }: { id: string }) {
     }),
     ...talk.map(e => ({ key: `event-${e.seq}`, t: timed ? Date.parse(e.at) : steps.length + e.seq, el: <EventEntry e={e} key={`event-${e.seq}`} /> })),
   ].sort((a, b) => a.t - b.t);
+  // 운영자 결정이 없으면 멈춰 있는 상태에서는 결정 카드까지 한 번에 데려간다(좁은 화면에서는 대화 탭으로 전환).
+  const decisionNeeded = !snapshot && (approvals.length > 0 || (i.status === 'handed_off' && !i.handoff?.claimed_by));
+  const jumpToDecision = () => {
+    setTab('chat');
+    window.requestAnimationFrame(() => {
+      const card = feed.current?.querySelector<HTMLElement>('.action-card, .handoff-card');
+      if (!card) return;
+      card.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      card.querySelector<HTMLElement>('button:not(:disabled), summary')?.focus({ preventScroll: true });
+    });
+  };
   return <div className={`incident-room tab-${tab}${snapshot ? ' snapshot-view' : ''}`}>
     <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span><LevelBadge value={i.severity_level} /><StatusBadge value={i.status} recorded={snapshot} recoveryKind={i.recovery_kind} /><h1>장애 관제실</h1><span className="headline-place">{placeKo(i.environment, i.system, null, i.namespace)}</span><span className="headline-facts">{!recordView && <span>{age(i.created_at)} 경과</span>}{i.origin && <span className={`badge ${i.origin === 'evaluation' ? 'info' : ''}`}>{i.origin === 'evaluation' ? '평가 실행' : '출처 미확인'}</span>}</span></div>
       <h2>{i.workload} · {incidentSymptom(i)}</h2>
@@ -240,7 +251,7 @@ function Room({ id }: { id: string }) {
         <p className="record-times"><span>감지 {result.detected}</span><span>{result.timeLabel} {result.at}</span>{result.duration && <span>{result.duration}</span>}</p>
       </section>}
       {snapshot ? <div className="record-notice" role="note"><strong>저장 당시 · {stage?.label}</strong> {result ? '' : `· 감지 ${whenKo(i.created_at)} `}· 읽기 전용 표본</div>
-        : (!result || i.status === 'handed_off') && <div className="headline-next"><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>다음</b> {next}</p></div>}
+        : (!result || i.status === 'handed_off') && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
     </section>
     {(narrative.error || commands.error || detail.error || eventError) && <div className="room-error"><ErrorBox>{narrative.error ? '상황 정보' : commands.error ? '지시 목록' : detail.error ? '조치 승인 정보' : '실행 기록'} 갱신에 실패했습니다. 마지막으로 받은 내용을 표시합니다.</ErrorBox><button className="btn sm" onClick={reload}>다시 불러오기</button></div>}
     <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '흐름'], ['chat', '대화']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>

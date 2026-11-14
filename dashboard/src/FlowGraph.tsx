@@ -26,7 +26,7 @@ const StageNode = memo(function StageNode({ id, data }: NodeProps) {
 });
 const nodeTypes = { step: StageNode };
 const MIN_READABLE = .6;
-const edgeColors: Record<string, string> = { flow: '#a0b2ca', escalate: '#ffd08a', reroute: '#d0b1ff', steer: '#a9baff', verify: '#85dfb5' };
+const edgeColors: Record<string, string> = { flow: '#b6c0c4', escalate: '#f3ca68', reroute: '#80d9cc', steer: '#b9c8da', verify: '#89dcb0' };
 /** Labels only occupy the gap between adjacent rows; skipped/parallel paths retain their full accessible description. */
 function analysisFlowEdges(flow: Narrative['flow'], positions = new Map(layoutFlow(flow.nodes).map(p => [p.id, p])), snapshot = false): Edge[] {
   const byId = new Map(flow.nodes.map(n => [n.id, n]));
@@ -39,7 +39,7 @@ function analysisFlowEdges(flow: Narrative['flow'], positions = new Map(layoutFl
     const label = adjacent && e.kind !== 'flow' ? clean : undefined;
     return { ...e, ...flowHandles(a, b), ariaLabel: `${EDGE_KIND_KO[e.kind] ?? '연결'}${clean ? ` · ${clean}` : ''}: ${flowTitle(byId.get(e.source)!)} → ${flowTitle(byId.get(e.target)!)}`, type: 'smoothstep', animated: !snapshot && byId.get(e.target)?.status === 'running', label,
       style: { stroke: color, strokeWidth: e.kind === 'flow' ? 1.5 : 2, strokeDasharray: planned ? '5 5' : e.kind === 'reroute' ? '9 4' : e.kind === 'steer' ? '3 3' : undefined },
-      labelStyle: { fill: color, fontSize: 12, fontWeight: 500 }, labelShowBg: true, labelBgPadding: [4, 2], labelBgBorderRadius: 4, labelBgStyle: { fill: '#0c1420' }, markerEnd: { type: MarkerType.ArrowClosed, color }, focusable: false };
+      labelStyle: { fill: color, fontSize: 12, fontWeight: 500 }, labelShowBg: true, labelBgPadding: [4, 2], labelBgBorderRadius: 4, labelBgStyle: { fill: '#11181c' }, markerEnd: { type: MarkerType.ArrowClosed, color }, focusable: false };
   });
 }
 function Canvas({ flow, selected, choose, snapshot }: { flow: Narrative['flow']; selected: string | null; choose: (id: string) => void; snapshot: boolean }) {
@@ -63,7 +63,7 @@ function Canvas({ flow, selected, choose, snapshot }: { flow: Narrative['flow'];
     return { nodes, edges: analysisFlowEdges(flow, positions, snapshot) };
   }, [flow, selected, choose, snapshot]);
   return <div className="flow-canvas" aria-label={snapshot ? '저장 당시 에이전트 흐름도' : '실시간 에이전트 흐름도'}><ReactFlow nodes={converted.nodes} edges={converted.edges} nodeTypes={nodeTypes} fitView fitViewOptions={{ padding: .06, maxZoom: 1 }} minZoom={.15} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} deleteKeyCode={null} ariaLabelConfig={GRAPH_ARIA} proOptions={{ hideAttribution: true }}><Background gap={20} size={1} color="#28384d" /></ReactFlow>
-    <GraphControls label="흐름"><span>실선 진행</span><span className="warn-text">주황 승격</span><span className="reroute-text">보라 경로 변경</span><span className="accent-text">파란 점선 지시</span><span className="ok-text">초록 검증</span></GraphControls></div>;
+    <GraphControls label="흐름"><span>실선 진행</span><span className="warn-text">주황 승격</span><span className="reroute-text">청록 경로 변경</span><span className="accent-text">파란 점선 지시</span><span className="ok-text">초록 검증</span></GraphControls></div>;
 }
 /** Vertical analysis flow (signal at the top, outcome at the bottom). Every node is a button: the keyboard entry to each step. */
 export function FlowGraph({ flow, selected, onSelect, snapshot = false }: { flow: Narrative['flow']; selected: string | null; onSelect: (id: string | null) => void; snapshot?: boolean }) {

@@ -1,0 +1,213 @@
+/* P20 2차 · 장애 관제실 내부를 naria 디자인 시스템의 형태로 다시 그린다.
+   마크업과 클래스는 그대로 두고(동작·시험 계약 유지) 표면·위계·상태 표현만 바꾼다.
+   원칙: 흰 카드는 옅은 회색 바탕 위에, 상태는 점+문구로, 색 띠(왼쪽 굵은 선)는 쓰지 않는다. */
+.nds-theme .incident-room { --room-gap: 12px; background: var(--nds-surface); }
+
+/* ── 상황 요약 */
+.nds-theme .incident-room .headline { padding: 12px 24px 0; }
+.nds-theme .incident-room .headline-top { font-size: 12px; gap: 8px; }
+.nds-theme .incident-room .headline-top > a { color: var(--nds-muted); }
+.nds-theme .incident-room .headline-top > a:hover { color: var(--nds-accent); }
+.nds-theme .incident-room .headline h1 { font-size: 12px; letter-spacing: 0; font-weight: 400; color: var(--nds-muted); }
+.nds-theme .incident-room .headline h2 { font-size: 20px; line-height: 1.4; letter-spacing: -0.02em; margin: 8px 0 4px; }
+.nds-theme .incident-room .headline-impact { font-size: 14px; color: var(--nds-muted); padding-bottom: 12px; }
+.nds-theme .incident-room .headline-facts { font-size: 12px; }
+.nds-theme .incident-room .record-result { padding: 10px 0; font-size: 14px; }
+.nds-theme .incident-room .headline-next { padding-bottom: 12px; font-size: 13px; }
+.nds-theme .incident-room .headline-next.needs-decision { margin: 0 0 12px; padding: 10px 14px; }
+
+/* ── 두 작업 영역 */
+.nds-theme .incident-room .room-pane { border-right-color: var(--nds-border); }
+.nds-theme .incident-room .pane-heading { min-height: 48px; padding: 8px 16px; background: var(--nds-surface); }
+.nds-theme .incident-room .pane-heading h2 { font-size: 14px; font-weight: 600; }
+.nds-theme .incident-room .pane-heading .faint { font-size: 12px; }
+.nds-theme .incident-room .pane-index { font: 11px/1 var(--nds-mono); padding: 4px 6px; border-radius: var(--nds-radius-small); background: var(--nds-subtle); border: 0; color: var(--nds-muted); }
+.nds-theme .incident-room .room-tabs button { font-size: 14px; min-height: 44px; }
+.nds-theme .incident-room .room-tabs button[aria-pressed="true"] { font-weight: 600; }
+.nds-theme .incident-room .room-error { background: var(--nds-danger-soft); }
+
+/* ── 대화 영역: 옅은 바탕 위의 카드 */
+.nds-theme .incident-room .chat-pane { background: var(--nds-canvas); }
+.nds-theme .incident-room .chat-feed { padding: 16px; gap: var(--room-gap); }
+/* 세로로 쌓이는 카드는 영역이 좁아도 줄어들지 않는다(잘린 결정 카드는 승인 버튼을 가린다). */
+.nds-theme .incident-room .chat-feed > * { flex-shrink: 0; }
+.nds-theme .incident-room .chat-feed > .disclosure { border-top: 0; padding: 0 4px; }
+.nds-theme .incident-room .disclosure > summary { font-size: 13px; color: var(--nds-accent); min-height: 36px; }
+.nds-theme .incident-room .chat-intro p { font-size: 13px; }
+.nds-theme .incident-room .chat-event { padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border-color: var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .chat-event summary { font-size: 13px; }
+.nds-theme .incident-room .chat-event time { font: 12px var(--nds-mono); }
+.nds-theme .incident-room .chat-status { font-size: 12px; }
+
+/* ── 단계 카드 */
+.nds-theme .incident-room .step-card {
+  grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 10px;
+  padding: 14px 16px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card);
+  background: var(--nds-surface); box-shadow: var(--nds-shadow); scroll-margin: 12px;
+}
+.nds-theme .incident-room .step-card > * { grid-column: 1 / -1; min-width: 0; }
+.nds-theme .incident-room .step-card > .step-head { grid-column: 1; grid-row: 1; }
+.nds-theme .incident-room .step-card > .step-actions { grid-column: 2; grid-row: 1; align-self: start; flex-wrap: nowrap; gap: 2px; }
+.nds-theme .incident-room .step-card:focus-visible { box-shadow: 0 0 0 3px var(--nds-focus); }
+.nds-theme .incident-room .step-card.status-running { border-color: var(--nds-accent); box-shadow: 0 0 0 3px var(--nds-accent-soft); }
+.nds-theme .incident-room .step-card.status-failed { border-color: var(--nds-danger); }
+.nds-theme .incident-room .step-card.status-escalated { border-color: color-mix(in srgb, var(--nds-warning) 55%, var(--nds-surface)); }
+.nds-theme .incident-room .step-card.status-planned, .nds-theme .incident-room .step-card.status-skipped { border-style: dashed; background: transparent; box-shadow: none; }
+.nds-theme .incident-room .step-card.type-steer { background: var(--nds-accent-soft); border-color: transparent; box-shadow: none; }
+.nds-theme .incident-room .step-card.flash { border-color: var(--nds-accent); box-shadow: 0 0 0 3px var(--nds-accent-soft); }
+.nds-theme .incident-room .step-head { gap: 8px; min-height: 32px; }
+/* 상태는 색 띠 대신 제목 앞의 점으로 알린다(문구는 배지에 있다). */
+.nds-theme .incident-room .step-head::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--nds-strong-border); }
+.nds-theme .incident-room .status-done > .step-head::before { background: var(--nds-success); }
+.nds-theme .incident-room .status-running > .step-head::before { background: var(--nds-accent); animation: room-pulse 1.6s var(--nds-ease) infinite; }
+.nds-theme .incident-room .status-failed > .step-head::before { background: var(--nds-danger); }
+.nds-theme .incident-room .status-escalated > .step-head::before { background: var(--nds-warning); }
+.nds-theme .incident-room .status-planned > .step-head::before, .nds-theme .incident-room .status-skipped > .step-head::before { background: transparent; border: 1.5px dashed var(--nds-strong-border); }
+@keyframes room-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--nds-accent) 45%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+.nds-theme .incident-room .step-kind { font-size: 12px; font-weight: 600; padding: 2px 8px; border: 0; border-radius: var(--nds-radius-small); background: var(--nds-subtle); color: var(--nds-muted); }
+.nds-theme .incident-room .step-head h3 { font-size: 15px; font-weight: 600; line-height: 1.4; }
+.nds-theme .incident-room .step-time { font: 12px var(--nds-mono); color: var(--nds-muted); }
+.nds-theme .incident-room .step-summary { font-size: 14px; line-height: 1.65; color: var(--nds-text); }
+.nds-theme .incident-room .step-lead { font-size: 15px; line-height: 1.65; }
+.nds-theme .incident-room .step-body { gap: 10px; }
+.nds-theme .incident-room .step-body h4 { font-size: 13px; color: var(--nds-muted); font-weight: 600; margin-top: 4px; }
+.nds-theme .incident-room .step-kv { gap: 6px 16px; }
+.nds-theme .incident-room .kv dt { color: var(--nds-muted); }
+/* 펼치기·원문 보기: 카드마다 반복되므로 눈에 덜 띄는 보조 버튼으로 낮춘다. */
+.nds-theme .incident-room .step-actions .btn.sm { min-height: 32px; padding: 4px 10px; font-size: 12px; font-weight: 600; border-color: transparent; background: transparent; color: var(--nds-muted); }
+.nds-theme .incident-room .step-actions .btn.sm:hover:not(:disabled) { background: var(--nds-subtle); color: var(--nds-text); }
+
+/* 근거·판단·역할 목록 */
+.nds-theme .incident-room .evidence-rows { gap: 8px; }
+.nds-theme .incident-room .evidence-rows > li { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); gap: 4px; }
+.nds-theme .incident-room .evidence-rows > li.failed { border-left-width: 1px; border-color: color-mix(in srgb, var(--nds-danger) 40%, var(--nds-surface)); background: var(--nds-danger-soft); }
+.nds-theme .incident-room .evidence-row-head { gap: 8px; }
+.nds-theme .incident-room .evidence-row-head > b { font-weight: 600; }
+.nds-theme .incident-room .evidence-row-head > span:not(.badge) { font: 12px var(--nds-mono); color: var(--nds-muted); overflow-wrap: anywhere; min-width: 0; }
+.nds-theme .incident-room .evidence-rows .link-btn { justify-self: start; font-size: 13px; }
+.nds-theme .incident-room .decision-steps { gap: 8px; }
+.nds-theme .incident-room .decision-steps > li, .nds-theme .incident-room .role-list > li { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .role-list > li > span { font-size: 12px; color: var(--nds-muted); }
+
+/* 실행 내용과 원문 */
+.nds-theme .incident-room .execution-stream { margin: 0; padding: 12px 14px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .execution-head > b, .nds-theme .incident-room .execution-head > strong { font-size: 13px; font-weight: 600; }
+.nds-theme .incident-room .execution-stage { font-size: 14px; color: var(--nds-text); }
+.nds-theme .incident-room .execution-records { font-size: 13px; }
+.nds-theme .incident-room .execution-records time, .nds-theme .incident-room .execution-last { font: 12px var(--nds-mono); color: var(--nds-muted); }
+.nds-theme .incident-room .execution-output { font-size: 14px; padding: 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-surface); }
+.nds-theme .incident-room .raw-text, .nds-theme .incident-room pre.json { font: 12px/1.7 var(--nds-mono); color: var(--nds-text); }
+.nds-theme .incident-room .disclosure-body .raw-text, .nds-theme .incident-room .command-results .raw-text { padding: 12px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-subtle); }
+.nds-theme .incident-room .raw-inline, .nds-theme .incident-room .mono, .nds-theme .incident-room code { font-family: var(--nds-mono); font-size: 12px; }
+
+/* 대화 말풍선 */
+.nds-theme .incident-room .step-thread { gap: 8px; border-top: 1px solid var(--nds-border); padding-top: 12px; }
+.nds-theme .incident-room .operator-bubble { max-width: min(92%, 560px); padding: 10px 14px; border-radius: 16px 16px 4px 16px; background: var(--nds-accent-soft); color: var(--nds-text); font-size: 14px; }
+.nds-theme .incident-room .operator-bubble small, .nds-theme .incident-room .ack-bubble small { font-size: 12px; color: var(--nds-muted); opacity: 1; }
+.nds-theme .incident-room .operator-bubble p, .nds-theme .incident-room .ack-bubble p { font-size: 14px; line-height: 1.65; margin: 4px 0 0; }
+.nds-theme .incident-room .ack-bubble { max-width: min(92%, 560px); padding: 10px 14px; border-radius: 16px 16px 16px 4px; background: var(--nds-canvas); border: 1px solid var(--nds-border); font-size: 14px; }
+.nds-theme .incident-room .chat-feed > .ack-bubble { background: var(--nds-surface); }
+.nds-theme .incident-room .ack-bubble .badge { margin-top: 8px; }
+.nds-theme .incident-room .steer-state { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--nds-accent); }
+.nds-theme .incident-room .steer-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+
+/* 단계 지시 입력 */
+.nds-theme .incident-room .step-chat { gap: 8px; border-top: 1px solid var(--nds-border); padding-top: 12px; }
+.nds-theme .incident-room .step-chat-target, .nds-theme .incident-room .step-chat-closed { font-size: 13px; color: var(--nds-muted); }
+.nds-theme .incident-room .step-chat-row { gap: 8px; }
+.nds-theme .incident-room .step-chat textarea { padding: 10px 12px; font-size: 14px; line-height: 1.5; min-height: 44px; background: var(--nds-surface); }
+.nds-theme .incident-room .step-chat .btn { min-height: 44px; padding: 8px 14px; }
+
+/* ── 결정 카드: 승인·인계·종료 */
+.nds-theme .incident-room .decision-card { margin: 0; padding: 0 16px 16px; gap: 12px; border-radius: var(--nds-radius-card); border: 1px solid color-mix(in srgb, var(--nds-warning) 45%, var(--nds-surface)); background: var(--nds-surface); box-shadow: var(--nds-shadow); font-size: 14px; overflow: hidden; }
+.nds-theme .incident-room .decision-card > header { margin: 0 -16px; padding: 10px 16px; background: var(--nds-warning-soft); border-bottom: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); }
+.nds-theme .incident-room .decision-card > header > b, .nds-theme .incident-room .decision-card > header > strong { font-size: 15px; font-weight: 600; }
+.nds-theme .incident-room .decision-card > :not(header):first-child { margin-top: 16px; }
+.nds-theme .incident-room .decision-card .kv { grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 14px; }
+.nds-theme .incident-room .handoff-card { background: var(--nds-surface); padding: 0 16px 16px; gap: 12px; }
+.nds-theme .incident-room .handoff-card > .btn.primary { min-height: 44px; min-width: 140px; }
+.nds-theme .incident-room .handoff-lead { font-size: 15px; line-height: 1.65; }
+.nds-theme .incident-room .next-steps { font-size: 14px; gap: 4px; }
+.nds-theme .incident-room .decision-table { gap: 6px 16px; }
+.nds-theme .incident-room .decision-table dt { font-weight: 400; color: var(--nds-muted); }
+.nds-theme .incident-room .close-card, .nds-theme .incident-room .closed-card { border-color: var(--nds-border); background: var(--nds-surface); }
+.nds-theme .incident-room .close-card > header, .nds-theme .incident-room .closed-card > header { background: var(--nds-subtle); border-bottom-color: var(--nds-border); }
+.nds-theme .incident-room .close-effects { font-size: 13px; color: var(--nds-muted); }
+.nds-theme .incident-room .close-reason { font-size: 13px; }
+.nds-theme .incident-room .close-reason textarea { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); padding: 10px 12px; font-size: 14px; }
+.nds-theme .incident-room .confirm-gate { gap: 12px; padding-top: 14px; border-top-color: var(--nds-border); }
+.nds-theme .incident-room .confirm-gate strong { font-size: 15px; font-weight: 600; }
+.nds-theme .incident-room .confirm-gate .btn { min-height: 44px; font-size: 14px; }
+
+/* ── 운영자 지시 카드 */
+.nds-theme .incident-room .command-card { padding: 16px; gap: 14px; border-radius: var(--nds-radius-card); border-color: var(--nds-border); background: var(--nds-surface); box-shadow: var(--nds-shadow); font-size: 14px; }
+.nds-theme .incident-room .command-card.status-succeeded { border-color: color-mix(in srgb, var(--nds-success) 45%, var(--nds-surface)); }
+.nds-theme .incident-room .command-card.status-failed, .nds-theme .incident-room .command-card.status-rejected { border-color: color-mix(in srgb, var(--nds-danger) 45%, var(--nds-surface)); }
+.nds-theme .incident-room .command-card .eyebrow { font: 12px var(--nds-mono); letter-spacing: 0; color: var(--nds-muted); }
+.nds-theme .incident-room .command-instruction { font-size: 16px; font-weight: 600; line-height: 1.5; padding-bottom: 14px; border-bottom-color: var(--nds-border); }
+.nds-theme .incident-room .command-card h4 { font-size: 13px; font-weight: 600; color: var(--nds-muted); }
+.nds-theme .incident-room .command-card .operations { padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: op; }
+.nds-theme .incident-room .command-card .operations > li { counter-increment: op; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-canvas); }
+.nds-theme .incident-room .command-card .operations > li::before { content: counter(op, decimal-leading-zero); grid-row: 1 / span 4; font: 12px/1.9 var(--nds-mono); color: var(--nds-muted); }
+.nds-theme .incident-room .command-card .operations > li > * { grid-column: 2; min-width: 0; }
+.nds-theme .incident-room .command-card .operations code { color: var(--nds-muted); overflow-wrap: anywhere; }
+.nds-theme .incident-room .dry-run { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .side-effects { gap: 10px; padding: 14px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
+.nds-theme .incident-room .side-effects h4 { color: var(--nds-warning); }
+.nds-theme .incident-room .side-effects .kv { grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 13px; }
+.nds-theme .incident-room .side-effects .notice { background: var(--nds-surface); border: 1px solid color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); font-size: 13px; }
+.nds-theme .incident-room .secret-form label { font: 12px var(--nds-mono); }
+.nds-theme .incident-room .secret-form input { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); min-height: 44px; padding: 8px 12px; }
+.nds-theme .incident-room .command-results p { font-size: 13px; }
+
+/* ── 하단 입력 */
+.nds-theme .incident-room .composer { padding: 12px 16px; gap: 8px; background: var(--nds-surface); border-top-color: var(--nds-border); }
+.nds-theme .incident-room .composer form { gap: 8px; }
+.nds-theme .incident-room .composer textarea { min-height: 52px; padding: 10px 12px; font-size: 14px; line-height: 1.5; }
+.nds-theme .incident-room .composer form .btn { min-height: 44px; padding: 8px 16px; }
+.nds-theme .incident-room .composer > small { font-size: 12px; color: var(--nds-muted); }
+.nds-theme .incident-room .composer-notice { font-size: 13px; color: var(--nds-success); }
+.nds-theme .incident-room .control-status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.nds-theme .incident-room .control-status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--nds-accent); }
+.nds-theme .incident-room .ctrl .btn.sm { min-height: 32px; padding: 4px 12px; font-size: 12px; }
+
+/* ── 원문 상세 패널 */
+.nds-theme .incident-room .detail-panel { background: var(--nds-surface); border-left-color: var(--nds-border); }
+.nds-theme .incident-room .detail-head { padding: 12px 16px; align-items: center; }
+.nds-theme .incident-room .detail-head .eyebrow { font-size: 12px; letter-spacing: 0; font-weight: 400; color: var(--nds-muted); margin-bottom: 2px; }
+.nds-theme .incident-room .detail-head h3 { font-size: 16px; font-weight: 600; }
+.nds-theme .incident-room .detail-scroll { padding: 16px; gap: 14px; }
+.nds-theme .incident-room .detail-scroll h4 { font-size: 13px; font-weight: 600; color: var(--nds-muted); }
+.nds-theme .incident-room .detail-scroll .kv { gap: 6px 16px; }
+.nds-theme .incident-room .detail-scroll .raw-text { font-size: 12px; padding: 12px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-subtle); }
+.nds-theme .incident-room .raw-item { border-top: 1px solid var(--nds-border); padding-top: 10px; margin-top: 10px; }
+.nds-theme .incident-room .raw-ref { font-size: 12px; color: var(--nds-muted); }
+.nds-theme .incident-room .raw-ref code, .nds-theme .incident-room .raw-ref time { font: 12px var(--nds-mono); }
+
+/* ── AI 분석 흐름 노드 */
+.nds-theme .flow-canvas .flow-step { border-radius: var(--nds-radius-control); box-shadow: 0 2px 6px #0000002e; }
+.nds-theme .flow-canvas .flow-step > button { border-radius: var(--nds-radius-control); }
+.nds-theme .flow-canvas .flow-step strong { font-weight: 600; }
+.nds-theme .flow-canvas .flow-state { padding: 0 6px; border-radius: var(--nds-radius-small); background: #11181c; }
+.nds-theme .flow-canvas .flow-step.selected { box-shadow: 0 0 0 3px #b9c8da40; outline: 0; }
+.nds-theme .graph-toolbar button { border-radius: var(--nds-radius-small); }
+
+@media (max-width: 1100px) {
+  .nds-theme .incident-room .headline { padding: 12px 16px 0; }
+  .nds-theme .incident-room .detail-panel { box-shadow: var(--nds-shadow-overlay); }
+}
+@media (max-width: 480px) {
+  .nds-theme .incident-room .chat-feed { padding: 12px; }
+  .nds-theme .incident-room .step-card { padding: 12px; }
+  /* 좁은 화면에서는 보조 버튼을 카드 아래로 내려 제목이 잘리지 않게 한다. */
+  .nds-theme .incident-room .step-card > .step-head { grid-column: 1 / -1; }
+  .nds-theme .incident-room .step-card > .step-actions { grid-column: 1 / -1; grid-row: auto; justify-content: flex-end; }
+  .nds-theme .incident-room .headline h2 { font-size: 17px; }
+  .nds-theme .incident-room .decision-card { padding: 0 12px 12px; }
+  .nds-theme .incident-room .decision-card > header { margin: 0 -12px; padding: 10px 12px; }
+  .nds-theme .incident-room .command-card { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nds-theme .incident-room .status-running > .step-head::before { animation: none; }
+  .nds-theme .incident-room .step-card.flash { animation: none; background: var(--nds-accent-soft); }
+}

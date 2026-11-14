@@ -40,7 +40,7 @@ function Canvas({ m, open, selected, fitKey }: { m: MapData; open: (id: string) 
     const abs = new Map(m.nodes.map(n => { const g = groupOffset(m.groups, n.groupId); return [n.id, { x: n.x + g.x, y: n.y + g.y, group: n.groupId }]; }));
     const pairs = new Set(m.edges.map(e => `${e.source}>${e.target}`));
     const edges: Edge[] = m.edges.map(e => {
-      const color = e.relation === 'declared_event' ? '#d0b1ff' : e.relation === 'declared_snapshot_api' ? '#85dfb5' : e.state === 'blocked' ? '#ff9da7' : e.state === 'degraded' ? '#ffd08a' : e.observed ? '#8ea5c4' : '#63758e';
+      const color = e.relation === 'declared_event' ? '#80d9cc' : e.relation === 'declared_snapshot_api' ? '#89dcb0' : e.state === 'blocked' ? '#ff9da6' : e.state === 'degraded' ? '#f3ca68' : e.observed ? '#b6c0c4' : '#707d83';
       const a = abs.get(e.source)!, b = abs.get(e.target)!;
       // Numbers are drawn only where they cannot land on a card or another label; the resource detail lists every connection.
       const label = !e.contract && groups.get(a.group)?.kind !== 'environment' && edgeLabelFits(a, b, pairs.has(`${e.target}>${e.source}`)) ? edgeText(e, { compact: true }) : undefined;
