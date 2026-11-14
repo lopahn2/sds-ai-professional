@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+*.log
+*.pid
+.env
+.env.*
+*.png
+*.jpg
+*.webp
+.DS_Store

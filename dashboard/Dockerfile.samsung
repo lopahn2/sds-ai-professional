@@ -1,0 +1,4 @@
+# 검증된 기존 nginx 런타임을 유지하고 공개 정적 번들만 교체한다.
+FROM liveprobe/dashboard@sha256:425bd952883c46b2ceb081d916a0bcfaddf26f70cfaf96150bc60c19e59be8d3
+RUN rm -rf /usr/share/nginx/html/*
+COPY dist/ /usr/share/nginx/html/

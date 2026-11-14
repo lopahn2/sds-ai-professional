@@ -1,0 +1,17 @@
+/* Incident disclosures and compact operator-first conversation. */
+.disclosure{min-width:0;max-width:100%;font-size:13px}
+.disclosure>summary{cursor:pointer;color:var(--accent);padding:7px 2px;min-height:34px;line-height:1.5;word-break:keep-all;overflow-wrap:anywhere}
+.disclosure>summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.disclosure-body{display:grid;gap:10px;min-width:0;padding:6px 0 10px}
+.disclosure-body .raw-text{margin:0;max-height:380px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 var(--mono);padding:10px;background:var(--surface);border:1px solid var(--line);border-radius:5px;min-width:0}
+.incident-room .chat-intro{padding:0;border:0;background:transparent;font-size:13px}
+.incident-room .chat-feed>.decision-card:first-child{margin-top:0}
+.incident-room .handoff-card{background:#fff8eb;padding:12px;gap:8px}
+.incident-room .handoff-card>.btn.primary{justify-self:start;min-width:120px;min-height:40px}
+.incident-room .headline-next{align-items:flex-start}
+.incident-room .chat-event{padding:8px 10px;border:1px solid var(--line);border-radius:6px;font-size:12px}
+.incident-room .chat-feed>.disclosure{border-top:1px solid var(--line);padding-top:4px}
+.execution-stage{font-size:13px;margin:8px 0;color:var(--text-2)}
+.execution-stream .disclosure{font-size:12px}
+.incident-room .step-actions .btn.sm{min-height:34px}
+@media(max-width:480px){.incident-room .headline{max-height:34dvh}.incident-room .headline h2{font-size:16px}.incident-room .headline-next{gap:4px}.incident-room .headline-next .stage-label{display:none}.incident-room .headline-next>p{font-size:12px}.incident-room .composer{padding:8px 12px}.incident-room .composer textarea{min-height:52px}.disclosure-body .raw-text{max-height:280px}}

@@ -1,0 +1,6 @@
+# Reuse inspected Java runtime; package/tests run offline with the explicit Maven cache first.
+ARG RUNTIME_BASE=liveprobe/inventory:kan119
+FROM ${RUNTIME_BASE}
+COPY target/app.jar /app/app.jar
+ARG RELEASE_FAULTS='{"faults":{}}'
+ENV RELEASE_FAULTS=${RELEASE_FAULTS}

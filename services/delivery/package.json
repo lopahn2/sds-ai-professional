@@ -1,0 +1,14 @@
+{
+  "name": "liveprobe-delivery",
+  "version": "0.1.0",
+  "private": true,
+  "description": "라이브프로브 업무 장애 실험 대상",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {}
+}

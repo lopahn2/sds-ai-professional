@@ -1,0 +1,179 @@
+# LP-OBS-20261114: RETIRED Grafana runtime, kept recovery-ready but DISABLED.
+# Not referenced by deploy/base, deploy/base/observability or any overlay (checked by
+# deploy/base/observability/test_observability_minimal.py and scripts/check-overlay.py).
+# Incident detection does not depend on Grafana: LiveProbe reads Prometheus, Loki, Alertmanager webhooks,
+# Hubble Relay (Retina) and Envoy metrics directly (docs/operations/liveprobe-observability-minimal-2026-11-14.md).
+#
+# Contents: the two provisioning ConfigMaps (identical to the last active manifest) and the Deployment as it
+# ran after the 2026-11-14 PVC migration (Recreate, readiness timeoutSeconds 5, DB on PVC grafana-data),
+# with replicas: 0. There is deliberately NO PVC here: the data PVC `grafana-data` stays active in
+# deploy/base/observability/grafana/grafana-data-pvc.yaml, so this file can never create a second/empty volume.
+# No Service, Ingress or NetworkPolicy: recovery access is a temporary port-forward only.
+#
+# Recovery (operator-approved only, keep the PVC and the existing grafana-admin Secret untouched):
+#   kubectl --context rancher-desktop -n liveprobe-observability get pvc grafana-data secret grafana-admin
+#   kubectl --context rancher-desktop apply -k deploy/retired/grafana          # still 0 replicas
+#   kubectl --context rancher-desktop -n liveprobe-observability scale deploy/grafana --replicas=1
+#   kubectl --context rancher-desktop -n liveprobe-observability port-forward deploy/grafana 3000:3000
+#   ... inspect saved data, then scale back to 0.
+# The namespace stays default-deny and Prometheus/Loki no longer admit Grafana, so a recovered Grafana reads
+# its own saved DB only; live datasource queries would need a separately approved temporary policy.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: liveprobe-observability
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.liveprobe-observability.svc:9090
+        isDefault: true
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.liveprobe-observability.svc:3100
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: liveprobe-observability
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: LiveProbe
+        orgId: 1
+        folder: LiveProbe
+        type: file
+        disableDeletion: true
+        allowUiUpdates: false
+        options:
+          path: /etc/grafana/dashboards
+  liveprobe.json: |
+    {
+      "uid": "liveprobe-overview",
+      "title": "LiveProbe Overview",
+      "schemaVersion": 41,
+      "version": 1,
+      "refresh": "30s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "Scrape targets", "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "up{job=~\"kube-state-metrics|kubernetes-pods\"}", "refId": "A", "legendFormat": "{{job}} {{app}} {{pod}}"}]
+        },
+        {
+          "id": 2, "title": "Target container restarts", "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "kube_pod_container_status_restarts_total{namespace=\"liveprobe-target\"}", "refId": "A", "legendFormat": "{{pod}} {{container}}"}]
+        },
+        {
+          "id": 3, "title": "Target Pod logs", "type": "logs",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "{namespace=\"liveprobe-target\",app=~\"order|inventory\"}", "refId": "A"}]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: liveprobe-observability
+  labels:
+    app: grafana
+    liveprobe.io/retired: "true"
+spec:
+  # Disabled by default. Recreate: the RWO PVC must never be mounted by two pods at once.
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:13.2.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          ports:
+            - containerPort: 3000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 20m
+              memory: 192Mi
+            limits:
+              memory: 448Mi
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboard-files
+              mountPath: /etc/grafana/dashboards
+            - name: data
+              mountPath: /var/lib/grafana
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: dashboards.yaml
+                path: dashboards.yaml
+        - name: dashboard-files
+          configMap:
+            name: grafana-dashboards
+            items:
+              - key: liveprobe.json
+                path: liveprobe.json
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data

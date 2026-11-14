@@ -1,0 +1,150 @@
+{
+  "state": "not_applied",
+  "image_policy": "digest",
+  "catalog_sha256": "848dc4fd6c6e5623aa79854afdd7e1c8bd338e0ffa9519092283e2b1e6299ab2",
+  "resource_count": 107,
+  "images": {
+    "order": "liveprobe/order@sha256:143efce5d6d83c2f45cf92fe0c3062e55bb0adc57d0a3880c7ae2104fdfc8788",
+    "inventory": "liveprobe/inventory@sha256:baafecdefd405852d8ba1e30dd47b28681de8761d7a0bda294d14b77e5af1026",
+    "catalog": "liveprobe/catalog@sha256:1b35dbafe0b373c7f9734efe2ca2a1b3fd820fbbc718c342bc0e2778230ac0ee",
+    "payment": "liveprobe/payment@sha256:a8a5b52135dee145196c25b0186c63e2bb343e93fb6338035ec214d6a948c8e3",
+    "trade-member": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e",
+    "delivery": "liveprobe/delivery@sha256:95a70ce062956bd520b04cbc48a1a6880488b32c6af46c2fc2991ac4ecb5d2f6",
+    "notification": "liveprobe/notification@sha256:42b97254c291964d223ce0ce2a443cb7fbdfa5ea2d47c87ed03913d94755e43f",
+    "delivery-member": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e",
+    "business-api": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e"
+  },
+  "inventory_cutover": {
+    "migrated_environments": [
+      "dev",
+      "prd"
+    ],
+    "pod_label": {
+      "liveprobe.io/database": "samsung-trade"
+    },
+    "requirements": [
+      "환경별 원본 export·freeze·최종 반영과 키·수량·내용 대조 및 단일 writer 전환 검증을 부모가 완료한 뒤에만 이관 완료 환경으로 입력한다.",
+      "이 라벨은 실제 DB 이관 증명이 아니라 부모의 명시적 검증 완료 입력을 반영한다. 미입력 환경에는 붙이지 않는다.",
+      "재생성할 때도 --inventory-migrated-env <환경>을 완료 환경별로 반복한다. 기존 선언이나 별도 상태 파일에서 자동 추측하지 않는다.",
+      "DB 배선은 신규 trade-db를 참조하므로 라벨이 없다는 이유로 전환 전 안전 적용이 보장되지는 않는다. 실제 적용은 보존·검증 뒤 별도 승인한다."
+    ]
+  },
+  "digest_provenance": "참조 형식만 검증했다. 실제 manifest 종류와 레지스트리 존재 증명은 부모 빌드 영수증이 필요하다.",
+  "retired_labels": {
+    "liveprobe.io/lifecycle": "retired"
+  },
+  "retire_after_backup": [
+    {
+      "kind": "Deployment",
+      "namespace": "dev",
+      "name": "member"
+    },
+    {
+      "kind": "Service",
+      "namespace": "dev",
+      "name": "member"
+    },
+    {
+      "kind": "Ingress",
+      "namespace": "dev",
+      "name": "member"
+    },
+    {
+      "kind": "ConfigMap",
+      "namespace": "dev",
+      "name": "member-config"
+    },
+    {
+      "kind": "Deployment",
+      "namespace": "prd",
+      "name": "member"
+    },
+    {
+      "kind": "Service",
+      "namespace": "prd",
+      "name": "member"
+    },
+    {
+      "kind": "Ingress",
+      "namespace": "prd",
+      "name": "member"
+    },
+    {
+      "kind": "ConfigMap",
+      "namespace": "prd",
+      "name": "member-config"
+    }
+  ],
+  "policies_requiring_explicit_removal": [
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "dev",
+      "name": "allow-same-namespace"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "dev",
+      "name": "allow-dns"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "dev",
+      "name": "allow-ingress-controller"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "dev",
+      "name": "allow-observation"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "dev",
+      "name": "inventory-postgres"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "allow-same-namespace"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "allow-dns"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "allow-ingress-controller"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "allow-observation"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "inventory-postgres"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "prd",
+      "name": "allow-istiod"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "namespace": "liveprobe-system",
+      "name": "p18-inventory-postgres-ingress"
+    }
+  ],
+  "requirements": [
+    "명세는 삭제·적용을 실행하지 않는다. 기존 정책의 가산 허용 제거와 검증은 부모가 명시적으로 시행한다.",
+    "기존 이름의 앱·설정·서비스를 갱신하므로 재시작 전 원본 메모리·DB·파일의 export와 freeze·백업을 입증한다.",
+    "새 앱도 자체 트래픽은 꺼져 있다. domain은 읽기 전용으로 시작하며 단일 writer 전환 뒤에만 해제한다.",
+    "부모가 신규 Secret·DB·Kafka와 해당 namespace를 먼저 준비한다. 기존 Secret은 읽거나 회전하지 않는다.",
+    "DB Pod는 app=trade-db|delivery-db|business-db, Kafka Pod는 app=kafka 라벨을 사용해야 한다.",
+    "은퇴 라벨은 기존 소속·사건 이력을 바꾸지 않고 리소스와 Pod template에 함께 적용한다.",
+    "공개 8080의 민감 HR 우회 거절·실접속 허용/거절·TLS·인증·자료 보존은 별도 런타임 인수 항목이다.",
+    "prd는 기존 Istio 주입 설정을 유지한다. 선언 전체 적용이 아니라 검토한 변경 객체만 적용한다."
+  ]
+}

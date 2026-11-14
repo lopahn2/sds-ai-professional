@@ -1,0 +1,23 @@
+{
+  "apiVersion": "rbac.authorization.k8s.io/v1",
+  "kind": "RoleBinding",
+  "metadata": {
+    "name": "liveprobe-application-runner",
+    "namespace": "dev",
+    "labels": {
+      "app.kubernetes.io/part-of": "liveprobe-application"
+    }
+  },
+  "roleRef": {
+    "apiGroup": "rbac.authorization.k8s.io",
+    "kind": "Role",
+    "name": "liveprobe-application-runner"
+  },
+  "subjects": [
+    {
+      "kind": "ServiceAccount",
+      "name": "liveprobe-application-runner",
+      "namespace": "liveprobe-system"
+    }
+  ]
+}

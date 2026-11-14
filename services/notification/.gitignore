@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+*.png
+*.jpg
+*.har
+.DS_Store

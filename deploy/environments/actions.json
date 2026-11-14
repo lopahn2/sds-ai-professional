@@ -1,0 +1,478 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-pod-delete",
+        "namespace": "dev"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "pods"
+          ],
+          "verbs": [
+            "get",
+            "delete"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-deployment-patch",
+        "namespace": "dev"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "apps"
+          ],
+          "resources": [
+            "deployments"
+          ],
+          "resourceNames": [
+            "inventory",
+            "order",
+            "catalog",
+            "member",
+            "payment",
+            "notification",
+            "delivery"
+          ],
+          "verbs": [
+            "get",
+            "patch"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-configmap-restore",
+        "namespace": "dev"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "configmaps"
+          ],
+          "resourceNames": [
+            "inventory-config",
+            "order-config",
+            "catalog-config",
+            "member-config",
+            "payment-config",
+            "notification-config",
+            "delivery-config",
+            "inventory-config-v1",
+            "order-config-v1",
+            "catalog-config-v1",
+            "member-config-v1",
+            "payment-config-v1",
+            "notification-config-v1",
+            "delivery-config-v1"
+          ],
+          "verbs": [
+            "get"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-pod-delete",
+        "namespace": "dev"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-pod-delete"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-deployment-patch",
+        "namespace": "dev"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-deployment-patch"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-configmap-restore",
+        "namespace": "dev"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-configmap-restore"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-pod-delete",
+        "namespace": "prd"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "pods"
+          ],
+          "verbs": [
+            "get",
+            "delete"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-deployment-patch",
+        "namespace": "prd"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "apps"
+          ],
+          "resources": [
+            "deployments"
+          ],
+          "resourceNames": [
+            "inventory",
+            "order",
+            "catalog",
+            "member",
+            "payment",
+            "notification",
+            "delivery"
+          ],
+          "verbs": [
+            "get",
+            "patch"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "safe-action-configmap-restore",
+        "namespace": "prd"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "configmaps"
+          ],
+          "resourceNames": [
+            "inventory-config",
+            "order-config",
+            "catalog-config",
+            "member-config",
+            "payment-config",
+            "notification-config",
+            "delivery-config",
+            "inventory-config-v1",
+            "order-config-v1",
+            "catalog-config-v1",
+            "member-config-v1",
+            "payment-config-v1",
+            "notification-config-v1",
+            "delivery-config-v1"
+          ],
+          "verbs": [
+            "get"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-pod-delete",
+        "namespace": "prd"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-pod-delete"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-deployment-patch",
+        "namespace": "prd"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-deployment-patch"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "safe-action-configmap-restore",
+        "namespace": "prd"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "safe-action-configmap-restore"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "safe-action-executor"
+        }
+      ]
+    },
+    {
+      "apiVersion": "admissionregistration.k8s.io/v1",
+      "kind": "ValidatingAdmissionPolicy",
+      "metadata": {
+        "name": "safe-action-executor-bounds"
+      },
+      "spec": {
+        "failurePolicy": "Fail",
+        "matchConstraints": {
+          "resourceRules": [
+            {
+              "apiGroups": [
+                "apps"
+              ],
+              "apiVersions": [
+                "v1"
+              ],
+              "operations": [
+                "UPDATE"
+              ],
+              "resources": [
+                "deployments"
+              ],
+              "scope": "Namespaced"
+            },
+            {
+              "apiGroups": [
+                ""
+              ],
+              "apiVersions": [
+                "v1"
+              ],
+              "operations": [
+                "UPDATE"
+              ],
+              "resources": [
+                "configmaps"
+              ],
+              "scope": "Namespaced"
+            },
+            {
+              "apiGroups": [
+                ""
+              ],
+              "apiVersions": [
+                "v1"
+              ],
+              "operations": [
+                "DELETE"
+              ],
+              "resources": [
+                "pods"
+              ],
+              "scope": "Namespaced"
+            }
+          ]
+        },
+        "matchConditions": [
+          {
+            "name": "executor-only",
+            "expression": "request.userInfo.username == 'system:serviceaccount:liveprobe-system:safe-action-executor'"
+          }
+        ],
+        "validations": [
+          {
+            "expression": "request.namespace in ['liveprobe-target','dev','prd']",
+            "message": "executor is limited to the explicit target namespaces"
+          },
+          {
+            "expression": "request.resource.resource != 'pods' ||\n      (has(oldObject.metadata.labels) &&\n       ((request.namespace == 'liveprobe-target' && oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') == 'liveprobe-target') ||\n        (request.namespace in ['dev','prd'] && oldObject.metadata.labels[?'liveprobe.io/managed'].orValue('') == 'true' &&\n         oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') in ['order','payment','member','catalog','delivery','notification'])) &&\n       has(oldObject.metadata.ownerReferences) && oldObject.metadata.ownerReferences.exists(o, o.kind == 'ReplicaSet' && o.controller == true))",
+            "message": "only controller-owned target Pods may be deleted"
+          },
+          {
+            "expression": "request.resource.resource != 'deployments' || (dyn(object).all(k, k in ['metadata', 'spec'] || (k in dyn(oldObject) && dyn(object)[k] == dyn(oldObject)[k])) && dyn(oldObject).all(k, k in ['metadata', 'spec'] || (k in dyn(object) && dyn(object)[k] == dyn(oldObject)[k])) && dyn(object).metadata.all(k, k in ['resourceVersion', 'generation', 'managedFields'] || (k in dyn(oldObject).metadata && dyn(object).metadata[k] == dyn(oldObject).metadata[k])) && dyn(oldObject).metadata.all(k, k in ['resourceVersion', 'generation', 'managedFields'] || (k in dyn(object).metadata && dyn(object).metadata[k] == dyn(oldObject).metadata[k])))",
+            "message": "Deployment root and user metadata must remain unchanged"
+          },
+          {
+            "expression": "request.resource.resource != 'deployments' || (dyn(object).spec.replicas >= 1 && dyn(object).spec.replicas <= 2 && dyn(object).spec.all(k, k in ['replicas', 'template'] || (k in dyn(oldObject).spec && dyn(object).spec[k] == dyn(oldObject).spec[k])) && dyn(oldObject).spec.all(k, k in ['replicas', 'template'] || (k in dyn(object).spec && dyn(object).spec[k] == dyn(oldObject).spec[k])) && dyn(object).spec.template.all(k, k in ['metadata', 'spec'] || (k in dyn(oldObject).spec.template && dyn(object).spec.template[k] == dyn(oldObject).spec.template[k])) && dyn(oldObject).spec.template.all(k, k in ['metadata', 'spec'] || (k in dyn(object).spec.template && dyn(object).spec.template[k] == dyn(oldObject).spec.template[k])))",
+            "message": "only replicas 1..2 and bounded template fields may change"
+          },
+          {
+            "expression": "request.resource.resource != 'deployments' || (dyn(object).spec.template.metadata.all(k, k in ['annotations'] || (k in dyn(oldObject).spec.template.metadata && dyn(object).spec.template.metadata[k] == dyn(oldObject).spec.template.metadata[k])) && dyn(oldObject).spec.template.metadata.all(k, k in ['annotations'] || (k in dyn(object).spec.template.metadata && dyn(object).spec.template.metadata[k] == dyn(oldObject).spec.template.metadata[k])) && dyn(object).spec.template.metadata.?annotations.orValue({}).all(k, k in ['kubectl.kubernetes.io/restartedAt'] || (k in dyn(oldObject).spec.template.metadata.?annotations.orValue({}) && dyn(object).spec.template.metadata.?annotations.orValue({})[k] == dyn(oldObject).spec.template.metadata.?annotations.orValue({})[k])) && dyn(oldObject).spec.template.metadata.?annotations.orValue({}).all(k, k in ['kubectl.kubernetes.io/restartedAt'] || (k in dyn(object).spec.template.metadata.?annotations.orValue({}) && dyn(object).spec.template.metadata.?annotations.orValue({})[k] == dyn(oldObject).spec.template.metadata.?annotations.orValue({})[k])) && (!('kubectl.kubernetes.io/restartedAt' in dyn(object).spec.template.metadata.?annotations.orValue({})) ||\n (dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'].matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$') &&\n  timestamp(dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt']) == timestamp(dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt']))))",
+            "message": "only the exact RFC3339 restartedAt annotation may change in template metadata"
+          },
+          {
+            "expression": "request.resource.resource != 'deployments' || (dyn(object).spec.template.spec.all(k, k in ['containers'] || (k in dyn(oldObject).spec.template.spec && dyn(object).spec.template.spec[k] == dyn(oldObject).spec.template.spec[k])) && dyn(oldObject).spec.template.spec.all(k, k in ['containers'] || (k in dyn(object).spec.template.spec && dyn(object).spec.template.spec[k] == dyn(oldObject).spec.template.spec[k])) && size(dyn(object).spec.template.spec.containers) == 1 && size(dyn(oldObject).spec.template.spec.containers) == 1)",
+            "message": "all Pod fields including initContainers are immutable; exactly one container required"
+          },
+          {
+            "expression": "request.resource.resource != 'deployments' || (dyn(object).spec.template.spec.containers[0].all(k, k in ['resources'] || (k in dyn(oldObject).spec.template.spec.containers[0] && dyn(object).spec.template.spec.containers[0][k] == dyn(oldObject).spec.template.spec.containers[0][k])) && dyn(oldObject).spec.template.spec.containers[0].all(k, k in ['resources'] || (k in dyn(object).spec.template.spec.containers[0] && dyn(object).spec.template.spec.containers[0][k] == dyn(oldObject).spec.template.spec.containers[0][k])) && dyn(object).spec.template.spec.containers[0].resources.all(k, k in ['limits'] || (k in dyn(oldObject).spec.template.spec.containers[0].resources && dyn(object).spec.template.spec.containers[0].resources[k] == dyn(oldObject).spec.template.spec.containers[0].resources[k])) && dyn(oldObject).spec.template.spec.containers[0].resources.all(k, k in ['limits'] || (k in dyn(object).spec.template.spec.containers[0].resources && dyn(object).spec.template.spec.containers[0].resources[k] == dyn(oldObject).spec.template.spec.containers[0].resources[k])) && dyn(object).spec.template.spec.containers[0].resources.limits.all(k, k in ['memory'] || (k in dyn(oldObject).spec.template.spec.containers[0].resources.limits && dyn(object).spec.template.spec.containers[0].resources.limits[k] == dyn(oldObject).spec.template.spec.containers[0].resources.limits[k])) && dyn(oldObject).spec.template.spec.containers[0].resources.limits.all(k, k in ['memory'] || (k in dyn(object).spec.template.spec.containers[0].resources.limits && dyn(object).spec.template.spec.containers[0].resources.limits[k] == dyn(oldObject).spec.template.spec.containers[0].resources.limits[k])) && has(dyn(object).spec.template.spec.containers[0].resources.limits.memory) && quantity(dyn(object).spec.template.spec.containers[0].resources.limits.memory).compareTo(quantity('256Mi')) >= 0 && quantity(dyn(object).spec.template.spec.containers[0].resources.limits.memory).compareTo(quantity('768Mi')) <= 0)",
+            "message": "only memory limit 256..768Mi may change; all other container and resource fields are immutable"
+          },
+          {
+            "expression": "request.resource.resource != 'configmaps'",
+            "message": "ConfigMap writes disabled: this policy cannot verify dynamically approved content"
+          },
+          {
+            "expression": "request.namespace == 'liveprobe-target' || request.resource.resource != 'deployments' ||\n      (has(oldObject.metadata.labels) && oldObject.metadata.labels[?'liveprobe.io/managed'].orValue('') == 'true' &&\n       oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') in ['order','payment','member','catalog','delivery','notification'] &&\n       object.metadata.labels == oldObject.metadata.labels)",
+            "message": "only managed P18 system deployments may be tuned"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "admissionregistration.k8s.io/v1",
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "metadata": {
+        "name": "safe-action-executor-bounds"
+      },
+      "spec": {
+        "policyName": "safe-action-executor-bounds",
+        "validationActions": [
+          "Deny"
+        ]
+      }
+    },
+    {
+      "apiVersion": "admissionregistration.k8s.io/v1",
+      "kind": "ValidatingAdmissionPolicy",
+      "metadata": {
+        "name": "liveprobe-deny-target-writes"
+      },
+      "spec": {
+        "failurePolicy": "Fail",
+        "matchConstraints": {
+          "resourceRules": [
+            {
+              "apiGroups": [
+                "apps"
+              ],
+              "apiVersions": [
+                "v1"
+              ],
+              "operations": [
+                "UPDATE"
+              ],
+              "resources": [
+                "deployments"
+              ],
+              "scope": "Namespaced"
+            },
+            {
+              "apiGroups": [
+                ""
+              ],
+              "apiVersions": [
+                "v1"
+              ],
+              "operations": [
+                "UPDATE"
+              ],
+              "resources": [
+                "services"
+              ],
+              "scope": "Namespaced"
+            }
+          ]
+        },
+        "matchConditions": [
+          {
+            "name": "target-only",
+            "expression": "request.namespace in ['liveprobe-target','dev','stg','prd']"
+          }
+        ],
+        "validations": [
+          {
+            "expression": "request.userInfo.username != 'system:serviceaccount:liveprobe-system:liveprobe'",
+            "message": "LiveProbe API cannot mutate target workloads or service routing"
+          }
+        ]
+      }
+    }
+  ]
+}

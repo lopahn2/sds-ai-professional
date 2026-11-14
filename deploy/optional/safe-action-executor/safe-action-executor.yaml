@@ -1,0 +1,146 @@
+# One ServiceAccount, one Role per action class. No Secret, Node, create, list-all-ConfigMaps,
+# exec, logs, cluster-scope or cross-namespace grant. Reads needed for validation (pods,
+# replicasets, deployments) come from the existing observe-only liveprobe-reader identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: safe-action-executor, namespace: liveprobe-system}
+automountServiceAccountToken: false
+---
+# pod_delete: Pod names are generated, so resourceNames cannot pin them; the executor adds
+# uid+resourceVersion delete preconditions and the admission policy below requires ownership labels.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: safe-action-pod-delete, namespace: liveprobe-target}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, delete]
+---
+# rollout_restart / scale_replicas / set_memory_limit: JSON patch of the two named Deployments.
+# (deployments/scale is not granted; replicas change via guarded JSON patch only.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: safe-action-deployment-patch, namespace: liveprobe-target}
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [inventory, order]
+    verbs: [get, patch]
+---
+# configmap_restore: read live + approved immutable version ConfigMaps by name; patch live only.
+# Operators add approved version names here together with safe_actions.configmap_versions.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: safe-action-configmap-restore, namespace: liveprobe-target}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [inventory-config, order-config, inventory-config-v1, order-config-v1]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [inventory-config, order-config]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: safe-action-pod-delete, namespace: liveprobe-target}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: safe-action-pod-delete}
+subjects:
+  - {kind: ServiceAccount, namespace: liveprobe-system, name: safe-action-executor}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: safe-action-deployment-patch, namespace: liveprobe-target}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: safe-action-deployment-patch}
+subjects:
+  - {kind: ServiceAccount, namespace: liveprobe-system, name: safe-action-executor}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: safe-action-configmap-restore, namespace: liveprobe-target}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: safe-action-configmap-restore}
+subjects:
+  - {kind: ServiceAccount, namespace: liveprobe-system, name: safe-action-executor}
+---
+# Defence in depth: RBAC cannot restrict fields, so admission bounds what the executor may change.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: safe-action-executor-bounds}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [apps], apiVersions: [v1], operations: [UPDATE], resources: [deployments], scope: Namespaced}
+      - {apiGroups: [""], apiVersions: [v1], operations: [UPDATE], resources: [configmaps], scope: Namespaced}
+      - {apiGroups: [""], apiVersions: [v1], operations: [DELETE], resources: [pods], scope: Namespaced}
+  matchConditions:
+    - name: executor-only
+      expression: "request.userInfo.username == 'system:serviceaccount:liveprobe-system:safe-action-executor'"
+  validations:
+    - expression: "request.namespace == 'liveprobe-target'"
+      message: "safe-action executor is limited to liveprobe-target"
+    - expression: >-
+        request.resource.resource != 'pods' ||
+        (has(oldObject.metadata.labels) &&
+         oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') == 'liveprobe-target' &&
+         has(oldObject.metadata.ownerReferences) &&
+         oldObject.metadata.ownerReferences.exists(o, o.kind == 'ReplicaSet' && o.controller == true))
+      message: "only controller-owned target Pods may be deleted"
+    # Admission activation exposes JSON objects as maps (Kubernetes plugin/cel/condition.go).
+    # dyn() deliberately permits bidirectional key comparison, including future/unknown keys;
+    # enumerating schema fields would silently permit newly introduced fields. Only the three
+    # apiserver-maintained top-level metadata fields below are excluded from equality.
+    - expression: >-
+        request.resource.resource != 'deployments' ||
+        (dyn(object).all(k, k in ['metadata', 'spec'] || (k in dyn(oldObject) && dyn(object)[k] == dyn(oldObject)[k])) &&
+        dyn(oldObject).all(k, k in ['metadata', 'spec'] || (k in dyn(object) && dyn(object)[k] == dyn(oldObject)[k])) &&
+        dyn(object).metadata.all(k, k in ['resourceVersion', 'generation', 'managedFields'] || (k in dyn(oldObject).metadata && dyn(object).metadata[k] == dyn(oldObject).metadata[k])) &&
+        dyn(oldObject).metadata.all(k, k in ['resourceVersion', 'generation', 'managedFields'] || (k in dyn(object).metadata && dyn(object).metadata[k] == dyn(oldObject).metadata[k])))
+      message: "Deployment root and user metadata must remain unchanged"
+    - expression: >-
+        request.resource.resource != 'deployments' ||
+        (dyn(object).spec.replicas >= 1 && dyn(object).spec.replicas <= 2 &&
+        dyn(object).spec.all(k, k in ['replicas', 'template'] || (k in dyn(oldObject).spec && dyn(object).spec[k] == dyn(oldObject).spec[k])) &&
+        dyn(oldObject).spec.all(k, k in ['replicas', 'template'] || (k in dyn(object).spec && dyn(object).spec[k] == dyn(oldObject).spec[k])) &&
+        dyn(object).spec.template.all(k, k in ['metadata', 'spec'] || (k in dyn(oldObject).spec.template && dyn(object).spec.template[k] == dyn(oldObject).spec.template[k])) &&
+        dyn(oldObject).spec.template.all(k, k in ['metadata', 'spec'] || (k in dyn(object).spec.template && dyn(object).spec.template[k] == dyn(oldObject).spec.template[k])))
+      message: "only replicas 1..2 and bounded template fields may change"
+    - expression: >-
+        request.resource.resource != 'deployments' ||
+        (dyn(object).spec.template.metadata.all(k, k in ['annotations'] || (k in dyn(oldObject).spec.template.metadata && dyn(object).spec.template.metadata[k] == dyn(oldObject).spec.template.metadata[k])) &&
+        dyn(oldObject).spec.template.metadata.all(k, k in ['annotations'] || (k in dyn(object).spec.template.metadata && dyn(object).spec.template.metadata[k] == dyn(oldObject).spec.template.metadata[k])) &&
+        dyn(object).spec.template.metadata.?annotations.orValue({}).all(k, k in ['kubectl.kubernetes.io/restartedAt'] || (k in dyn(oldObject).spec.template.metadata.?annotations.orValue({}) && dyn(object).spec.template.metadata.?annotations.orValue({})[k] == dyn(oldObject).spec.template.metadata.?annotations.orValue({})[k])) &&
+        dyn(oldObject).spec.template.metadata.?annotations.orValue({}).all(k, k in ['kubectl.kubernetes.io/restartedAt'] || (k in dyn(object).spec.template.metadata.?annotations.orValue({}) && dyn(object).spec.template.metadata.?annotations.orValue({})[k] == dyn(oldObject).spec.template.metadata.?annotations.orValue({})[k])) &&
+        (!('kubectl.kubernetes.io/restartedAt' in dyn(object).spec.template.metadata.?annotations.orValue({})) ||
+         (dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'].matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$') &&
+          timestamp(dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt']) == timestamp(dyn(object).spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt']))))
+      message: "only the exact RFC3339 restartedAt annotation may change in template metadata"
+    - expression: >-
+        request.resource.resource != 'deployments' ||
+        (dyn(object).spec.template.spec.all(k, k in ['containers'] || (k in dyn(oldObject).spec.template.spec && dyn(object).spec.template.spec[k] == dyn(oldObject).spec.template.spec[k])) &&
+        dyn(oldObject).spec.template.spec.all(k, k in ['containers'] || (k in dyn(object).spec.template.spec && dyn(object).spec.template.spec[k] == dyn(oldObject).spec.template.spec[k])) &&
+        size(dyn(object).spec.template.spec.containers) == 1 && size(dyn(oldObject).spec.template.spec.containers) == 1)
+      message: "all Pod fields including initContainers are immutable; exactly one container required"
+    - expression: >-
+        request.resource.resource != 'deployments' ||
+        (dyn(object).spec.template.spec.containers[0].all(k, k in ['resources'] || (k in dyn(oldObject).spec.template.spec.containers[0] && dyn(object).spec.template.spec.containers[0][k] == dyn(oldObject).spec.template.spec.containers[0][k])) &&
+        dyn(oldObject).spec.template.spec.containers[0].all(k, k in ['resources'] || (k in dyn(object).spec.template.spec.containers[0] && dyn(object).spec.template.spec.containers[0][k] == dyn(oldObject).spec.template.spec.containers[0][k])) &&
+        dyn(object).spec.template.spec.containers[0].resources.all(k, k in ['limits'] || (k in dyn(oldObject).spec.template.spec.containers[0].resources && dyn(object).spec.template.spec.containers[0].resources[k] == dyn(oldObject).spec.template.spec.containers[0].resources[k])) &&
+        dyn(oldObject).spec.template.spec.containers[0].resources.all(k, k in ['limits'] || (k in dyn(object).spec.template.spec.containers[0].resources && dyn(object).spec.template.spec.containers[0].resources[k] == dyn(oldObject).spec.template.spec.containers[0].resources[k])) &&
+        dyn(object).spec.template.spec.containers[0].resources.limits.all(k, k in ['memory'] || (k in dyn(oldObject).spec.template.spec.containers[0].resources.limits && dyn(object).spec.template.spec.containers[0].resources.limits[k] == dyn(oldObject).spec.template.spec.containers[0].resources.limits[k])) &&
+        dyn(oldObject).spec.template.spec.containers[0].resources.limits.all(k, k in ['memory'] || (k in dyn(object).spec.template.spec.containers[0].resources.limits && dyn(object).spec.template.spec.containers[0].resources.limits[k] == dyn(oldObject).spec.template.spec.containers[0].resources.limits[k])) &&
+        has(dyn(object).spec.template.spec.containers[0].resources.limits.memory) &&
+        quantity(dyn(object).spec.template.spec.containers[0].resources.limits.memory).compareTo(quantity('256Mi')) >= 0 &&
+        quantity(dyn(object).spec.template.spec.containers[0].resources.limits.memory).compareTo(quantity('768Mi')) <= 0)
+      message: "only memory limit 256..768Mi may change; all other container and resource fields are immutable"
+    - expression: >-
+        request.resource.resource != 'configmaps'
+      message: "ConfigMap writes disabled: this policy cannot verify dynamically approved content"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: safe-action-executor-bounds}
+spec:
+  policyName: safe-action-executor-bounds
+  validationActions: [Deny]

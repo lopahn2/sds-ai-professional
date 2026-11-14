@@ -1,0 +1,17 @@
+# LP-OBS-20261114: Grafana is retired from the normal deployment graph; ONLY its data volume stays active.
+# This PVC holds the migrated Grafana SQLite DB (users, datasource definitions, history; PV reclaim Retain).
+# It stays in deploy/base and deploy/base/observability so applies never orphan or prune it, and the
+# storageClassName keeps coming from the overlay (deploy/components/platform / observability overlay patch).
+# Never delete or recreate it. The disabled recovery Deployment that mounts it lives in deploy/retired/grafana
+# (no PVC there, so there is no duplicate). Do not add a Grafana Deployment/Service/Ingress back here.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: liveprobe-observability
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

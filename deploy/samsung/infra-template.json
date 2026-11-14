@@ -1,0 +1,15 @@
+{
+  "apiVersion": "liveprobe.samsung/infra-v1",
+  "images": {
+    "kafka": "apache/kafka@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f",
+    "postgres": "postgres@sha256:d4bb0a8c1b7bb2e29f976d099e7bfb9a5d8858cffe9e46b35cd302cd1f1f8168"
+  },
+  "storage_class": "local-path",
+  "kafka_memory_limit": "512Mi",
+  "postgres_memory_limit": "256Mi",
+  "certificate_days": 365,
+  "namespaces": {
+    "messaging": "liveprobe-messaging",
+    "data": "liveprobe-data"
+  }
+}

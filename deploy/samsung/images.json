@@ -1,0 +1,11 @@
+{
+  "order": "liveprobe/order@sha256:143efce5d6d83c2f45cf92fe0c3062e55bb0adc57d0a3880c7ae2104fdfc8788",
+  "inventory": "liveprobe/inventory@sha256:baafecdefd405852d8ba1e30dd47b28681de8761d7a0bda294d14b77e5af1026",
+  "catalog": "liveprobe/catalog@sha256:1b35dbafe0b373c7f9734efe2ca2a1b3fd820fbbc718c342bc0e2778230ac0ee",
+  "payment": "liveprobe/payment@sha256:a8a5b52135dee145196c25b0186c63e2bb343e93fb6338035ec214d6a948c8e3",
+  "trade-member": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e",
+  "delivery": "liveprobe/delivery@sha256:95a70ce062956bd520b04cbc48a1a6880488b32c6af46c2fc2991ac4ecb5d2f6",
+  "notification": "liveprobe/notification@sha256:42b97254c291964d223ce0ce2a443cb7fbdfa5ea2d47c87ed03913d94755e43f",
+  "delivery-member": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e",
+  "business-api": "liveprobe/samsung-domain@sha256:436b62ba08809e2202b7e8199eb1c7cdffa09076301c01ec799a2c56f617317e"
+}

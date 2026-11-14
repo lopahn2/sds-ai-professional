@@ -1,0 +1,8 @@
+# P18: reuse the inspected p17 runtime; dependencies unchanged, migrations 0009/0010 included explicitly.
+# This is an incremental source/migration image, not a clean dependency rebuild.
+FROM liveprobe/liveprobe:p17a
+COPY app/ /app/app/
+COPY alembic/ /app/alembic/
+COPY runbooks/ /app/runbooks/
+COPY reference/ /app/reference/
+COPY corpus/ /app/corpus/

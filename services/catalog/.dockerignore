@@ -1,0 +1,5 @@
+*
+!app.py
+!runtime.py
+!static/
+!static/**

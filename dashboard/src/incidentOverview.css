@@ -1,0 +1,46 @@
+.ops:has(> .ops-incidents) { grid-template-rows: auto minmax(0, 1fr); }
+.ops .ops-incidents {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(128px, .6fr) minmax(270px, 1fr) minmax(240px, 1.3fr);
+  align-items: center;
+  gap: 14px 24px;
+  padding: 15px 20px;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--line);
+}
+.ops .ops-incidents header { display: grid; justify-items: start; gap: 3px; }
+.ops .ops-incidents h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+.ops .incident-counts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0; gap: 12px; align-items: start;
+}
+.ops .incident-counts > div { padding-left: 12px; border-left: 1px solid var(--line); }
+.ops .incident-counts dt, .ops .priority-incidents small { color: var(--text-2, #516379); font-size: 12px; }
+.ops .incident-counts dd { margin: 3px 0 0; font-size: 20px; line-height: 1.2; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ops .priority-incidents { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; min-width: 0; }
+.ops .priority-incidents a { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; text-decoration: none; padding: 3px 5px; border-radius: 4px; }
+.ops .priority-incidents a:hover { background: var(--bg, #f4f6f9); }
+.ops .priority-incidents a > b { overflow-wrap: anywhere; }
+.ops .priority-incidents a > span { font-size: 12px; font-weight: 600; }
+.ops .ops-side > .disclosure { padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.ops .map-legend-toggle { margin-left: auto; }
+.ops .map-legend-toggle summary { cursor: pointer; }
+.ops .map-legend-toggle > div { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 5px 0; }
+.ops .map-legend-toggle > div > span { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 1050px) {
+  .ops .ops-incidents { grid-template-columns: minmax(108px, .5fr) 1fr; gap: 8px 14px; }
+  .ops .priority-incidents { grid-column: 1 / -1; }
+}
+@media (max-width: 620px) {
+  .ops .ops-incidents { display: grid; grid-template-columns: 1fr; padding: 12px 14px; gap: 10px; }
+  .ops .ops-incidents header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ops .ops-incidents h2 { font-size: 17px; }
+  .ops .incident-counts > div:first-child { border-left: 0; padding-left: 0; }
+  .ops .priority-incidents { border-top: 1px solid var(--line); padding-top: 5px; }
+}
+.ops .map-legend-toggle summary { color: #d8e4f4; }
+.ops .map-legend-toggle summary:focus-visible { outline: 2px solid #9ec9ff; outline-offset: 3px; }
+.ops .warning-event > div:first-child { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.ops .warning-event > div:first-child > b { overflow-wrap: anywhere; }
+.ops .warning-more { margin: 10px 14px; }

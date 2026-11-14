@@ -1,0 +1,11 @@
+--- a/app.py
++++ b/app.py
+@@ -64,7 +64,7 @@
+         if self.runtime.enabled('code_bug') and term:
+             # Intentional defect: request query uses q, not search_keyword.
+             term = query['search_keyword'][0]
+-        rows = [dict(row) for row in self.products if not term or term.casefold() in (row['name'] + row['category']).casefold()]
++        rows = [dict(row, name=row['display_name']) for row in self.products if not term or term.casefold() in (row['name'] + row['category']).casefold()]
+         for row in rows:
+             row['price'] = self.display_price(row)
+         return rows

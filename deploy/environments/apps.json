@@ -1,0 +1,3974 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "dev",
+        "labels": {
+          "liveprobe.io/environment": "dev",
+          "liveprobe.io/env-order": "1",
+          "istio-injection": "disabled"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "inventory-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "order",
+        "SERVICE_NAME": "inventory",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "SPRING_PROFILES_ACTIVE": "chaos",
+        "CHAOS_STATE_DIR": "/var/run/liveprobe-chaos",
+        "JAVA_TOOL_OPTIONS": "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -Dhttp.keepAlive=false -XX:ActiveProcessorCount=2",
+        "INVENTORY_DB_URL": "jdbc:postgresql://postgres.liveprobe-system.svc:5432/inventory_dev",
+        "INVENTORY_DB_USER": "inventory_dev",
+        "INVENTORY_DB_POOL_MAX": "3",
+        "INVENTORY_DB_CONNECTION_TIMEOUT_MS": "1000"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "inventory",
+        "namespace": "dev",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "inventory"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "inventory",
+              "app.kubernetes.io/part-of": "order",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/actuator/prometheus",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "inventory",
+                "image": "liveprobe/inventory@sha256:baafecdefd405852d8ba1e30dd47b28681de8761d7a0bda294d14b77e5af1026",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "inventory-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1000m",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                },
+                "env": [
+                  {
+                    "name": "CHAOS_OPERATOR_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "inventory-chaos-operator",
+                        "key": "token"
+                      }
+                    }
+                  },
+                  {
+                    "name": "INVENTORY_DB_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "inventory-db",
+                        "key": "password"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "inventory",
+        "namespace": "dev",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "inventory"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "order-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "order",
+        "SERVICE_NAME": "order",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "INVENTORY_URL": "http://inventory.dev.svc:8080",
+        "SPRING_PROFILES_ACTIVE": "chaos",
+        "CHAOS_STATE_DIR": "/var/run/liveprobe-chaos",
+        "JAVA_TOOL_OPTIONS": "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -Dhttp.keepAlive=false -XX:ActiveProcessorCount=2",
+        "INVENTORY_CONNECT_TIMEOUT_MS": "500",
+        "INVENTORY_TIMEOUT_MS": "1800",
+        "INVENTORY_MAX_RETRIES": "1",
+        "INVENTORY_RETRY_BACKOFF_MS": "100"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "order",
+        "namespace": "dev",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "order"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "order",
+              "app.kubernetes.io/part-of": "order",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/actuator/prometheus",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "order",
+                "image": "liveprobe/order@sha256:143efce5d6d83c2f45cf92fe0c3062e55bb0adc57d0a3880c7ae2104fdfc8788",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "order-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1000m",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                },
+                "env": [
+                  {
+                    "name": "CHAOS_OPERATOR_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "order-chaos-operator",
+                        "key": "token"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "order",
+        "namespace": "dev",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "order"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "order",
+        "namespace": "dev",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "order.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "order",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "catalog-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "catalog",
+        "SERVICE_NAME": "catalog",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "INVENTORY_URL": "http://inventory.dev.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "dev",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "catalog"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "catalog",
+              "app.kubernetes.io/part-of": "catalog",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "catalog",
+                "image": "liveprobe/catalog@sha256:1b35dbafe0b373c7f9734efe2ca2a1b3fd820fbbc718c342bc0e2778230ac0ee",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "catalog-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "dev",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "catalog"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "dev",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "catalog.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "catalog",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "member-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "member",
+        "SERVICE_NAME": "member",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "CATALOG_URL": "http://catalog.dev.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "member",
+        "namespace": "dev",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "member"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "member",
+              "app.kubernetes.io/part-of": "member",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "member",
+                "image": "liveprobe/member@sha256:38eb38f366bc64526817328fe6dddb8430a3aecc3d4c8c84aad2545c15713a69",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "member-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true,
+                  "runAsUser": 1000,
+                  "runAsGroup": 1000
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "member",
+        "namespace": "dev",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "member"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "member",
+        "namespace": "dev",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "member.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "member",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "payment-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "payment",
+        "SERVICE_NAME": "payment",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "MEMBER_URL": "http://member.dev.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "payment",
+        "namespace": "dev",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "payment"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "payment",
+              "app.kubernetes.io/part-of": "payment",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "payment",
+                "image": "liveprobe/payment@sha256:a8a5b52135dee145196c25b0186c63e2bb343e93fb6338035ec214d6a948c8e3",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "payment-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "payment",
+        "namespace": "dev",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "payment"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "payment",
+        "namespace": "dev",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "payment.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "payment",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "notification-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "notification",
+        "SERVICE_NAME": "notification",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "MEMBER_URL": "http://member.dev.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "notification",
+        "namespace": "dev",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "notification"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "notification",
+              "app.kubernetes.io/part-of": "notification",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "notification",
+                "image": "liveprobe/notification@sha256:42b97254c291964d223ce0ce2a443cb7fbdfa5ea2d47c87ed03913d94755e43f",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "notification-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "notification",
+        "namespace": "dev",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "notification"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "notification",
+        "namespace": "dev",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "notification.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "notification",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "delivery-config",
+        "namespace": "dev",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "delivery",
+        "SERVICE_NAME": "delivery",
+        "APP_ENV": "dev",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "NOTIFICATION_URL": "http://notification.dev.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "dev",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "delivery"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "delivery",
+              "app.kubernetes.io/part-of": "delivery",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "dev"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "delivery",
+                "image": "liveprobe/delivery@sha256:95a70ce062956bd520b04cbc48a1a6880488b32c6af46c2fc2991ac4ecb5d2f6",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "delivery-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true,
+                  "runAsUser": 1000,
+                  "runAsGroup": 1000
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "dev",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "delivery"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "dev",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "dev"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "delivery.dev.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "delivery",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "default-deny-all",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-same-namespace",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-dns",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "UDP",
+                "port": 53
+              },
+              {
+                "protocol": "TCP",
+                "port": 53
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-ingress-controller",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "traefik"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8080
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-observation",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-observability"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "prometheus"
+                  }
+                }
+              },
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "liveprobe-api"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8080
+              },
+              {
+                "protocol": "TCP",
+                "port": 15090
+              },
+              {
+                "protocol": "TCP",
+                "port": 15020
+              },
+              {
+                "protocol": "TCP",
+                "port": 15021
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "inventory-postgres",
+        "namespace": "dev"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "inventory"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "postgres"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 5432
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "liveprobe-config-reader",
+        "namespace": "dev"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "configmaps"
+          ],
+          "verbs": [
+            "get",
+            "list"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "liveprobe-config-reader",
+        "namespace": "dev"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "liveprobe-config-reader"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "liveprobe"
+        }
+      ]
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "prd",
+        "labels": {
+          "liveprobe.io/environment": "prd",
+          "liveprobe.io/env-order": "2",
+          "istio-injection": "enabled"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "inventory-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "order",
+        "SERVICE_NAME": "inventory",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "SPRING_PROFILES_ACTIVE": "chaos",
+        "CHAOS_STATE_DIR": "/var/run/liveprobe-chaos",
+        "JAVA_TOOL_OPTIONS": "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -Dhttp.keepAlive=false -XX:ActiveProcessorCount=2",
+        "INVENTORY_DB_URL": "jdbc:postgresql://postgres.liveprobe-system.svc:5432/inventory_prd",
+        "INVENTORY_DB_USER": "inventory_prd",
+        "INVENTORY_DB_POOL_MAX": "3",
+        "INVENTORY_DB_CONNECTION_TIMEOUT_MS": "1000"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "inventory",
+        "namespace": "prd",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "inventory"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "inventory",
+              "app.kubernetes.io/part-of": "order",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/actuator/prometheus",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "inventory",
+                "image": "liveprobe/inventory@sha256:baafecdefd405852d8ba1e30dd47b28681de8761d7a0bda294d14b77e5af1026",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "inventory-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1000m",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                },
+                "env": [
+                  {
+                    "name": "CHAOS_OPERATOR_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "inventory-chaos-operator",
+                        "key": "token"
+                      }
+                    }
+                  },
+                  {
+                    "name": "INVENTORY_DB_PASSWORD",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "inventory-db",
+                        "key": "password"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "inventory",
+        "namespace": "prd",
+        "labels": {
+          "app": "inventory",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "inventory"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "order-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "order",
+        "SERVICE_NAME": "order",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "INVENTORY_URL": "http://inventory.prd.svc:8080",
+        "SPRING_PROFILES_ACTIVE": "chaos",
+        "CHAOS_STATE_DIR": "/var/run/liveprobe-chaos",
+        "JAVA_TOOL_OPTIONS": "-XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -Dhttp.keepAlive=false -XX:ActiveProcessorCount=2",
+        "INVENTORY_CONNECT_TIMEOUT_MS": "500",
+        "INVENTORY_TIMEOUT_MS": "1800",
+        "INVENTORY_MAX_RETRIES": "1",
+        "INVENTORY_RETRY_BACKOFF_MS": "100"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "order",
+        "namespace": "prd",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "order"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "order",
+              "app.kubernetes.io/part-of": "order",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/actuator/prometheus",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "order",
+                "image": "liveprobe/order@sha256:143efce5d6d83c2f45cf92fe0c3062e55bb0adc57d0a3880c7ae2104fdfc8788",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "order-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/readiness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/actuator/health/liveness",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "50m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "1000m",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                },
+                "env": [
+                  {
+                    "name": "CHAOS_OPERATOR_TOKEN",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "order-chaos-operator",
+                        "key": "token"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "order",
+        "namespace": "prd",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "order"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "order",
+        "namespace": "prd",
+        "labels": {
+          "app": "order",
+          "app.kubernetes.io/part-of": "order",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "order.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "order",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "catalog-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "catalog",
+        "SERVICE_NAME": "catalog",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "INVENTORY_URL": "http://inventory.prd.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "prd",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "catalog"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "catalog",
+              "app.kubernetes.io/part-of": "catalog",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "catalog",
+                "image": "liveprobe/catalog@sha256:1b35dbafe0b373c7f9734efe2ca2a1b3fd820fbbc718c342bc0e2778230ac0ee",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "catalog-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "prd",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "catalog"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "catalog",
+        "namespace": "prd",
+        "labels": {
+          "app": "catalog",
+          "app.kubernetes.io/part-of": "catalog",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "catalog.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "catalog",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "member-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "member",
+        "SERVICE_NAME": "member",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "CATALOG_URL": "http://catalog.prd.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "member",
+        "namespace": "prd",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "member"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "member",
+              "app.kubernetes.io/part-of": "member",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "member",
+                "image": "liveprobe/member@sha256:38eb38f366bc64526817328fe6dddb8430a3aecc3d4c8c84aad2545c15713a69",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "member-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true,
+                  "runAsUser": 1000,
+                  "runAsGroup": 1000
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "member",
+        "namespace": "prd",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "member"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "member",
+        "namespace": "prd",
+        "labels": {
+          "app": "member",
+          "app.kubernetes.io/part-of": "member",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "member.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "member",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "payment-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "payment",
+        "SERVICE_NAME": "payment",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "MEMBER_URL": "http://member.prd.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "payment",
+        "namespace": "prd",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "payment"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "payment",
+              "app.kubernetes.io/part-of": "payment",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "payment",
+                "image": "liveprobe/payment@sha256:a8a5b52135dee145196c25b0186c63e2bb343e93fb6338035ec214d6a948c8e3",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "payment-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "payment",
+        "namespace": "prd",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "payment"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "payment",
+        "namespace": "prd",
+        "labels": {
+          "app": "payment",
+          "app.kubernetes.io/part-of": "payment",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "payment.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "payment",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "notification-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "notification",
+        "SERVICE_NAME": "notification",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "MEMBER_URL": "http://member.prd.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "notification",
+        "namespace": "prd",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "notification"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "notification",
+              "app.kubernetes.io/part-of": "notification",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "notification",
+                "image": "liveprobe/notification@sha256:42b97254c291964d223ce0ce2a443cb7fbdfa5ea2d47c87ed03913d94755e43f",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "notification-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "notification",
+        "namespace": "prd",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "notification"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "notification",
+        "namespace": "prd",
+        "labels": {
+          "app": "notification",
+          "app.kubernetes.io/part-of": "notification",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "notification.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "notification",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "delivery-config",
+        "namespace": "prd",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "data": {
+        "SYSTEM_NAME": "delivery",
+        "SERVICE_NAME": "delivery",
+        "APP_ENV": "prd",
+        "APP_VERSION": "p18-campaign",
+        "SELF_TRAFFIC": "1",
+        "SELF_TRAFFIC_INTERVAL_SECONDS": "1",
+        "NOTIFICATION_URL": "http://notification.prd.svc:8080",
+        "FAULT_STATE_DIR": "/var/run/liveprobe-chaos"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "prd",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "strategy": {
+          "type": "RollingUpdate",
+          "rollingUpdate": {
+            "maxSurge": 1,
+            "maxUnavailable": 0
+          }
+        },
+        "selector": {
+          "matchLabels": {
+            "app": "delivery"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "delivery",
+              "app.kubernetes.io/part-of": "delivery",
+              "liveprobe.io/managed": "true",
+              "liveprobe.io/environment": "prd"
+            },
+            "annotations": {
+              "prometheus.io/scrape": "true",
+              "prometheus.io/port": "8080",
+              "prometheus.io/path": "/metrics",
+              "prometheus.istio.io/merge-metrics": "false",
+              "sidecar.istio.io/rewriteAppHTTPProbers": "false",
+              "sidecar.istio.io/proxyCPU": "10m",
+              "sidecar.istio.io/proxyMemory": "64Mi",
+              "sidecar.istio.io/proxyMemoryLimit": "128Mi"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "fsGroup": 10001
+            },
+            "containers": [
+              {
+                "name": "delivery",
+                "image": "liveprobe/delivery@sha256:95a70ce062956bd520b04cbc48a1a6880488b32c6af46c2fc2991ac4ecb5d2f6",
+                "imagePullPolicy": "IfNotPresent",
+                "envFrom": [
+                  {
+                    "configMapRef": {
+                      "name": "delivery-config"
+                    }
+                  }
+                ],
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 8080
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "chaos-state",
+                    "mountPath": "/var/run/liveprobe-chaos"
+                  },
+                  {
+                    "name": "tmp",
+                    "mountPath": "/tmp"
+                  }
+                ],
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/ready",
+                    "port": 8080
+                  },
+                  "periodSeconds": 3,
+                  "failureThreshold": 2,
+                  "timeoutSeconds": 2
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz/live",
+                    "port": 8080
+                  },
+                  "periodSeconds": 5,
+                  "failureThreshold": 3,
+                  "timeoutSeconds": 2
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "runAsNonRoot": true,
+                  "runAsUser": 1000,
+                  "runAsGroup": 1000
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "chaos-state",
+                "emptyDir": {
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "tmp",
+                "emptyDir": {
+                  "sizeLimit": "64Mi"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "prd",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app": "delivery"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 8080,
+            "targetPort": 8080
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "delivery",
+        "namespace": "prd",
+        "labels": {
+          "app": "delivery",
+          "app.kubernetes.io/part-of": "delivery",
+          "liveprobe.io/managed": "true",
+          "liveprobe.io/environment": "prd"
+        }
+      },
+      "spec": {
+        "ingressClassName": "traefik",
+        "rules": [
+          {
+            "host": "delivery.prd.localhost",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "delivery",
+                      "port": {
+                        "number": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "default-deny-all",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-same-namespace",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "podSelector": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-dns",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "UDP",
+                "port": 53
+              },
+              {
+                "protocol": "TCP",
+                "port": 53
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-ingress-controller",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "traefik"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8080
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-observation",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-observability"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "prometheus"
+                  }
+                }
+              },
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "liveprobe-api"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8080
+              },
+              {
+                "protocol": "TCP",
+                "port": 15090
+              },
+              {
+                "protocol": "TCP",
+                "port": 15020
+              },
+              {
+                "protocol": "TCP",
+                "port": 15021
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "inventory-postgres",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "inventory"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "liveprobe-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "postgres"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 5432
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "allow-istiod",
+        "namespace": "prd"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "istio-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "istiod"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 15012
+              },
+              {
+                "protocol": "TCP",
+                "port": 15017
+              },
+              {
+                "protocol": "TCP",
+                "port": 443
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "liveprobe-config-reader",
+        "namespace": "prd"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "configmaps"
+          ],
+          "verbs": [
+            "get",
+            "list"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "liveprobe-config-reader",
+        "namespace": "prd"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "liveprobe-config-reader"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "namespace": "liveprobe-system",
+          "name": "liveprobe"
+        }
+      ]
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "p18-inventory-postgres-ingress",
+        "namespace": "liveprobe-system"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "postgres"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchExpressions": [
+                    {
+                      "key": "liveprobe.io/environment",
+                      "operator": "In",
+                      "values": [
+                        "dev",
+                        "prd"
+                      ]
+                    }
+                  ]
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "inventory"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 5432
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "p18-api-target-egress",
+        "namespace": "liveprobe-system"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app": "liveprobe-api"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchExpressions": [
+                    {
+                      "key": "liveprobe.io/environment",
+                      "operator": "In",
+                      "values": [
+                        "dev",
+                        "prd"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 8080
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

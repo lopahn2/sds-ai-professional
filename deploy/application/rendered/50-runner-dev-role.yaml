@@ -1,0 +1,106 @@
+{
+  "apiVersion": "rbac.authorization.k8s.io/v1",
+  "kind": "Role",
+  "metadata": {
+    "name": "liveprobe-application-runner",
+    "namespace": "dev",
+    "labels": {
+      "app.kubernetes.io/part-of": "liveprobe-application"
+    }
+  },
+  "rules": [
+    {
+      "apiGroups": [
+        ""
+      ],
+      "resources": [
+        "pods",
+        "events"
+      ],
+      "verbs": [
+        "get",
+        "list"
+      ]
+    },
+    {
+      "apiGroups": [
+        ""
+      ],
+      "resources": [
+        "pods/log"
+      ],
+      "verbs": [
+        "get"
+      ]
+    },
+    {
+      "apiGroups": [
+        "apps"
+      ],
+      "resources": [
+        "replicasets"
+      ],
+      "verbs": [
+        "get",
+        "list"
+      ]
+    },
+    {
+      "apiGroups": [
+        "apps"
+      ],
+      "resources": [
+        "deployments"
+      ],
+      "verbs": [
+        "get",
+        "list",
+        "watch"
+      ]
+    },
+    {
+      "apiGroups": [
+        "apps"
+      ],
+      "resources": [
+        "deployments"
+      ],
+      "verbs": [
+        "patch"
+      ],
+      "resourceNames": [
+        "business-api",
+        "catalog",
+        "delivery",
+        "delivery-member",
+        "inventory",
+        "notification",
+        "order",
+        "payment",
+        "trade-member"
+      ]
+    },
+    {
+      "apiGroups": [
+        ""
+      ],
+      "resources": [
+        "services/proxy"
+      ],
+      "verbs": [
+        "get"
+      ],
+      "resourceNames": [
+        "http:business-api:8080",
+        "http:catalog:8080",
+        "http:delivery:8080",
+        "http:delivery-member:8080",
+        "http:inventory:8080",
+        "http:notification:8080",
+        "http:order:8080",
+        "http:payment:8080",
+        "http:trade-member:8080"
+      ]
+    }
+  ]
+}

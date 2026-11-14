@@ -1,0 +1,82 @@
+{
+  "apiVersion": "liveprobe.samsung/v1",
+  "environments": [
+    "dev",
+    "prd"
+  ],
+  "retired_environments": [
+    "stg"
+  ],
+  "systems": [
+    {
+      "id": "samsung-trade",
+      "display_name": "삼성 트레이드 시스템",
+      "services": [
+        "order",
+        "inventory",
+        "catalog",
+        "payment",
+        "trade-member"
+      ]
+    },
+    {
+      "id": "samsung-delivery",
+      "display_name": "삼성 딜리버리 시스템",
+      "services": [
+        "delivery",
+        "notification",
+        "delivery-member"
+      ]
+    },
+    {
+      "id": "samsung-business",
+      "display_name": "삼성 비즈니스 시스템",
+      "services": [
+        "business-api"
+      ]
+    }
+  ],
+  "service_to_system": {
+    "order": "samsung-trade",
+    "inventory": "samsung-trade",
+    "catalog": "samsung-trade",
+    "payment": "samsung-trade",
+    "trade-member": "samsung-trade",
+    "delivery": "samsung-delivery",
+    "notification": "samsung-delivery",
+    "delivery-member": "samsung-delivery",
+    "business-api": "samsung-business"
+  },
+  "domain_modes": {
+    "trade-member": "trade",
+    "delivery-member": "delivery",
+    "business-api": "business"
+  },
+  "dependencies": {
+    "order": {
+      "INVENTORY_URL": "inventory"
+    },
+    "catalog": {
+      "INVENTORY_URL": "inventory"
+    },
+    "payment": {
+      "MEMBER_URL": "trade-member"
+    },
+    "notification": {
+      "MEMBER_URL": "delivery-member"
+    },
+    "delivery": {
+      "NOTIFICATION_URL": "notification"
+    }
+  },
+  "kafka": {
+    "namespace": "liveprobe-messaging",
+    "service": "kafka",
+    "bootstrap": "kafka.liveprobe-messaging.svc:9092",
+    "topic_template": "{environment}.business.{target}.master.v1",
+    "targets": {
+      "trade": "samsung-trade",
+      "delivery": "samsung-delivery"
+    }
+  }
+}

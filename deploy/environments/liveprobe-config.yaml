@@ -1,0 +1,42 @@
+dependencies:
+  order:
+  - inventory
+  catalog:
+  - inventory
+  payment:
+  - trade-member
+  notification:
+  - delivery-member
+  delivery:
+  - notification
+llm:
+  provider: codex_cli
+  timeout_s: 180
+  roles:
+    router:
+      model: gpt-6-luna
+      effort: low
+    signal_analyst:
+      model: gpt-6-luna
+      effort: low
+    result_verifier:
+      model: gpt-6.1-sol
+      effort: low
+    evidence_curator:
+      model: gpt-6.1-sol
+      effort: medium
+    safety_verifier:
+      model: gpt-6-astra
+      effort: xhigh
+change_auto_create: false
+# 2026-11-13: 활성 환경은 dev/prd 두 개다. 감시·수집·조치·승격은 이 목록만 대상으로 한다.
+target_namespaces:
+- dev
+- prd
+# 퇴역 환경(stg)은 과거 사건·감사·CSV 조회 필터에만 쓴다. 새 감시·수집·조치 대상이 아니다.
+historical_namespaces:
+- stg
+# 제한된 자율 복구: SIMPLE 분석이 검증되지 않은 이관으로 끝날 때 NORMAL Group으로 한 번 재분석한다.
+# 권한·데이터 경계(authority_boundary)에는 적용하지 않으며 시도 횟수는 RecoveryPolicy 상한을 따른다.
+recovery:
+  simple_reanalysis_level: NORMAL

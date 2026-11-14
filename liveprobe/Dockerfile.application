@@ -1,0 +1,10 @@
+# Incremental app layer; dependency runtime and Codex 0.163.0 are inherited, not reinstalled.
+# 인증 접근 실패를 root 실행으로 우회하지 않는다. Pod는 비root·capability drop ALL·권한 상승 금지·읽기 전용
+# 루트 파일시스템을 강제한다. HOME은 /tmp emptyDir이며 기존 공유 인증 저장소는 읽기 전용이다.
+FROM liveprobe/liveprobe@sha256:f05d276f1efa308bd5258ffabe6a57b564abec50814b57b956fdaf7f34811b9c
+WORKDIR /app
+COPY --chown=65532:65532 app/ /app/app/
+ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 65532:65532
+EXPOSE 8080
+CMD ["uvicorn", "app.application.main:app", "--host", "0.0.0.0", "--port", "8080"]

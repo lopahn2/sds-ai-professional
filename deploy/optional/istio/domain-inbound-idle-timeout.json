@@ -1,0 +1,84 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "networking.istio.io/v1",
+      "kind": "Sidecar",
+      "metadata": {
+        "name": "business-api-inbound-idle-timeout",
+        "namespace": "prd",
+        "labels": {
+          "liveprobe.io/managed": "true"
+        },
+        "annotations": {
+          "liveprobe.io/reason": "Close idle upstream sockets at 2s before Uvicorn 5s keepalive; avoid measured 503 UC without retries"
+        }
+      },
+      "spec": {
+        "workloadSelector": {
+          "labels": {
+            "app": "business-api"
+          }
+        },
+        "inboundConnectionPool": {
+          "http": {
+            "idleTimeout": "2s"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "networking.istio.io/v1",
+      "kind": "Sidecar",
+      "metadata": {
+        "name": "delivery-member-inbound-idle-timeout",
+        "namespace": "prd",
+        "labels": {
+          "liveprobe.io/managed": "true"
+        },
+        "annotations": {
+          "liveprobe.io/reason": "Close idle upstream sockets at 2s before Uvicorn 5s keepalive; avoid measured 503 UC without retries"
+        }
+      },
+      "spec": {
+        "workloadSelector": {
+          "labels": {
+            "app": "delivery-member"
+          }
+        },
+        "inboundConnectionPool": {
+          "http": {
+            "idleTimeout": "2s"
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "networking.istio.io/v1",
+      "kind": "Sidecar",
+      "metadata": {
+        "name": "trade-member-inbound-idle-timeout",
+        "namespace": "prd",
+        "labels": {
+          "liveprobe.io/managed": "true"
+        },
+        "annotations": {
+          "liveprobe.io/reason": "Close idle upstream sockets at 2s before Uvicorn 5s keepalive; avoid measured 503 UC without retries"
+        }
+      },
+      "spec": {
+        "workloadSelector": {
+          "labels": {
+            "app": "trade-member"
+          }
+        },
+        "inboundConnectionPool": {
+          "http": {
+            "idleTimeout": "2s"
+          }
+        }
+      }
+    }
+  ]
+}

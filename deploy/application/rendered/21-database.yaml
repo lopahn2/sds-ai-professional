@@ -1,0 +1,141 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "liveprobe-application-db",
+    "namespace": "liveprobe-system",
+    "labels": {
+      "app.kubernetes.io/part-of": "liveprobe-application"
+    }
+  },
+  "spec": {
+    "serviceName": "liveprobe-application-db",
+    "replicas": 1,
+    "persistentVolumeClaimRetentionPolicy": {
+      "whenDeleted": "Retain",
+      "whenScaled": "Retain"
+    },
+    "selector": {
+      "matchLabels": {
+        "app": "liveprobe-application-db"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "liveprobe-application-db",
+          "app.kubernetes.io/part-of": "liveprobe-application"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "securityContext": {
+          "fsGroup": 999
+        },
+        "containers": [
+          {
+            "name": "postgres",
+            "image": "pgvector/pgvector:0.8.6-pg17-bookworm",
+            "imagePullPolicy": "IfNotPresent",
+            "ports": [
+              {
+                "name": "postgres",
+                "containerPort": 5432
+              }
+            ],
+            "env": [
+              {
+                "name": "POSTGRES_DB",
+                "value": "liveprobe_application"
+              },
+              {
+                "name": "POSTGRES_USER",
+                "value": "liveprobe_application"
+              },
+              {
+                "name": "POSTGRES_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "name": "liveprobe-application-db",
+                    "key": "password"
+                  }
+                }
+              },
+              {
+                "name": "PGDATA",
+                "value": "/var/lib/postgresql/data/pgdata"
+              }
+            ],
+            "readinessProbe": {
+              "exec": {
+                "command": [
+                  "pg_isready",
+                  "-U",
+                  "liveprobe_application",
+                  "-d",
+                  "liveprobe_application"
+                ]
+              },
+              "initialDelaySeconds": 5,
+              "periodSeconds": 10,
+              "timeoutSeconds": 5
+            },
+            "livenessProbe": {
+              "exec": {
+                "command": [
+                  "pg_isready",
+                  "-U",
+                  "liveprobe_application",
+                  "-d",
+                  "liveprobe_application"
+                ]
+              },
+              "initialDelaySeconds": 30,
+              "periodSeconds": 20,
+              "timeoutSeconds": 5,
+              "failureThreshold": 5
+            },
+            "resources": {
+              "requests": {
+                "cpu": "50m",
+                "memory": "128Mi"
+              },
+              "limits": {
+                "cpu": "1",
+                "memory": "512Mi"
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "data",
+                "mountPath": "/var/lib/postgresql/data"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "volumeClaimTemplates": [
+      {
+        "metadata": {
+          "name": "data",
+          "labels": {
+            "app": "liveprobe-application-db",
+            "app.kubernetes.io/part-of": "liveprobe-application"
+          }
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "storageClassName": "local-path",
+          "resources": {
+            "requests": {
+              "storage": "1Gi"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "source": "git:79c6008:evaluation/harness/arms.py",
+  "source_sha256": "2bd37e40a058c57ddb693e891e49fff8601ad3ff57d6aa8e09a634ebeff63bce",
+  "arms": {
+    "single_small": "d8e89e7cd47ecb26dd55117b242149b968ac53cffd7164300499b20affc2afb9",
+    "single_high": "4bd305dc6981349e26bb9ed6ed8d7233bebfd9c2e988b47cd6f060f43419fc4e",
+    "fixed_multi_agent": "999be00ae1b7d9ce270a01aa659de744ed87475044d9f4e9fe5b7b377032f1a9",
+    "adaptive": "c654644e44903d2a5a9ec0a32dfd72a619a448464fceec74e847f3f87dd7a2b1"
+  }
+}

@@ -1,0 +1,37 @@
+# prd/delivery inbound upstream idle timeout (Envoy -> Node app on 127.0.0.6 -> 10.42.x:8080)
+#
+# Cause: Envoy's inbound|8080|| upstream pool keeps HTTP/1.1 connections to the
+# Node app for Envoy's default idle_timeout (1h). Node v22.23.3 closes idle
+# keep-alive sockets after keepAliveTimeout=5000ms (+ keepAliveTimeoutBuffer
+# 1000ms). When Envoy reuses a socket at the instant Node closes it, Envoy
+# reports 503 UC upstream_reset_before_response_started{connection_termination}
+# while the app never saw the request.
+#
+# Fix: Envoy closes idle upstream connections after 2s, well below Node's 5s,
+# so Envoy never reuses a socket Node is closing.
+#
+# Scope: only the Pod(s) labelled app=delivery in namespace prd.
+# Only inboundConnectionPool.http.idleTimeout is set. egress, ingress,
+# outboundTrafficPolicy are omitted, so Istio keeps its defaults (no Sidecar
+# existed mesh-wide when this was written). No retries are added, and app 503s
+# pass through unchanged.
+# Apply: dynamic xDS push, no Pod restart needed.
+# Rollback: kubectl -n prd delete sidecar delivery-inbound-idle-timeout
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  name: delivery-inbound-idle-timeout
+  namespace: prd
+  labels:
+    app.kubernetes.io/part-of: samsung-delivery
+    liveprobe.io/managed: "true"
+    liveprobe.io/fix: envoy-inbound-keepalive-race
+  annotations:
+    liveprobe.io/reason: "Envoy inbound upstream idle 2s < Node keepAliveTimeout 5s; avoids 503 UC connection_termination keep-alive race"
+spec:
+  workloadSelector:
+    labels:
+      app: delivery
+  inboundConnectionPool:
+    http:
+      idleTimeout: 2s

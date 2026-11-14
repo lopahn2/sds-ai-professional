@@ -1,0 +1,212 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "liveprobe-application-api",
+    "namespace": "liveprobe-system",
+    "labels": {
+      "app.kubernetes.io/part-of": "liveprobe-application"
+    }
+  },
+  "spec": {
+    "replicas": 1,
+    "strategy": {
+      "type": "Recreate"
+    },
+    "selector": {
+      "matchLabels": {
+        "app": "liveprobe-application-api"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app": "liveprobe-application-api",
+          "app.kubernetes.io/part-of": "liveprobe-application"
+        },
+        "annotations": {
+          "liveprobe.io/application-config-sha256": "1f8b24a38b2ba742e6f6c14c5cca13757578c7327aea8bac83315529fed81de7"
+        }
+      },
+      "spec": {
+        "serviceAccountName": "liveprobe-application-api",
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "name": "api",
+            "image": "liveprobe/application@sha256:b1593ab2e3b17218f886cc6aef136b32740f4c19022a74cd57631f8ffb8b3555",
+            "imagePullPolicy": "IfNotPresent",
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              }
+            ],
+            "env": [
+              {
+                "name": "APPLICATION_DATABASE_URL_FILE",
+                "value": "/run/application/database/url"
+              },
+              {
+                "name": "APPLICATION_IDENTITY_FILE",
+                "value": "/run/application/identity/human.json"
+              },
+              {
+                "name": "APPLICATION_MACHINE_IDENTITY_FILE",
+                "value": "/run/application/identity/machine.json"
+              },
+              {
+                "name": "APPLICATION_PROFILES_FILE",
+                "value": "/etc/application/application-profiles.json"
+              },
+              {
+                "name": "APPLICATION_CATALOG_FILE",
+                "value": "/etc/application/system-catalog.json"
+              },
+              {
+                "name": "APPLICATION_CODEX_HOME",
+                "value": "/var/lib/liveprobe/application-codex"
+              },
+              {
+                "name": "APPLICATION_WORKER_ENABLED",
+                "value": "true"
+              },
+              {
+                "name": "APPLICATION_DATABASE_ISOLATED",
+                "value": "true"
+              },
+              {
+                "name": "APPLICATION_MODEL",
+                "value": "gpt-6.1-sol"
+              },
+              {
+                "name": "APPLICATION_CLASSIFIER_MODEL",
+                "value": "gpt-6-luna"
+              },
+              {
+                "name": "APPLICATION_CRITIC_MODEL",
+                "value": "gpt-6-astra"
+              }
+            ],
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/api/application/v1/healthz",
+                "port": "http"
+              },
+              "initialDelaySeconds": 5,
+              "periodSeconds": 10
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/api/application/v1/healthz",
+                "port": "http"
+              },
+              "initialDelaySeconds": 30,
+              "periodSeconds": 20
+            },
+            "resources": {
+              "requests": {
+                "cpu": "100m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1536Mi"
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "identity",
+                "mountPath": "/run/application/identity",
+                "readOnly": true
+              },
+              {
+                "name": "database",
+                "mountPath": "/run/application/database",
+                "readOnly": true
+              },
+              {
+                "name": "config",
+                "mountPath": "/etc/application",
+                "readOnly": true
+              },
+              {
+                "name": "codex-home",
+                "mountPath": "/var/lib/liveprobe/application-codex"
+              },
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "identity",
+            "secret": {
+              "secretName": "liveprobe-application-identity",
+              "defaultMode": 292,
+              "items": [
+                {
+                  "key": "human.json",
+                  "path": "human.json"
+                },
+                {
+                  "key": "machine.json",
+                  "path": "machine.json"
+                }
+              ]
+            }
+          },
+          {
+            "name": "database",
+            "secret": {
+              "secretName": "liveprobe-application-db-url",
+              "defaultMode": 292,
+              "items": [
+                {
+                  "key": "url",
+                  "path": "url"
+                }
+              ]
+            }
+          },
+          {
+            "name": "config",
+            "configMap": {
+              "name": "liveprobe-application-config"
+            }
+          },
+          {
+            "name": "codex-home",
+            "persistentVolumeClaim": {
+              "claimName": "liveprobe-application-codex"
+            }
+          },
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

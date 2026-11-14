@@ -1,0 +1,46 @@
+--- a/daemon/libnetwork/sandbox_linux.go
++++ b/daemon/libnetwork/sandbox_linux.go
+@@ -275,21 +275,28 @@
+ 			continue
+ 		}
+ 
+-		ifaceOptions := []osl.IfaceOption{
+-			osl.WithIPv4Address(i.addr),
+-			osl.WithRoutes(i.routes),
+-		}
+-		if i.addrv6 != nil && i.addrv6.IP.To16() != nil {
+-			ifaceOptions = append(ifaceOptions, osl.WithIPv6Address(i.addrv6))
+-		}
+-		if i.mac != nil {
+-			ifaceOptions = append(ifaceOptions, osl.WithMACAddress(i.mac))
+-		}
+-		if len(i.llAddrs) != 0 {
+-			ifaceOptions = append(ifaceOptions, osl.WithLinkLocalAddresses(i.llAddrs))
+-		}
+-		iface := osl.Iface{SrcName: i.srcName, DstPrefix: i.dstPrefix, DstName: i.dstName}
+-		interfaces[iface] = ifaceOptions
++		// Endpoints without a host-side interface (e.g. the "none" network) are
++		// never added via AddInterface on the normal create path (see
++		// populateNetworkResourcesOS). Mirror that on live-restore so no phantom
++		// interface with an empty name is registered; otherwise Statistics()
++		// fails with LinkByName("") and the stats API returns 500.
++		if i.srcName != "" {
++			ifaceOptions := []osl.IfaceOption{
++				osl.WithIPv4Address(i.addr),
++				osl.WithRoutes(i.routes),
++			}
++			if i.addrv6 != nil && i.addrv6.IP.To16() != nil {
++				ifaceOptions = append(ifaceOptions, osl.WithIPv6Address(i.addrv6))
++			}
++			if i.mac != nil {
++				ifaceOptions = append(ifaceOptions, osl.WithMACAddress(i.mac))
++			}
++			if len(i.llAddrs) != 0 {
++				ifaceOptions = append(ifaceOptions, osl.WithLinkLocalAddresses(i.llAddrs))
++			}
++			iface := osl.Iface{SrcName: i.srcName, DstPrefix: i.dstPrefix, DstName: i.dstName}
++			interfaces[iface] = ifaceOptions
++		}
+ 		if joinInfo != nil {
+ 			routes = append(routes, joinInfo.StaticRoutes...)
+ 		}

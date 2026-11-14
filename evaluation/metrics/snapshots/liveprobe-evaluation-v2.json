@@ -1,0 +1,13 @@
+{
+  "metric_set_version": "liveprobe-evaluation/v2",
+  "run_output_schema": "kan59-run-output/v2",
+  "baseline_arm": "single_high",
+  "selection_dimensions": ["level", "roles", "models", "efforts", "minimum_cost"],
+  "selection_rule_ko": "승인된 각 차원의 정답과 관측값이 모두 있을 때만 독립 채점한다. 수준 일치는 구성 최적성이 아니다.",
+  "minimum_cost_rule_ko": "같은 입력 지문의 승인된 비교 집합에서 품질·안전을 만족하는 관측 조합의 최소비용만 비교한다. 미관측 후보가 있으면 unknown이다. 전체 가능한 모델에 대한 최적성은 주장하지 않는다.",
+  "usage_rule_ko": "완전합계는 하나라도 결측이면 null이며 알려진 부분합과 결측 행 수를 별도로 보존한다. 실제 0과 미관측을 구별한다.",
+  "calls_rule_ko": "역할 실행행·공급자 attempts 합·명시 승격 이벤트를 구별한다. attempts 미기록은 1로 추정하지 않는다. quota 재호출은 런타임이 명시 기록한 경우에만 포함된다.",
+  "cost_rule_ko": "모든 승인 사건의 양쪽 비용·기준·입력지문이 같고 기준 비용이 양수여야 전체 절감률을 판정한다. 부분쌍 절감률은 기술통계이며 전체 판정이 아니다.",
+  "shadow_rule_ko": "동일 입력·문맥·채점 정의의 저장 실행만 쌍으로 비교한다. 다른 모델·생략 결과를 만들지 않는다. shadow 추천은 운영 정책을 바꾸지 않는다.",
+  "legacy_rule_ko": "kan59-metrics/v1 원본은 별도 보관 정의로 재현하며 v2 호출 단위와 혼합하지 않는다."
+}

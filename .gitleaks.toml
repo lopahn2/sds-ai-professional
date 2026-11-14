@@ -1,0 +1,68 @@
+title = "LiveProbe public-source secret scan"
+
+[extend]
+useDefault = true
+
+# Only exact synthetic redaction-test lines are allowed. Real credentials remain blocked.
+
+[[rules]]
+id = "jwt"
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_evidence.py:18"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_evidence\.py$''']
+regexes = ['''(?m)^[\t ]*FAKE_JWT = "eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJmYWtlLXVzZXIifQ\.c2lnbmF0dXJlLWZha2UtMTIz"[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_llm.py:149"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_llm\.py$''']
+regexes = ['''(?m)^[\t ]*s = '\{"access_token": "eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.abcdefghijkl", "refresh_token":"rt_xyz"\} sk-proj-ABCDEFGHIJKLMNOP Bearer abcdefghijklmn'[\t ]*$''']
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_p15_secret_writer.py:132"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_p15_secret_writer\.py$''']
+regexes = ['''(?m)^[\t ]*b'\{"plan_sha256":"x", "values":\{"PASSWORD":"P15_SYNTHETIC_SECRET_NEVER_PERSIST_7e913f"\}, "extra":1\}',[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_openai_api_adapter.py:14"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_openai_api_adapter\.py$''']
+regexes = ['''(?m)^[\t ]*SYNTHETIC_KEY = "fixture-secret-opaque-7392"[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_p15_interpret.py:105"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_p15_interpret\.py$''']
+regexes = ['''(?m)^[\t ]*b = \{"E7_error_logs": \["password=hunter2 token=abcd1234efgh5678 failed"\]\}[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_llm.py:69"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_llm\.py$''']
+regexes = ['''(?m)^[\t ]*\(tmp_path / "o"\)\.write_text\(jsonl\(\{"type": "error", "message": "401 Unauthorized: token expired access_token=abcd1234efgh"\}\)\)[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_llm_providers.py:400"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_llm_providers\.py$''']
+regexes = ['''(?m)^[\t ]*f'\{\{"CLAUDE_CODE_OAUTH_TOKEN": "\{DUMMY_TOKEN\}"\}\} CLAUDE_CODE_OAUTH_TOKEN=abc123def456'\)[\t ]*$''']
+
+[[rules.allowlists]]
+description = "Synthetic redaction fixture: liveprobe/tests/test_llm.py:149"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)liveprobe/tests/test_llm\.py$''']
+regexes = ['''(?m)^[\t ]*s = '\{"access_token": "eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.abcdefghijkl", "refresh_token":"rt_xyz"\} sk-proj-ABCDEFGHIJKLMNOP Bearer abcdefghijklmn'[\t ]*$''']

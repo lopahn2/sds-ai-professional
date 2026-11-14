@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>LiveProbe for Application · 사건 관제</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#incident-detail">사건 상세로 이동</a>
+<header class="top"><div><strong>LiveProbe <span>for Application</span></strong><h1>애플리케이션 사건 관제</h1><p class="purpose">코드 장애의 분석·수정·시험과 dev → prd 승격을 맡는 별도 제품입니다. <a href="http://liveprobe.localhost/" rel="noreferrer">Kubernetes 관제 및 기존 변경 이력</a></p></div><div class="top-actions"><label class="check" for="auto-refresh"><input id="auto-refresh" type="checkbox" checked><span>자동 갱신(15초)</span></label><button id="refresh" type="button">새로고침</button></div></header>
+<main>
+  <section class="access" aria-labelledby="access-title"><details id="access-panel" open><summary id="access-title">접근 권한 <span id="access-state">· 조회 권한을 적용하세요</span></summary>
+    <form id="auth-form" autocomplete="off"><label for="auth-bearer">조회·사건 생성 인증 토큰(bearer)<input id="auth-bearer" type="password" autocomplete="off" spellcheck="false" required></label><button type="submit">접근 적용</button><button id="forget-auth" type="button">권한 지우기</button></form>
+    <p class="muted">입력값은 이 화면의 메모리에서만 사용합니다. 새로 열면 다시 입력해야 합니다. 사용자 시험과 운영 승인은 별도 권한으로 전송합니다.</p>
+  </details></section>
+  <section id="readiness" aria-labelledby="readiness-title"><h2 id="readiness-title">실행 준비</h2><div id="readiness-body">확인 중입니다.</div><details id="readiness-details"><summary>준비 점검 자세히</summary><div id="readiness-checks"></div><details id="raw-readiness" data-raw><summary>원문 보기 · 준비 점검 응답</summary><pre id="readiness-raw"></pre></details></details></section>
+  <p id="live-status" role="status" aria-live="polite" aria-atomic="true">조회 권한을 적용하면 사건 목록을 불러옵니다.</p>
+  <div id="error-banner" role="alert" hidden><p id="error-message"></p><details id="raw-error" data-raw><summary>원문 보기 · 요청 실패 정보</summary><pre id="error-raw"></pre></details></div>
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar" aria-label="사건 탐색">
+      <section aria-labelledby="list-title"><div class="section-head"><h2 id="list-title">사건 목록</h2><span id="list-count" class="muted">미관측</span></div>
+        <form id="list-filter" class="list-filter" autocomplete="off">
+          <label for="filter-environment">환경<select id="filter-environment"><option value="">전체</option><option value="dev">dev</option><option value="stg">stg (퇴역·이력)</option><option value="prd">prd</option></select></label>
+          <label for="filter-group">상태<select id="filter-group"><option value="">전체</option><option value="automatic">자동 진행 중</option><option value="waiting_people">사람 시험·승인 대기</option><option value="handoff">담당자 이관</option><option value="closed">종료(완료·실패)</option></select></label>
+          <label for="filter-search">사유·ID 검색<input id="filter-search" type="search" maxlength="120" spellcheck="false"></label>
+          <details><summary>기간·시스템·서비스</summary>
+            <label>시작일 (한국시간)<input type="date" id="filter-start"></label>
+            <label>종료일 (포함)<input type="date" id="filter-end"></label>
+            <label>시스템 ID<input id="filter-system" maxlength="120"></label>
+            <label>서비스 이름<input id="filter-service" maxlength="120"></label>
+          </details>
+          <button type="submit">조회</button>
+        </form>
+        <p id="list-newer" class="notice" hidden><span id="list-newer-text"></span> <button id="list-newest" type="button">최신 목록 보기</button></p>
+        <div id="incident-list">조회 권한을 적용하세요.</div>
+        <nav class="pager" aria-label="사건 목록 페이지"><button id="list-prev" type="button" disabled>이전</button><span id="list-page" class="muted"></span><button id="list-next" type="button" disabled>다음</button></nav>
+      </section>
+      <section><details id="create-panel"><summary id="create-title">새 사건 만들기</summary><form id="create-form" autocomplete="off">
+        <label for="create-environment">환경<select id="create-environment" required><option value="">카탈로그 확인 중</option></select></label>
+        <label for="create-service">서비스<select id="create-service" required><option value="">카탈로그 확인 중</option></select></label>
+        <label for="create-reason">사유<textarea id="create-reason" rows="3" maxlength="4000" required></textarea></label>
+        <button id="create-submit" type="submit" disabled>사건 생성</button><p class="muted">등록된 활성 환경(dev·prd)·서비스만 선택합니다. stg는 퇴역해 과거 기록 조회만 합니다. 시스템은 서버가 결정합니다.</p>
+      </form></details></section>
+    </aside>
+    <article id="incident-detail" tabindex="-1" aria-labelledby="detail-title">
+      <header class="detail-heading"><h2 id="detail-title">사건을 선택하세요</h2><div id="incident-summary"></div></header>
+      <div id="detail-sections" hidden>
+        <section id="next-action" class="next-action" aria-labelledby="next-title"><h3 id="next-title">현재 상태와 다음 행동</h3><div id="next-action-body"></div><details id="raw-incident" data-raw><summary>원문 보기 · 감지 사유·오류·사건 응답</summary><pre id="incident-raw"></pre></details></section>
+        <button id="history-toggle" type="button" aria-expanded="false" aria-controls="response-records" hidden>대응 기록 보기</button>
+        <div id="response-records">
+        <section id="human-section" aria-labelledby="human-title"><h3 id="human-title">사용자 시험 · 운영 승인</h3><p id="approval-gate" class="muted"></p>
+          <details id="approval-target" data-raw hidden><summary>승인 대상 검토 · 원문 보기</summary><div id="approve-digest"></div><div id="approval-verification"></div><p class="warning">확인한 버전과 대상에만 승인이 적용됩니다.</p></details>
+          <div class="human-forms">
+            <form id="user-test-form" autocomplete="off" hidden><h4><span class="user-test-env">dev</span> 사용자 시험 기록</h4>
+              <label for="tester-bearer"><span><span class="user-test-env">dev</span> 시험자 인증 토큰(tester)</span><input id="tester-bearer" type="password" autocomplete="off" spellcheck="false" required></label>
+              <label for="test-passed">실제 시험 결과<select id="test-passed" required><option value="">결과 선택</option><option value="true">통과</option><option value="false">실패</option></select></label>
+              <label for="test-notes">시험 기록<textarea id="test-notes" rows="3" maxlength="4000" required></textarea></label>
+              <button id="user-test-submit" type="submit" disabled><span class="user-test-env">dev</span> 시험 기록</button>
+            </form>
+            <form id="approve-form" autocomplete="off" hidden><h4>prd 명시 승인</h4>
+              <label for="approver-bearer">prd 승인자 인증 토큰(prd-approver)<input id="approver-bearer" type="password" autocomplete="off" spellcheck="false" required></label>
+              <label class="check" for="approve-confirm"><input id="approve-confirm" type="checkbox" required><span>위에 표시된 전체 이미지 digest와 대상 지문, 검증 결과와 위험·원복 방법을 확인했습니다. 이 버전의 prd 배포를 승인합니다.</span></label>
+              <button id="approve-submit" type="submit" disabled>이 버전의 prd 배포 승인</button>
+              <p class="muted">자동 시험은 사람의 승인을 대신하지 않습니다.</p>
+            </form>
+          </div>
+          <div id="human-records"></div><details id="raw-human" data-raw><summary>원문 보기 · 사용자 시험·승인 기록</summary><pre id="human-raw"></pre></details>
+        </section>
+        <section aria-labelledby="environments-title"><h3 id="environments-title">환경별 상태</h3><p class="muted">배포 요청과 별도 업무 확인을 구분합니다.</p><div id="env-status"></div><details id="raw-environments" data-raw><summary>원문 보기 · 환경 검증·이미지 지문</summary><pre id="env-raw"></pre></details></section>
+        <section aria-labelledby="tests-title"><h3 id="tests-title">시험 결과 · 재현 · 회귀</h3><div id="test-results"></div><details id="raw-tests" data-raw><summary>원문 보기 · 시험 명세·보고서 지문</summary><div id="test-details"></div></details></section>
+        <section aria-labelledby="patch-title"><h3 id="patch-title">변경 내용</h3><div id="patch-overview"></div><details id="raw-patch" data-raw><summary>원문 보기 · 수정 사유·파일·차이(diff)</summary><div id="patch-summary"></div><h4>변경 파일</h4><ul id="patch-files"></ul><h4>추가 시험</h4><ul id="patch-tests"></ul><pre id="patch-diff" aria-label="수정안 diff"></pre></details></section>
+        <section aria-labelledby="evidence-title"><h3 id="evidence-title">수집 근거</h3><div id="collection-meta"></div><details id="raw-collection" data-raw><summary>원문 보기 · 로그·근거 표본</summary><div id="collection-logs"></div><div id="evidence-table"></div></details></section>
+        <section aria-labelledby="analysis-title"><h3 id="analysis-title">분석 · 검증</h3><div id="analysis-overview"></div><details id="raw-analysis" data-raw><summary>원문 보기 · 역할별 판단·인용·참조</summary><div id="analysis-roles"></div></details></section>
+        <section aria-labelledby="stages-title"><h3 id="stages-title">진행 이력</h3><details id="raw-stages" data-raw><summary>원문 보기 · 지난 단계·내부 이벤트</summary><ol id="stage-timeline" class="timeline"></ol></details></section>
+        <section aria-labelledby="artifacts-title"><h3 id="artifacts-title">산출물</h3><details id="raw-artifacts" data-raw><summary>원문 보기 · 불변 산출물 지문</summary><div id="artifacts"></div></details></section>
+        <section aria-labelledby="explain-title"><h3 id="explain-title">변경 설명 · 부작용 · 원복</h3><details id="raw-explain" data-raw><summary>원문 보기 · 변경 설명·위험·원복 기록</summary><div id="release-explain"></div></details></section>
+        </div>
+      </div>
+    </article>
+  </div>
+</main>
+<footer>관측되지 않은 정보는 미관측으로 표시합니다. 이 화면은 서버의 권한·안전 검사를 대신하지 않습니다.</footer>
+</body>
+</html>

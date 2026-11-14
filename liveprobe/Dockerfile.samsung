@@ -1,0 +1,3 @@
+# 변경된 관제 소스만 고정된 기존 런타임에 겹친다. 의존성 재빌드가 아니다.
+FROM liveprobe/liveprobe@sha256:e71308313642ac2b9783f927d7862ceec655a087170f53898af74a5234902268
+COPY app/flows.py app/overview.py app/systems.py /app/app/
