@@ -39,7 +39,7 @@ function analysisFlowEdges(flow: Narrative['flow'], positions = new Map(layoutFl
     const label = adjacent && e.kind !== 'flow' ? clean : undefined;
     return { ...e, ...flowHandles(a, b), ariaLabel: `${EDGE_KIND_KO[e.kind] ?? '연결'}${clean ? ` · ${clean}` : ''}: ${flowTitle(byId.get(e.source)!)} → ${flowTitle(byId.get(e.target)!)}`, type: 'smoothstep', animated: !snapshot && byId.get(e.target)?.status === 'running', label,
       style: { stroke: color, strokeWidth: e.kind === 'flow' ? 1.5 : 2, strokeDasharray: planned ? '5 5' : e.kind === 'reroute' ? '9 4' : e.kind === 'steer' ? '3 3' : undefined },
-      labelStyle: { fill: color, fontSize: 12, fontWeight: 500 }, labelShowBg: true, labelBgPadding: [4, 2], labelBgBorderRadius: 4, labelBgStyle: { fill: '#0c1420' }, markerEnd: { type: MarkerType.ArrowClosed, color }, focusable: false };
+      labelStyle: { fill: color, fontSize: 12, fontWeight: 500 }, labelShowBg: true, labelBgPadding: [4, 2], labelBgBorderRadius: 4, labelBgStyle: { fill: '#11181c' }, markerEnd: { type: MarkerType.ArrowClosed, color }, focusable: false };
   });
 }
 function Canvas({ flow, selected, choose, snapshot }: { flow: Narrative['flow']; selected: string | null; choose: (id: string) => void; snapshot: boolean }) {

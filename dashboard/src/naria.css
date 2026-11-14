@@ -72,11 +72,10 @@
 .nds-theme .ops .priority-incidents { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; list-style: none; min-width: 0; overflow-x: auto; scrollbar-width: thin; grid-column: auto; }
 .nds-theme .ops .priority-incidents > li { flex: 0 1 240px; min-width: 190px; }
 .nds-theme .ops .priority-incidents > li.queue-more { flex: none; min-width: 0; align-self: center; }
-.nds-theme .ops .priority-incidents a.queue-item { display: grid; gap: 2px; height: 100%; padding: 8px 12px; border: 1px solid var(--line); border-left-width: 3px; border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); }
+.nds-theme .ops .priority-incidents a.queue-item { display: grid; gap: 2px; height: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); }
 .nds-theme .ops .priority-incidents a.queue-item:hover { background: var(--nds-subtle); }
-.nds-theme .ops .priority-incidents a.queue-item.tone-danger { border-left-color: var(--nds-danger); }
-.nds-theme .ops .priority-incidents a.queue-item.tone-warning { border-left-color: var(--nds-warning); }
-.nds-theme .ops .priority-incidents a.queue-item.tone-info { border-left-color: var(--nds-info); }
+.nds-theme .ops .priority-incidents a.queue-item.tone-danger { border-color: color-mix(in srgb, var(--nds-danger) 45%, var(--nds-surface)); background: var(--nds-danger-soft); }
+.nds-theme .ops .priority-incidents a.queue-item.tone-warning { border-color: color-mix(in srgb, var(--nds-warning) 45%, var(--nds-surface)); background: var(--nds-warning-soft); }
 .nds-theme .queue-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .nds-theme .queue-item-top > b { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nds-theme .ops .priority-incidents a.queue-item small { font-size: 12px; color: var(--nds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -118,10 +117,6 @@
 .nds-theme .headline-next.needs-decision > p { color: var(--nds-text); flex: 1; min-width: 0; }
 .nds-theme .headline-next.needs-decision > p > b { color: var(--nds-warning); }
 .nds-theme .headline-next.needs-decision > .btn { flex: none; }
-.nds-theme .step-card, .nds-theme .decision-card, .nds-theme .command-card { border-radius: var(--nds-radius-card); }
-.nds-theme .operator-bubble, .nds-theme .ack-bubble { border-radius: var(--nds-radius-card); }
-.nds-theme .operator-bubble { background: var(--nds-accent-soft); }
-.nds-theme .raw-text, .nds-theme pre.json { color: var(--nds-text); }
 
 /* 다이어그램: 디자인 시스템 다크 토큰 값(#11181c·#20292d·#303b40 …)으로 맞춘 작업면 */
 .nds-theme .topology-canvas, .nds-theme .flow-canvas {

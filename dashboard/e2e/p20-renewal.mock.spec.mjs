@@ -78,6 +78,9 @@ test('관제실의 지금 할 일 버튼은 승인 카드로 이동하고 포커
   await next.getByRole('button', { name: '승인 카드로 이동' }).click();
   const card = page.getByRole('article', { name: `조치 승인 요청 ${a.id}` });
   await expect(card).toBeInViewport();
+  // 카드가 접히거나 잘리지 않고 승인·거절 버튼이 실제로 보인다.
+  for (const name of ['승인', '거절']) await expect(card.getByRole('button', { name, exact: true })).toBeInViewport();
+  expect((await card.boundingBox()).height).toBeGreaterThan(200);
   expect(await card.evaluate(e => e.contains(document.activeElement))).toBe(true);
 });
 
