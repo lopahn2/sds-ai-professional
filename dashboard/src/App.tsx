@@ -7,6 +7,7 @@ import { Incidents } from './Incidents';
 import { Ledger } from './Ledger';
 import { Settings } from './Settings';
 import './styles.css';
+import './naria.css';
 export default function App() {
   return <BrowserRouter><Suspense fallback={<div className="empty" role="status">화면을 불러오는 중입니다.</div>}><Routes><Route element={<Shell />}>
     <Route index element={<OverviewPage />} />

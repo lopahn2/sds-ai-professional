@@ -83,7 +83,7 @@ test('정교화한 서비스 지도는 원천 상태·선택·명도 위계와 �
   await expect(page.locator('.resource-glyph svg')).toHaveCount(await nodes.count());
   await expect(page.locator('.namespace-heading')).toHaveCount(await page.locator('.namespace-box').count());
   await expect(page.locator('.map-connection-count')).toContainText('실측 연결');
-  await expect(page.locator('.topology-canvas')).toHaveCSS('background-color', 'rgb(12, 20, 32)');
+  await expect(page.locator('.topology-canvas')).toHaveCSS('background-color', 'rgb(17, 24, 28)');
   await readableTokens(page, '.topology-canvas');
   await layout(page); await capture(page, info, 'map');
   const plain = nodes.filter({ hasNot: page.locator('.incident-pin') }).first();
@@ -107,7 +107,7 @@ test('정교화한 AI 흐름은 모든 단계·역할·선택·밝은 근거 영
   await page.goto(`/incidents/${row.id}`); await tab(page, '흐름');
   const nodes = page.locator('.flow-step button');
   await expect(nodes).toHaveCount(n.flow.nodes.length);
-  await expect(page.locator('.flow-canvas')).toHaveCSS('background-color', 'rgb(12, 20, 32)');
+  await expect(page.locator('.flow-canvas')).toHaveCSS('background-color', 'rgb(17, 24, 28)');
   await expect(page.locator('.flow-step svg')).toHaveCount(n.flow.nodes.length);
   await readableTokens(page, '.flow-canvas');
   await layout(page); await capture(page, info, 'flow');

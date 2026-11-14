@@ -7,14 +7,16 @@ import { historyResult, whenKo } from './history';
 import './incidentHistoryList.css';
 import { incidentSymptom } from './presentation';
 import { StatusBadge, LevelBadge, ErrorBox } from './ui';
+import { useLive } from './live';
+import { needsOperator, nextStepShort, responseQueue } from './responseQueue';
 
 import { INCIDENT_PAGE as PAGE, incidentListPath, detailFilters, type DetailFilters } from './historyQuery';
 import { historyEnvironment, historyEnvironmentOptions, isRetiredEnvironment } from './environments';
 const statuses: Status[] = ['open', 'analyzing', 'action_pending', 'acting', 'resolved', 'handed_off', 'failed', 'closed'];
 const origins: IncidentOrigin[] = ['evaluation', 'unconfirmed'];
-const resultFilters = [
-  ['resolved', '자동 복구'], ['closed', '운영자 종료'], ['failed', '처리 실패'], ['handed_off', '운영자 이관'],
-] as const;
+// 대응이 남은 상태를 앞에, 끝난 결과를 뒤에 둔다. 운영자는 보통 "지금 내 차례인 것"부터 찾는다.
+const activeFilters = [['action_pending', '승인 대기'], ['handed_off', '운영자 이관'], ['analyzing', '분석 중']] as const;
+const resultFilters = [['resolved', '자동 복구'], ['closed', '운영자 종료'], ['failed', '처리 실패']] as const;
 function HistoryTime({ incident }: { incident: Incident }) {
   const result = historyResult(incident);
   return <div className="incident-time">
@@ -33,6 +35,8 @@ export function Incidents() {
   const n = Number(params.get('offset')); const offset = Number.isSafeInteger(n) && n >= 0 ? n : 0;
   const a = Number(params.get('as_of')); const asOf = offset > 0 && Number.isSafeInteger(a) && a > 0 ? a : null;
   const [search, setSearch] = useState(query);
+  const { open } = useLive();
+  const waiting = useMemo(() => responseQueue(open).filter(i => needsOperator(i.status, i.claimed)), [open]);
   const [page, setPage] = useState<IncidentPage | null>(null); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
   useEffect(() => setSearch(query), [query]);
   const set = (next: DetailFilters & { status?: string; search?: string; offset?: number; environment?: string; origin?: string; asOf?: number | null }) => {
@@ -60,9 +64,18 @@ export function Incidents() {
   const countLabel = !page ? (error ? '집계 미확인' : '집계 확인 중') : filtered ? `조건 일치 ${total}건` : `전체 ${total}건`;
   return <div className="page incidents-page">
     <div className="page-head"><div><h1>장애 관제</h1></div><span className="badge">{countLabel}</span></div>
-    <nav className="history-results" aria-label="지난 장애 처리 결과">
+    {waiting.length > 0 && <section className="attention-strip" aria-label="운영자 결정이 필요한 장애">
+      <strong>내 결정이 필요한 장애 {waiting.length}건</strong>
+      <ul>{waiting.slice(0, 5).map(i => <li key={i.id}><Link to={`/incidents/${i.id}`}>{i.workload} <span className="mono">#{i.id}</span> · {nextStepShort(i.status, i.claimed).label}</Link></li>)}</ul>
+    </section>}
+    <nav className="history-results" aria-label="장애 상태별 보기">
+      <button type="button" aria-pressed={filter === ''} onClick={() => set({status:'', offset:0, asOf:null})}>전체</button>
+      <span>대응 중</span>
+      {activeFilters.map(([value, label]) =>
+        <button type="button" key={value} aria-pressed={filter === value} onClick={() => set({status:value, offset:0, asOf:null})}>{label}</button>
+      )}
       <span>처리 결과</span>
-      {([['', '전체'], ...resultFilters] as const).map(([value, label]) =>
+      {resultFilters.map(([value, label]) =>
         <button type="button" key={value} aria-pressed={filter === value} onClick={() => set({status:value, offset:0, asOf:null})}>{label}</button>
       )}
     </nav>
@@ -94,8 +107,8 @@ export function Incidents() {
     <ErrorBox>{error}</ErrorBox>
     <div className="incident-list card">{loading ? <div className="empty" role="status">불러오는 중…</div> : !page && error ? null : items.length === 0 ? <div className="empty">{filtered ? '조건에 맞는 장애가 없습니다.' : '표시할 장애가 없습니다.'}</div> : items.map(i => <Link className="incident-row" key={i.id} to={`/incidents/${i.id}`} state={{incidentListSearch: params.size ? `?${params.toString()}` : ''}} aria-label={`장애 ${i.id} ${i.workload} 관제실 열기`}>
       <div className="incident-identity"><span className="faint mono">#{i.id}</span><strong>{i.workload}</strong><small className="muted">{placeKo(i.environment, i.system, null, i.namespace)}{isRetiredEnvironment(i.environment) ? ' · 퇴역 환경 이력' : ''}{i.origin === 'evaluation' ? ' · 평가 실행' : ''}</small><span className="incident-title-ko">{incidentSymptom(i)}</span></div>
-      <div className="incident-badges"><LevelBadge value={i.severity_level} /><StatusBadge value={i.status} recoveryKind={i.recovery_kind} /></div>
-      <HistoryTime incident={i} /><span className="row-arrow" aria-hidden>↗</span>
+      <div className="incident-badges"><LevelBadge value={i.severity_level} /><StatusBadge value={i.status} recoveryKind={i.recovery_kind} />{needsOperator(i.status, Boolean(i.handoff?.claimed_by)) && <span className="incident-next">{nextStepShort(i.status).label}</span>}</div>
+      <HistoryTime incident={i} /><span className="row-arrow" aria-hidden>→</span>
     </Link>)}
       {page && !loading && <div className="pager"><span>{total ? `${offset + 1}–${Math.min(offset + PAGE, total)} / ${total}` : '0건'}</span><div className="inline"><button className="btn" disabled={!offset} onClick={() => set({ offset: Math.max(0, offset - PAGE), asOf: offset - PAGE > 0 ? asOf ?? anchor : null })}>이전</button><button className="btn" disabled={offset + PAGE >= total} onClick={() => set({ offset: offset + PAGE, asOf: asOf ?? anchor })}>다음</button></div></div>}
     </div>
