@@ -32,6 +32,10 @@ class Session:
     def scalars(self, query):
         return Rows(self.rows[query.column_descriptions[0]["entity"]])
 
+    def execute(self, query):
+        # P20: build_flow joins citations to reference chunks; these scenarios record none.
+        return []
+
 
 def decision(key, second):
     return N(id=key, level="COMPLEX", workflow="complex_group", decided_by="rules", rationale="",

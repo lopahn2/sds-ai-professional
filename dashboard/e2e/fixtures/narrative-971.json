@@ -1408,7 +1408,11 @@
             {
               "cause_raw": "Inventory exceeds its verified 512Mi container memory limit, causing OOMKilled and CrashLoopBackOff.",
               "confidence": 0.98,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1418,7 +1422,46 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "k8s_log_analyst"
+          "steer_target_role": "k8s_log_analyst",
+          "confidence": 0.98,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exceeds its verified 512Mi container memory limit, causing OOMKilled and CrashLoopBackOff.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exceeds its verified 512Mi container memory limit, causing OOMKilled and CrashLoopBackOff.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E99_unknown",
+              "ref_ko": null,
+              "ref_known": false,
+              "quote": "memory usage above limit",
+              "supports_raw": "Inventory exceeds its verified 512Mi container memory limit, causing OOMKilled and CrashLoopBackOff.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
+        },
+        "escalation": {
+          "reason_raw": "1 quote(s) not found in cited sources",
+          "reason_ko": "인용문 1건이 원본 근거에서 확인되지 않았습니다.",
+          "from_model": "gpt-5.6-terra",
+          "from_effort": "medium",
+          "to_model": "gpt-6-sol",
+          "to_effort": "medium"
         }
       },
       {
@@ -1459,7 +1502,11 @@
             {
               "cause_raw": "Inventory exceeded its configured 512Mi memory limit, causing an OOM kill and loss of the only ready replica. The reason for its memory growth is unknown.",
               "confidence": 0.96,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1469,7 +1516,38 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "k8s_log_analyst"
+          "steer_target_role": "k8s_log_analyst",
+          "confidence": 0.96,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exceeded its configured 512Mi memory limit, causing an OOM kill and loss of the only ready replica. The reason for its memory growth is unknown.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exceeded its configured 512Mi memory limit, causing an OOM kill and loss of the only ready replica. The reason for its memory growth is unknown.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
+        },
+        "escalated_from": {
+          "reason_raw": "1 quote(s) not found in cited sources",
+          "reason_ko": "인용문 1건이 원본 근거에서 확인되지 않았습니다.",
+          "from_model": "gpt-5.6-terra",
+          "from_effort": "medium",
+          "to_model": "gpt-6-sol",
+          "to_effort": "medium"
         }
       },
       {
@@ -1510,7 +1588,11 @@
             {
               "cause_raw": "Inventory exhausted memory under its configured 512Mi limit. The OOM kill and subsequent CrashLoopBackOff left its sole replica unready; with no ready endpoint, order calls to inventory fail. The reason memory grew remains unverified.",
               "confidence": 0.94,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1520,7 +1602,30 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "cause_reasoner"
+          "steer_target_role": "cause_reasoner",
+          "confidence": 0.94,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exhausted memory under its configured 512Mi limit. The OOM kill and subsequent CrashLoopBackOff left its sole replica unready; with no ready endpoint, order calls to inventory fail. The reason memory grew remains unverified.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exhausted memory under its configured 512Mi limit. The OOM kill and subsequent CrashLoopBackOff left its sole replica unready; with no ready endpoint, order calls to inventory fail. The reason memory grew remains unverified.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1561,22 +1666,62 @@
             {
               "cause_raw": "Inventory exceeded its 512Mi memory limit, causing an OOM kill and restart backoff.",
               "confidence": 0.94,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             },
             {
               "cause_raw": "An earlier application startup fault may have made inventory unready before the OOM kill.",
               "confidence": 0.38,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
           "verdict_ko": null,
           "next_action": "investigate_more",
           "next_action_ko": "추가 조사 필요",
-          "counter_evidence_count": 1,
+          "counter_evidence_count": 2,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "challenger"
+          "steer_target_role": "challenger",
+          "confidence": 0.94,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exceeded its 512Mi memory limit, causing an OOM kill and restart backoff.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exceeded its 512Mi memory limit, causing an OOM kill and restart backoff.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [
+            {
+              "text_raw": "An earlier application startup fault may have made inventory unready before the OOM kill.",
+              "text_ko": null
+            },
+            {
+              "text_raw": "메모리 초과 종료는 확인했지만 그 전에 상태 점검이 실패했습니다. 메모리 증가의 근본 원인까지 입증된 것은 아닙니다.",
+              "text_ko": "메모리 초과 종료는 확인했지만 그 전에 상태 점검이 실패했습니다. 메모리 증가의 근본 원인까지 입증된 것은 아닙니다."
+            }
+          ],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1617,7 +1762,11 @@
             {
               "cause_raw": "Inventory exhausted its configured 512Mi memory limit, causing OOMKilled and CrashLoopBackOff; this removed its sole ready endpoint and disrupted order requests. The source of memory growth is unverified.",
               "confidence": 0.95,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1627,7 +1776,42 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "recovery_planner"
+          "steer_target_role": "recovery_planner",
+          "confidence": 0.95,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exhausted its configured 512Mi memory limit, causing OOMKilled and CrashLoopBackOff; this removed its sole ready endpoint and disrupted order requests. The source of memory growth is unverified.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exhausted its configured 512Mi memory limit, causing OOMKilled and CrashLoopBackOff; this removed its sole ready endpoint and disrupted order requests. The source of memory growth is unverified.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [
+            {
+              "chunk_id": 9001,
+              "doc": "liveprobe-judgement-guide.md",
+              "source": "reference",
+              "chunk_ix": 3,
+              "score": 0.71,
+              "section": "메모리 초과 종료",
+              "locator": "모의 표본",
+              "source_uri": null,
+              "content": "메모리 한도 조정은 되돌릴 수 있는 완화 조치다. 증가 원인은 별도로 조사한다. (모의 표본 발췌)"
+            }
+          ],
+          "acceptance": null
         }
       },
       {
@@ -1667,7 +1851,11 @@
             {
               "cause_raw": "Inventory exhausted its configured 512Mi memory limit, was OOMKilled, and its sole replica entered CrashLoopBackOff, removing the inventory Service endpoint and causing order calls to fail. The source of memory growth is unknown.",
               "confidence": 0.94,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": "supported",
@@ -1677,7 +1865,38 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "group_verifier"
+          "steer_target_role": "group_verifier",
+          "confidence": 0.94,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": 137, \"last_terminated_at\": \"2026-10-11T12:01:58+00:00\", \"last_terminated",
+              "supports_raw": "Inventory exhausted its configured 512Mi memory limit, was OOMKilled, and its sole replica entered CrashLoopBackOff, removing the inventory Service endpoint and causing order calls to fail. The source of memory growth is unknown.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=widget error=ServiceUnavailable: 503 Service Unavail",
+              "supports_raw": "Inventory exhausted its configured 512Mi memory limit, was OOMKilled, and its sole replica entered CrashLoopBackOff, removing the inventory Service endpoint and causing order calls to fail. The source of memory growth is unknown.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [
+            {
+              "index": 0,
+              "verdict": "supported",
+              "verdict_ko": "근거로 지지",
+              "reason_raw": "verified quotes resolve to the cited sources",
+              "reason_ko": "메모리 초과 종료와 연결 대상 소실은 근거와 일치합니다. 한도 조정은 되돌릴 수 있는 완화 조치이며 근본 원인은 미확인입니다."
+            }
+          ],
+          "citations": [],
+          "acceptance": null
         }
       },
       {

@@ -211,3 +211,75 @@
   .nds-theme .incident-room .status-running > .step-head::before { animation: none; }
   .nds-theme .incident-room .step-card.flash { animation: none; background: var(--nds-accent-soft); }
 }
+
+/* ── P20 설명 요소: 역할별 모델, 모델 선택 이유, 근거 인용, 반대 근거, 검증 결과, 승격 사유, 참고 문서, AI 사용 요약 */
+.nds-theme .incident-room .headline-usage { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 0; padding: 10px 0 12px; border-top: 1px solid var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .headline-usage > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.nds-theme .incident-room .headline-usage dt { color: var(--nds-muted); white-space: nowrap; }
+.nds-theme .incident-room .headline-usage dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.nds-theme .incident-room .usage-models { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; margin-left: 10px; font-weight: 400; color: var(--nds-muted); }
+
+.nds-theme .incident-room .role-models { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.nds-theme .incident-room .role-models > li { display: grid; grid-template-columns: minmax(96px, 1.1fr) minmax(0, 1.2fr) auto auto; align-items: center; gap: 4px 12px; padding: 8px 12px; border-radius: var(--nds-radius-control); background: var(--nds-canvas); font-size: 13px; }
+.nds-theme .incident-room .role-models > li > b { font-weight: 600; }
+.nds-theme .incident-room .role-models > li > .mono { color: var(--nds-accent); font-weight: 600; overflow-wrap: anywhere; }
+.nds-theme .incident-room .role-models > li > span:not(.mono) { color: var(--nds-muted); white-space: nowrap; }
+.nds-theme .incident-room .role-models .role-state { font-size: 12px; }
+
+.nds-theme .incident-room .model-choice { display: grid; gap: 8px; font-size: 14px; }
+.nds-theme .incident-room .model-choice > p > b { margin-right: 6px; font-weight: 600; color: var(--nds-muted); }
+.nds-theme .incident-room .model-choice > p > .mono { color: var(--nds-accent); font-weight: 600; }
+.nds-theme .incident-room .model-candidates { width: 100%; border-collapse: collapse; font-size: 13px; }
+.nds-theme .incident-room .model-candidates th, .nds-theme .incident-room .model-candidates td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--nds-border); font-weight: 400; }
+.nds-theme .incident-room .model-candidates thead th { font-size: 12px; color: var(--nds-muted); font-weight: 600; white-space: nowrap; }
+.nds-theme .incident-room .model-candidates tbody th { white-space: nowrap; }
+.nds-theme .incident-room .model-candidates tbody th .badge { margin-left: 8px; }
+.nds-theme .incident-room .model-candidates tr.selected > * { background: var(--nds-accent-soft); }
+.nds-theme .incident-room .model-candidates tr:last-child > * { border-bottom: 0; }
+
+.nds-theme .incident-room .group-progress { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; line-height: 1.6; color: var(--nds-text); }
+
+.nds-theme .incident-room .escalation-note { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 30%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
+.nds-theme .incident-room .escalation-note > p > b { margin-right: 8px; color: var(--nds-warning); font-weight: 600; }
+.nds-theme .incident-room .escalation-path { font-size: 12px; color: var(--nds-muted); }
+
+.nds-theme .incident-room .agent-basis { display: grid; gap: 8px; padding-top: 4px; }
+.nds-theme .incident-room .cause-list, .nds-theme .incident-room .verdict-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: cause; }
+.nds-theme .incident-room .cause-list > li { counter-increment: cause; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; padding: 10px 12px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); }
+.nds-theme .incident-room .cause-list > li::before { content: '후보 ' counter(cause); grid-row: 1 / span 2; font-size: 12px; font-weight: 600; color: var(--nds-muted); white-space: nowrap; line-height: 1.9; }
+.nds-theme .incident-room .cause-list > li > p { grid-column: 2; font-size: 14px; line-height: 1.6; }
+.nds-theme .incident-room .cause-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px !important; color: var(--nds-muted); }
+.nds-theme .incident-room .cause-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.nds-theme .incident-room .cause-refs code, .nds-theme .incident-room .quote-meta code, .nds-theme .incident-room .agent-basis .notice code { padding: 1px 6px; border-radius: var(--nds-radius-small); background: var(--nds-subtle); font-size: 11px; }
+.nds-theme .incident-room .basis-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .basis-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.nds-theme .incident-room .quote-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.nds-theme .incident-room .quote-list > li { display: grid; gap: 4px; }
+.nds-theme .incident-room .quote-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--nds-muted); }
+.nds-theme .incident-room .quote-meta > b { color: var(--nds-text); font-weight: 600; }
+.nds-theme .incident-room .quote-list > li.unknown .quote-meta > b { color: var(--nds-danger); }
+.nds-theme .incident-room .quote-list .raw-text, .nds-theme .incident-room .counter-list .raw-text, .nds-theme .incident-room .citation-list .raw-text { max-height: 160px; }
+.nds-theme .incident-room .counter-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; line-height: 1.6; }
+.nds-theme .incident-room .citation-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.nds-theme .incident-room .citation-list > li > p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .citation-list a { color: var(--nds-accent); text-decoration: underline; text-underline-offset: 3px; }
+
+.nds-theme .incident-room .verify-result { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .verify-result.ok { border-color: color-mix(in srgb, var(--nds-success) 35%, var(--nds-surface)); background: var(--nds-success-soft); }
+.nds-theme .incident-room .verify-result.danger { border-color: color-mix(in srgb, var(--nds-danger) 35%, var(--nds-surface)); background: var(--nds-danger-soft); }
+.nds-theme .incident-room .verify-result.warn { border-color: color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); background: var(--nds-warning-soft); }
+.nds-theme .incident-room .verify-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .verify-head > b { font-weight: 600; }
+.nds-theme .incident-room .verify-head > span:not(.badge) { color: var(--nds-muted); font-size: 13px; }
+.nds-theme .incident-room .verdict-list > li { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border: 1px solid var(--nds-border); font-size: 14px; }
+.nds-theme .incident-room .verdict-list > li > p:first-child { display: flex; align-items: center; gap: 8px; }
+.nds-theme .incident-room .verdict-list > li > p:first-child > b { font-weight: 600; }
+@media (max-width: 480px) {
+  .nds-theme .incident-room .role-models > li { grid-template-columns: minmax(0, 1fr) auto; }
+  .nds-theme .incident-room .role-models > li > .mono { grid-column: 1; grid-row: 2; }
+  .nds-theme .incident-room .role-models > li > .role-state { grid-column: 2; grid-row: 2; justify-self: end; }
+  .nds-theme .incident-room .model-candidates { display: block; overflow-x: auto; }
+  .nds-theme .incident-room .cause-list > li { grid-template-columns: minmax(0, 1fr); }
+  .nds-theme .incident-room .cause-list > li::before { grid-row: auto; }
+  .nds-theme .incident-room .cause-list > li > p { grid-column: 1; }
+}

@@ -1076,7 +1076,13 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": true,
-          "steer_target_role": "log_summarizer"
+          "steer_target_role": "log_summarizer",
+          "confidence": null,
+          "quotes": [],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1112,7 +1118,13 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": true,
-          "steer_target_role": "k8s_analyst"
+          "steer_target_role": "k8s_analyst",
+          "confidence": null,
+          "quotes": [],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1148,7 +1160,13 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": true,
-          "steer_target_role": "coordinator"
+          "steer_target_role": "coordinator",
+          "confidence": null,
+          "quotes": [],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1184,7 +1202,13 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": true,
-          "steer_target_role": "group_verifier"
+          "steer_target_role": "group_verifier",
+          "confidence": null,
+          "quotes": [],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {

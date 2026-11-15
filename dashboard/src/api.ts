@@ -28,7 +28,15 @@ export type FlowNode = {
   lane: number; depth: number; group: Level | null;
   /** P18 W6: optional until the backend ships them. Absent means 미기록, never a fabricated value. */
   at?: string | null; card?: FlowCard | null; aliases?: string[]; call_id?: string | null; agent_run_id?: number | null;
+  /** P20: why this run was replaced by a higher model (on the escalated node) / what it replaced (on the successor). */
+  escalation?: Escalation | null; escalated_from?: Escalation | null;
 };
+export type Escalation = { reason_raw: string; reason_ko: string; from_model: string | null; from_effort: string | null; to_model: string | null; to_effort: string | null };
+/** P20: an agent's own cited excerpt. `ref_known` = the id resolves to evidence collected for this incident or a cited reference document. */
+export type AgentQuote = { ref: string; ref_ko: string | null; ref_known: boolean; quote: string; supports_raw: string; candidate_index: number | null };
+export type CounterEvidence = { text_raw: string; text_ko: string | null };
+export type CandidateVerdict = { index: number | null; verdict: string | null; verdict_ko: string | null; reason_raw: string; reason_ko: string | null };
+export type CardCitation = { chunk_id: number; doc: string; source: string; chunk_ix: number; score: number | null; section: string | null; locator: string | null; source_uri: string | null; content: string };
 // ---------------------------------------------------------------- P18 W6 structured step cards (FlowNode.card)
 export type SignalCard = { kind: 'signal'; what_ko: string; place_ko: string; source: string | null; reason: string | null; source_ko?: string | null; reason_ko?: string | null; signal_count: number; first_at: string | null };
 export type EvidenceItem = { id: number; source: string; source_ko: string; target: string; ok: boolean; error: string | null; summary_ko: string | null; ref: string | null; collected_at: string | null; raw_items?: RawItem[] };
@@ -44,7 +52,10 @@ export type GroupCard = { kind: 'group'; routing_id: number; level: string; grou
   decision: { level_ko: string; decided_by_ko: string; confidence: number | null; final_reason_ko: string | null; steps: DecisionStep[] };
   roles: GroupRole[]; budget: { max_agent_calls: number | null; max_cost_usd: number | null; deadline_s: number | null } | null; progress_ko: string[]; status_ko: string };
 export type AgentCard = { kind: 'agent'; agent_run_id: number | null; summary_raw: string | null; summary_ko: string | null;
-  candidates: { cause_raw: string; cause_ko?: string | null; confidence: number | null; verifier: string | null }[];
+  candidates: { cause_raw: string; cause_ko?: string | null; confidence: number | null; verifier: string | null; evidence_refs?: string[] }[];
+  /** P20 explainability fields; absent on older servers (shown as 미기록, never invented). */
+  confidence?: number | null; quotes?: AgentQuote[]; counter_evidence?: CounterEvidence[]; candidate_verdicts?: CandidateVerdict[];
+  citations?: CardCitation[]; acceptance?: { rejected: boolean; reason_raw: string; reason_ko: string } | null;
   verdict: string | null; verdict_ko: string | null; next_action: string | null; next_action_ko: string | null;
   counter_evidence_count: number; error: string | null; error_ko?: string | null; accepts_steering: boolean; steer_target_role: string };
 export type ActionCard = { kind: 'action'; action_id: number; type: string; type_ko: string; target: string; status: string; status_ko: string; changes: string[] };
