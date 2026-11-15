@@ -836,7 +836,10 @@
             {
               "cause_raw": "Recent rollout revision 107 specified an unavailable/nonexistent image, so its pod cannot start.",
               "confidence": 0.99,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods"
+              ]
             }
           ],
           "verdict": null,
@@ -846,7 +849,22 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "signal_analyst"
+          "steer_target_role": "signal_analyst",
+          "confidence": 0.99,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "erified\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Recent rollout revision 107 specified an unavailable/nonexistent image, so its pod cannot start.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -887,7 +905,10 @@
             {
               "cause_raw": "Deployment revision 107 uses unavailable image tag liveprobe/order:does-not-exist-19, producing ErrImagePull/ImagePullBackOff.",
               "confidence": 0.99,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods"
+              ]
             }
           ],
           "verdict": "supported",
@@ -897,7 +918,30 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "result_verifier"
+          "steer_target_role": "result_verifier",
+          "confidence": 0.99,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "erified\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Deployment revision 107 uses unavailable image tag liveprobe/order:does-not-exist-19, producing ErrImagePull/ImagePullBackOff.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [
+            {
+              "index": 0,
+              "verdict": "supported",
+              "verdict_ko": "근거로 지지",
+              "reason_raw": "verified quotes resolve to the cited sources",
+              "reason_ko": "새 배포 버전 107의 이미지 태그를 내려받을 수 없습니다. 이전 버전 106은 준비된 파드가 있어 이전 배포로 되돌리는 조치가 근거와 일치합니다."
+            }
+          ],
+          "citations": [],
+          "acceptance": null
         }
       },
       {

@@ -1218,12 +1218,20 @@
             {
               "cause_raw": "Connection pool exhaustion or connection acquisition failures are affecting order requests; logs and metrics establish the symptom but do not identify why connections are unavailable.",
               "confidence": 0.91,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             },
             {
               "cause_raw": "A shared database connectivity or availability issue may be affecting both order and inventory.",
               "confidence": 0.66,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1233,7 +1241,46 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "log_summarizer"
+          "steer_target_role": "log_summarizer",
+          "confidence": 0.91,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Connection pool exhaustion or connection acquisition failures are affecting order requests; logs and metrics establish the symptom but do not identify why connections are unavailable.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=a error=ServiceUnavailable: 503 Service Unavailable:",
+              "supports_raw": "Connection pool exhaustion or connection acquisition failures are affecting order requests; logs and metrics establish the symptom but do not identify why connections are unavailable.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E99_unknown",
+              "ref_ko": null,
+              "ref_known": false,
+              "quote": "memory usage above limit",
+              "supports_raw": "Connection pool exhaustion or connection acquisition failures are affecting order requests; logs and metrics establish the symptom but do not identify why connections are unavailable.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
+        },
+        "escalation": {
+          "reason_raw": "2 quote(s) not found in cited sources",
+          "reason_ko": "인용문 2건이 원본 근거에서 확인되지 않았습니다.",
+          "from_model": "gpt-6-luna",
+          "from_effort": "low",
+          "to_model": "gpt-5.6-terra",
+          "to_effort": "low"
         }
       },
       {
@@ -1272,7 +1319,11 @@
             {
               "cause_raw": "The running order process has exhausted its connection pool, as reported by the incident signal; the mechanism is unknown.",
               "confidence": 0.78,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1282,7 +1333,30 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "k8s_analyst"
+          "steer_target_role": "k8s_analyst",
+          "confidence": 0.78,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "The running order process has exhausted its connection pool, as reported by the incident signal; the mechanism is unknown.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=a error=ServiceUnavailable: 503 Service Unavailable:",
+              "supports_raw": "The running order process has exhausted its connection pool, as reported by the incident signal; the mechanism is unknown.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1320,12 +1394,20 @@
             {
               "cause_raw": "Order's JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts coincide with CannotGetJdbcConnectionException logs.",
               "confidence": 0.96,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             },
             {
               "cause_raw": "A shared database or connection-path issue is affecting both order and inventory, with inventory 503s adding downstream errors to order.",
               "confidence": 0.66,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1335,7 +1417,38 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "log_summarizer"
+          "steer_target_role": "log_summarizer",
+          "confidence": 0.96,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Order's JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts coincide with CannotGetJdbcConnectionException logs.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=a error=ServiceUnavailable: 503 Service Unavailable:",
+              "supports_raw": "Order's JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts coincide with CannotGetJdbcConnectionException logs.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
+        },
+        "escalated_from": {
+          "reason_raw": "2 quote(s) not found in cited sources",
+          "reason_ko": "인용문 2건이 원본 근거에서 확인되지 않았습니다.",
+          "from_model": "gpt-6-luna",
+          "from_effort": "low",
+          "to_model": "gpt-5.6-terra",
+          "to_effort": "low"
         }
       },
       {
@@ -1375,12 +1488,20 @@
             {
               "cause_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
               "confidence": 0.96,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             },
             {
               "cause_raw": "A shared database or connection-path issue is affecting both order and inventory; inventory's JDBC failures also generate downstream 503s for order.",
               "confidence": 0.66,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": null,
@@ -1390,7 +1511,30 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "coordinator"
+          "steer_target_role": "coordinator",
+          "confidence": 0.96,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=a error=ServiceUnavailable: 503 Service Unavailable:",
+              "supports_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [],
+          "citations": [],
+          "acceptance": null
         }
       },
       {
@@ -1430,12 +1574,20 @@
             {
               "cause_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
               "confidence": 0.97,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             },
             {
               "cause_raw": "A shared database or connection-path issue is affecting both order and inventory; inventory's JDBC failures also generate downstream 503s for order.",
               "confidence": 0.68,
-              "verifier": null
+              "verifier": null,
+              "evidence_refs": [
+                "E2_pods",
+                "E7_error_logs"
+              ]
             }
           ],
           "verdict": "supported",
@@ -1445,7 +1597,38 @@
           "counter_evidence_count": 0,
           "error": null,
           "accepts_steering": false,
-          "steer_target_role": "group_verifier"
+          "steer_target_role": "group_verifier",
+          "confidence": 0.97,
+          "quotes": [
+            {
+              "ref": "E2_pods",
+              "ref_ko": "Pod 상태",
+              "ref_known": true,
+              "quote": "es_spec\", \"last_exit_code\": null, \"last_terminated_at\": null, \"last_terminated_reason\": null, \"name\"",
+              "supports_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
+              "candidate_index": 0
+            },
+            {
+              "ref": "E7_error_logs",
+              "ref_ko": "Loki 오류 로그",
+              "ref_known": true,
+              "quote": "node\":{}},\"message\":\"inventory call failed item=a error=ServiceUnavailable: 503 Service Unavailable:",
+              "supports_raw": "Order's in-process JDBC connection pool is exhausted: all four connections are active, a thread is pending, and acquisition timeouts are producing CannotGetJdbcConnectionException errors.",
+              "candidate_index": 0
+            }
+          ],
+          "counter_evidence": [],
+          "candidate_verdicts": [
+            {
+              "index": 0,
+              "verdict": "supported",
+              "verdict_ko": "근거로 지지",
+              "reason_raw": "verified quotes resolve to the cited sources",
+              "reason_ko": "주문 프로세스의 데이터베이스 연결 풀이 모두 사용 중이며 연결 획득 실패가 반복됩니다. 재시작은 범위가 한정된 완화 조치이며 장기 원인은 추가 확인이 필요합니다."
+            }
+          ],
+          "citations": [],
+          "acceptance": null
         }
       },
       {

@@ -14,6 +14,7 @@ import { changePollMs, type ChangeRequest } from './changes';
 import { ActionApprovalCard, CloseCard, ClosedCard, HandoffCard } from './ActionApproval';
 import { FlowGraph } from './FlowGraph';
 import { StepCard, type DetailTarget, type LocalSent } from './StepCards';
+import { UsageLine } from './Explain';
 import { DetailPanel } from './DetailPanel';
 import { useRunEvents } from './useRunEvents';
 import { stepExecution } from './execution';
@@ -250,6 +251,7 @@ function Room({ id }: { id: string }) {
         <p><strong>처리 결과</strong> {result.label}{result.detail && <> · {result.detail}</>}</p>
         <p className="record-times"><span>감지 {result.detected}</span><span>{result.timeLabel} {result.at}</span>{result.duration && <span>{result.duration}</span>}</p>
       </section>}
+      <UsageLine incident={i} nodes={data.flow.nodes} />
       {snapshot ? <div className="record-notice" role="note"><strong>저장 당시 · {stage?.label}</strong> {result ? '' : `· 감지 ${whenKo(i.created_at)} `}· 읽기 전용 표본</div>
         : (!result || i.status === 'handed_off') && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
     </section>

@@ -331,7 +331,9 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
         g.edge(prev, n["id"], "steer")
         prev = n["id"]
         depth += 1
-    _cards(g, inc, routing, runs, events, actions, evidence, audits, items, seg_nodes, routing_live=not finished)
+    attach_escalations(g.nodes, g.edges, events)
+    _cards(g, inc, routing, runs, events, actions, evidence, audits, items, seg_nodes, routing_live=not finished,
+           citations=_citations(s, runs))
     # Bind display records to this exact logical call, never just a repeated role.
     completions = {e.detail.get("agent_run_id"): e.detail.get("call_id") for e in events
                    if e.kind == "agent_finished" and isinstance(e.detail, dict) and e.detail.get("call_id")}
@@ -349,6 +351,24 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ P18 W6 stage cards
+def _citations(s, runs: list) -> dict[int, list[dict]]:
+    """Reference chunks (runbook, public doc, past incident) each agent run cited. Retrieved-but-uncited chunks
+    are not stored, so this is exactly what the agent leaned on."""
+    from .models import Citation, RagChunk
+    ids = [r.id for r in runs]
+    out: dict[int, list[dict]] = defaultdict(list)
+    if not ids:
+        return out
+    for c, ch in s.execute(select(Citation, RagChunk).join(RagChunk, RagChunk.id == Citation.chunk_id)
+                           .where(Citation.agent_run_id.in_(ids)).order_by(Citation.id)):
+        out[c.agent_run_id].append({"chunk_id": ch.id, "doc": ch.doc, "source": ch.source,
+                                    "chunk_ix": ch.chunk_ix, "score": c.score, "section": ch.section,
+                                    "locator": ch.locator,
+                                    "source_uri": (ch.provenance or {}).get("source_uri") if ch.document_id else None,
+                                    "content": _clip(ch.content, 400)})
+    return out
+
+
 def _iso(t) -> str | None:
     return t.isoformat() if t is not None else None
 
@@ -405,14 +425,115 @@ def _changes(a) -> list[str]:
     return out
 
 
-def _agent_card(n: dict, run, inc_open: bool, later_left: bool) -> dict:
+def _clip(text: Any, limit: int) -> str:
+    text = str(text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def source_labels(evidence: list) -> dict[str, str]:
+    """Ref id (E1_deployment / E1) -> Korean source label, only for sources that were actually collected."""
+    from .routing_ko import SOURCE_KO, SOURCE_REF
+    out: dict[str, str] = {}
+    for e in evidence:
+        ref = SOURCE_REF.get(e.source)
+        if ref:
+            out.setdefault(ref, SOURCE_KO.get(e.source, e.source))
+            out.setdefault(ref.split("_", 1)[0], out[ref])
+    return out
+
+
+def explain_fields(output: dict | None, sources: dict[str, str], citations: list[dict]) -> dict:
+    """P20: what an agent based its conclusion on, taken only from its recorded output.
+
+    Quotes, counter-evidence and reasons are the agent's own words and stay untranslated (`*_raw`); the UI shows
+    them as source material. `ref_known` says whether the cited id resolves to evidence collected for this
+    incident or to a retrieved runbook (R#) - it is not a re-run of the verbatim citation check."""
+    import re
+    from .routing_ko import VERDICT_KO
+    from .readings_ko import is_korean
+    o = output or {}
+    cands = [c for c in (o.get("root_cause_candidates") or o.get("candidates") or []) if isinstance(c, dict)]
+    causes = [" ".join(str(c.get("cause") or "").split()).lower() for c in cands]
+    # Only the reference chunks an agent actually cited are stored, without their R# numbers, so an R# quote can
+    # be tied to "a cited reference document" but not to one specific chunk.
+    is_runbook = lambda ref: bool(re.fullmatch(r"R\d+", ref))  # noqa: E731
+    quotes = []
+    for q in (o.get("evidence") or [])[:12]:
+        if not isinstance(q, dict) or not q.get("quote"):
+            continue
+        ref = str(q.get("ref") or "")
+        supports = " ".join(str(q.get("supports") or "").split()).lower()
+        quotes.append({"ref": ref, "ref_ko": sources.get(ref) or ("참고 문서" if is_runbook(ref) else None),
+                       "ref_known": ref in sources or (is_runbook(ref) and bool(citations)),
+                       "quote": _clip(q.get("quote"), 240), "supports_raw": _clip(q.get("supports"), 200),
+                       "candidate_index": causes.index(supports) if supports and supports in causes else None})
+    counter = [{"text_raw": _clip(x, 300), "text_ko": _clip(x, 300) if is_korean(str(x)) else None}
+               for x in (o.get("counter_evidence") or [])[:10] if str(x or "").strip()]
+    verdicts = [{"index": v.get("index"), "verdict": v.get("verdict"), "verdict_ko": VERDICT_KO.get(v.get("verdict")),
+                 "reason_raw": _clip(v.get("reason"), 300),
+                 "reason_ko": _clip(v.get("reason"), 300) if is_korean(str(v.get("reason") or "")) else None}
+                for v in (o.get("candidate_verdicts") or [])[:3] if isinstance(v, dict)]
+    rejected = o.get("_acceptance_rejected")
+    return {"quotes": quotes, "counter_evidence": counter, "candidate_verdicts": verdicts,
+            "citations": citations,
+            "acceptance": ({"rejected": True, "reason_raw": _clip(rejected, 240), "reason_ko": escalation_reason_ko(str(rejected))}
+                           if rejected else None)}
+
+
+def escalation_reason_ko(reason: str | None) -> str:
+    """Korean reading of GroupController's acceptance/escalation reasons (fixed phrases produced by code)."""
+    import re
+    r = str(reason or "")
+    if "contradicted by reviewer" in r:
+        return "검토 Agent가 결론을 반박했습니다."
+    m = re.search(r"(\d+) quote\(s\) not found", r)
+    if m:
+        return f"인용문 {m.group(1)}건이 원본 근거에서 확인되지 않았습니다."
+    if r.startswith("unknown evidence refs"):
+        return "수집되지 않은 근거 번호를 인용했습니다."
+    if "no root-cause candidate backed" in r:
+        return "원본 근거로 뒷받침된 원인 후보가 없습니다."
+    m = re.search(r"confidence ([0-9.]+) below ([0-9.]+)", r)
+    if m:
+        return f"신뢰도 {m.group(1)}이(가) 기준 {m.group(2)}보다 낮습니다."
+    if r.startswith("agent failed"):
+        return "Agent 응답을 받지 못했습니다."
+    return "근거 검사를 통과하지 못했습니다."
+
+
+def attach_escalations(nodes: list[dict], edges: list[dict], events: list) -> None:
+    """Put the recorded reason on each escalated node and its successor, in the order the events were written."""
+    by_id = {n["id"]: n for n in nodes}
+    per_role: dict[str, list[dict]] = defaultdict(list)
+    for e in events:
+        if e.kind == "escalated" and isinstance(e.detail, dict) and e.detail.get("role"):
+            per_role[str(e.detail["role"])].append(e.detail)
+    for edge in edges:
+        if edge["kind"] != "escalate":
+            continue
+        src, dst = by_id.get(edge["source"]), by_id.get(edge["target"])
+        queue = per_role.get(str((src or {}).get("role")))
+        if not src or not dst or not queue:
+            continue
+        d = queue.pop(0)
+        info = {"reason_raw": _clip(d.get("reason"), 240), "reason_ko": escalation_reason_ko(d.get("reason")),
+                "from_model": d.get("from_model"), "from_effort": d.get("from_effort"),
+                "to_model": d.get("to_model"), "to_effort": d.get("to_effort")}
+        src["escalation"] = info
+        dst["escalated_from"] = info
+
+
+def _agent_card(n: dict, run, inc_open: bool, later_left: bool, sources: dict[str, str] | None = None,
+                citations: list[dict] | None = None) -> dict:
     from .routing_ko import NEXT_ACTION_KO, VERDICT_KO
     o = (run.output if run is not None else None) or {}
     from .readings_ko import error_ko, is_korean
     cands = [{"cause_raw": str(c.get("cause") or c.get("statement") or ""), "confidence": c.get("confidence"),
               "cause_ko": (c.get("cause_ko") if is_korean(str(c.get("cause_ko") or "")) else
                            str(c.get("cause") or "") if is_korean(str(c.get("cause") or "")) else None),
-              "verifier": c.get("verifier")} for c in (o.get("root_cause_candidates") or o.get("candidates") or [])
+              "verifier": c.get("verifier"),
+              "evidence_refs": [str(r) for r in (c.get("evidence_refs") or [])[:8]]}
+             for c in (o.get("root_cause_candidates") or o.get("candidates") or [])
              if isinstance(c, dict)]
     verdict, nxt = o.get("verdict"), o.get("next_action")
     return {"kind": "agent", "agent_run_id": run.id if run is not None else None, "summary_raw": o.get("summary"),
@@ -420,6 +541,8 @@ def _agent_card(n: dict, run, inc_open: bool, later_left: bool) -> dict:
             "verdict_ko": VERDICT_KO.get(verdict) if verdict else None, "next_action": nxt,
             "next_action_ko": NEXT_ACTION_KO.get(nxt) if nxt else None,
             "counter_evidence_count": len(o.get("counter_evidence") or []),
+            "confidence": o.get("confidence") if isinstance(o.get("confidence"), (int, float)) else None,
+            **explain_fields(o, sources or {}, citations or []),
             "error": run.error if run is not None else None,
             "error_ko": error_ko(run.error) if run is not None else None,
             "accepts_steering": inc_open and n["status"] != "skipped" and (n["status"] in ("planned", "running") or later_left),
@@ -431,13 +554,15 @@ def _window(rows: list, t0, t1, attr: str) -> list:
             and (t1 is None or getattr(x, attr) is None or getattr(x, attr) < t1)]
 
 
-def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, seg_nodes, routing_live: bool) -> None:
+def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, seg_nodes, routing_live: bool,
+           citations: dict[int, list[dict]] | None = None) -> None:
     from .routing_ko import (ACTION_STATUS_KO, DECIDED_BY_KO, WF_STATUS_KO, handoff_view, pair_router_runs, progress_ko,
                              routing_card)
     by_id = {n["id"]: n for n in g.nodes}
     ko = {i["id"]: i.get("ko") for i in items}
     run_by_id = {r.id: r for r in runs}
     inc_open = inc.status not in INCIDENT_CLOSED_STATES
+    sources, citations = source_labels(evidence), citations or {}
     created = next((a for a in audits if a.event == "incident_created"), None)
     cd = (created.detail if created else None) or {}
 
@@ -511,7 +636,8 @@ def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, 
             n["at"] = _iso(run.created_at) if run is not None else (
                 _iso(next((e.created_at for e in reversed(events) if e.kind == "agent_started" and isinstance(e.detail, dict)
                            and e.detail.get("role") == n.get("role")), None)) if n["status"] == "running" else None)
-            n["card"] = _agent_card(n, run, inc_open, later)
+            n["card"] = _agent_card(n, run, inc_open, later, sources,
+                                      citations.get(run.id, []) if run is not None else [])
     for n in g.nodes:
         if n["type"] == "interpret" and n.get("agent_run_id") in run_by_id:
             n["at"] = _iso(run_by_id[n["agent_run_id"]].created_at)
