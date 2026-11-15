@@ -19,7 +19,7 @@ import { useRunEvents } from './useRunEvents';
 import { stepExecution } from './execution';
 import { ErrorBox, LevelBadge, Spinner, StatusBadge } from './ui';
 import { Disclosure } from './Disclosure';
-import { incidentSymptom, nextActionKo, summaryKo } from './presentation';
+import { incidentCause, incidentSymptom, nextActionKo, summaryKo } from './presentation';
 
 type Tab = 'flow' | 'chat';
 /** Untargeted conversation entries. Run-record events are absorbed into step cards (contract 2.1). */
@@ -63,8 +63,6 @@ function Room({ id }: { id: string }) {
   const data = useMemo(() => narrative.data ? normalizeNarrative(narrative.data) : null, [narrative.data]);
   const incident = data ? currentIncident(data.incident, detail.data?.incident) : null;
   const [tab, setTab] = useState<Tab>('chat'); const [selected, setSelected] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [pastCommandsOpen, setPastCommandsOpen] = useState(false);
   const followedCommands = useRef(new Set<number>());
   useEffect(() => {
     for (const c of commands.data?.items ?? []) {
@@ -73,7 +71,7 @@ function Room({ id }: { id: string }) {
     }
   }, [commands.data]);
 
-  const [openCards, setOpenCards] = useState<Set<string>>(() => new Set()); const [flash, setFlash] = useState<string | null>(null); const [jumpRev, setJumpRev] = useState(0);
+  const [flash, setFlash] = useState<string | null>(null); const [jumpRev, setJumpRev] = useState(0);
   const [panel, setPanel] = useState<DetailTarget | null>(null);
   const [eventRevision, setEventRevision] = useState(0);
   const [text, setText] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [sent, setSent] = useState('');
@@ -126,8 +124,7 @@ function Room({ id }: { id: string }) {
     return () => cancelAnimationFrame(raf);
   }, [local, events, data, panel]);
   const reload = useCallback(() => { narrative.refresh(); commands.refresh(); detail.refresh(); setEventRevision(r => r + 1); }, [narrative.refresh, commands.refresh, detail.refresh]);
-  const choose = useCallback((nid: string | null) => { if (!nid) return; const key = data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setHistoryOpen(true); if (key.startsWith('command:')) setPastCommandsOpen(true); setOpenCards(s => s.has(key) ? s : new Set(s).add(key)); setTab('chat'); jump.current = key; setJumpRev(r => r + 1); }, [data]);
-  const toggle = useCallback((nid: string) => setOpenCards(s => { const next = new Set(s); const aliases = data?.flow.nodes.find(n => n.id === nid)?.aliases ?? []; const keys = [nid, ...aliases]; if (keys.some(k => next.has(k))) keys.forEach(k => next.delete(k)); else next.add(nid); return next; }), [data]);
+  const choose = useCallback((nid: string | null) => { if (!nid) return; const key = data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setTab('chat'); jump.current = key; setJumpRev(r => r + 1); }, [data]);
   const openDetail = useCallback((t: DetailTarget, el: HTMLElement) => { responseScroll.current = null; opener.current = el; if (feed.current) { const top = feed.current.scrollTop; feed.current.scrollTo({ top, behavior: 'instant' }); panelScroll.current = top; } setPanel(t); }, []);
   useLayoutEffect(() => { if (panelScroll.current != null && feed.current) feed.current.scrollTop = panelScroll.current; }, [panel]);
   const closeDetail = useCallback(() => {
@@ -226,8 +223,8 @@ function Room({ id }: { id: string }) {
     ...steps.map((n, ix) => {
       const aliases = aliasesFor(n);
       const key = aliases[0] ?? n.id;
-      return { key: `step-${key}`, t: timed ? Date.parse(n.at!) : ix, el: <StepCard key={key} n={n} data={data} open={[n.id, ...aliases].some(key => openCards.has(key))} flash={flash === n.id} onToggle={() => toggle(n.id)} onDetail={openDetail} handoff={handoffView}
-      snapshot={snapshot} execution={stepExecution(n, events)} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} thread={threadFor(n)} local={localFor(n)} targetRole={stepTargetRole(n, data.flow.nodes)} closed={!open} finished={done} draft={draftFor(n)} onDraft={v => setDrafts(d => ({ ...d, [n.id]: v }))} onSend={body => sendStep(n, body)} name={name} onJump={choose} /> };
+      return { key: `step-${key}`, t: timed ? Date.parse(n.at!) : ix, el: <StepCard key={key} n={n} data={data} flash={flash === n.id} onDetail={openDetail} handoff={handoffView}
+      snapshot={snapshot} recorded={recordView && !snapshot} execution={stepExecution(n, events)} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} thread={threadFor(n)} local={localFor(n)} targetRole={stepTargetRole(n, data.flow.nodes)} closed={!open} finished={done} draft={draftFor(n)} onDraft={v => setDrafts(d => ({ ...d, [n.id]: v }))} onSend={body => sendStep(n, body)} name={name} onJump={choose} /> };
     }),
     ...talk.map(e => ({ key: `event-${e.seq}`, t: timed ? Date.parse(e.at) : steps.length + e.seq, el: <EventEntry e={e} key={`event-${e.seq}`} /> })),
   ].sort((a, b) => a.t - b.t);
@@ -239,13 +236,16 @@ function Room({ id }: { id: string }) {
       const card = feed.current?.querySelector<HTMLElement>('.action-card, .handoff-card');
       if (!card) return;
       card.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-      card.querySelector<HTMLElement>('button:not(:disabled), summary')?.focus({ preventScroll: true });
+      const control = card.querySelector<HTMLElement>('button:not(:disabled), summary');
+      control?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      control?.focus({ preventScroll: true });
     });
   };
   return <div className={`incident-room tab-${tab}${snapshot ? ' snapshot-view' : ''}`}>
     <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span><LevelBadge value={i.severity_level} /><StatusBadge value={i.status} recorded={snapshot} recoveryKind={i.recovery_kind} /><h1>장애 관제실</h1><span className="headline-place">{placeKo(i.environment, i.system, null, i.namespace)}</span><span className="headline-facts">{!recordView && <span>{age(i.created_at)} 경과</span>}{i.origin && <span className={`badge ${i.origin === 'evaluation' ? 'info' : ''}`}>{i.origin === 'evaluation' ? '평가 실행' : '출처 미확인'}</span>}</span></div>
       <h2>{i.workload} · {incidentSymptom(i)}</h2>
       <p className="headline-impact">{recordView && <span className="record-label">당시 영향</span>}{impactKo(data.headline.impact, recordView)}</p>
+      <p className="headline-cause"><b>원인</b> {incidentCause(data.flow.nodes, handoffView)}</p>
       {result && <section className="record-result" aria-label="처리 결과">
         <p><strong>처리 결과</strong> {result.label}{result.detail && <> · {result.detail}</>}</p>
         <p className="record-times"><span>감지 {result.detected}</span><span>{result.timeLabel} {result.at}</span>{result.duration && <span>{result.duration}</span>}</p>
@@ -257,17 +257,17 @@ function Room({ id }: { id: string }) {
     <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '흐름'], ['chat', '대화']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>
     <div className={`room-columns ${panel ? 'with-detail' : ''}`}>
       <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><span className="pane-index">01</span><h2>AI 분석 흐름</h2></div><span className="badge info">{snapshot ? '저장 흐름' : done ? '실행 기록' : '실시간'}</span></header>
-        <FlowGraph snapshot={snapshot} flow={data.flow} selected={selected ? resolveStepId(selected, steps) ?? selected : null} onSelect={choose} /></section>
+        <FlowGraph snapshot={recordView} flow={data.flow} selected={selected ? resolveStepId(selected, steps) ?? selected : null} onSelect={choose} /></section>
       <section className="room-pane chat-pane conversation-pane" aria-label="분석 · 운영자 대화"><header className="pane-heading"><div><span className="pane-index">02</span><h2>분석 · 운영자 대화</h2></div><span className="faint">단계 {steps.length}개 · {snapshot ? '저장 기록' : i.status === 'closed' ? '종료 기록' : done ? '후속 작업' : '분석 지시'}</span></header>
         <div className="chat-feed" ref={feed} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>
           {i.status === 'closed' && <ClosedCard incident={i} />}
           {approvals.map(a => <ActionApprovalCard action={a} key={`action-${a.id}`} onChange={reload} />)}
           {!snapshot && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload} />}
           {actionableCommands.map(commandCard)}
-          {pastCommands.length > 0 && <Disclosure label={`지난 운영자 지시 ${pastCommands.length}건 보기`} open={pastCommandsOpen} onOpen={setPastCommandsOpen}>{() => pastCommands.map(commandCard)}</Disclosure>}
-          {!snapshot && <Disclosure label="운영자 지시·한글 해석 안내">{() => <div className="chat-intro"><p>{snapshot ? '저장된 분석 기록입니다. 새 분석은 실행하지 않습니다.' : !open ? '종료된 장애입니다. 기록만 볼 수 있습니다.' : '아래 입력란에서 후속 작업이나 조사 방향을 지시하세요. 변경은 계획과 부작용을 확인한 뒤 진행합니다.'}</p>{data.interpreting && <p role="status">한글 해석 준비 중</p>}{!snapshot && !data.interpreting && <InterpretRequest id={id} state={data.interpret_state?.status} pending={data.interpret_pending_count} onDone={narrative.refresh} />}</div>}</Disclosure>}
-          {recordView ? <Disclosure label={`지난 분석 단계 ${steps.length}개 보기`} open={historyOpen} onOpen={setHistoryOpen}>{() => entries.map(x => x.el)}</Disclosure> : entries.map(x => x.el)}
-          <Disclosure label="사건 원문·모델 비용 보기">{() => <><dl className="kv"><dt>기록 비용</dt><dd>{costKo(i)}</dd></dl><pre className="raw-text">{JSON.stringify({ title: i.title, status_reason: i.status_reason, headline: data.headline, handoff: i.handoff }, null, 2)}</pre></>}</Disclosure>
+          {pastCommands.length > 0 && <section className="record-section" aria-label="지난 운영자 지시"><h3>지난 운영자 지시 · {pastCommands.length}건</h3>{pastCommands.map(commandCard)}</section>}
+          {!snapshot && <div className="chat-intro"><p>{snapshot ? '저장된 분석 기록입니다. 새 분석은 실행하지 않습니다.' : !open ? '종료된 장애입니다. 기록만 볼 수 있습니다.' : '아래 입력란에서 후속 작업이나 조사 방향을 지시하세요. 변경은 계획과 부작용을 확인한 뒤 진행합니다.'}</p>{data.interpreting && <p role="status">한글 해석 준비 중</p>}{!snapshot && !data.interpreting && <InterpretRequest id={id} state={data.interpret_state?.status} pending={data.interpret_pending_count} onDone={narrative.refresh} />}</div>}
+          {recordView && <h3 className="record-section-title">지난 분석 단계 · {steps.length}개</h3>}{entries.map(x => x.el)}
+          <dl className="kv"><dt>기록 비용</dt><dd>{costKo(i)}</dd></dl><Disclosure label="사건 원문 보기">{() => <pre className="raw-text">{JSON.stringify({ title: i.title, status_reason: i.status_reason, headline: data.headline, handoff: i.handoff }, null, 2)}</pre>}</Disclosure>
           {/* 정돈-03: 기존 코드 변경 요청은 그대로 열람·진행한다. 새 코드 수정·시험·환경 승격은 LiveProbe for Application이 맡는다. */}
 
           {(changes.data?.items ?? []).map(c => <ChangeRequestCard change={c} key={c.id} onChange={changes.refresh} readOnly={snapshot} />)}
@@ -278,7 +278,7 @@ function Room({ id }: { id: string }) {
       </section>
       {/* 좁은 화면에서는 상세가 대화 위에 뜨는 시트이므로 뒤 화면을 가림막으로 덮어 잘린 카드가 그대로 보이지 않게 한다. */}
       {panel && <div className="detail-backdrop" aria-hidden="true" onClick={closeDetail} />}
-      {panel && <DetailPanel target={panel} data={data} handoff={handoffView} onClose={closeDetail} snapshot={snapshot} events={events} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} />}
+      {panel && <DetailPanel target={panel} data={data} handoff={handoffView} onClose={closeDetail} snapshot={snapshot} recorded={recordView && !snapshot} events={events} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} />}
     </div>
   </div>;
 }

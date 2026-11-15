@@ -87,7 +87,6 @@ try {
   // 정돈-03/07: 제품 목적 안내, 모델 '구성됨'과 '호출 성공'의 분리.
   assert.match(await page.textContent('.purpose'), /별도 제품/);
   assert.equal(await page.isVisible('#workspace'), false);
-  await page.click('#readiness-details > summary');
   await page.waitForSelector('#readiness-checks dl');
   const readiness = await page.textContent('#readiness-checks');
   assert.match(readiness, /모델 실행 구성\(설치·설정\)/);
@@ -134,7 +133,6 @@ try {
 
   // 정돈-06: 자동 갱신은 작성 중인 시험 기록·포커스·승인 확인(같은 지문)을 유지한다.
   await page.fill('#approver-bearer', 'synthetic-approval-draft');
-  await page.click('#approval-target summary');
   await page.check('#approve-confirm');
   await page.focus('#approver-bearer');
   const before = state.listCalls.length;

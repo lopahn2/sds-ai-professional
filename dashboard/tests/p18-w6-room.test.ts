@@ -35,25 +35,26 @@ const fixture = (id: number) => JSON.parse(readFileSync(new URL(`../e2e/fixtures
 const strip = (n: FlowNode): FlowNode => { const { at: _a, card: _c, ...rest } = n; return rest as FlowNode; };
 const legacy = (d: Narrative): Narrative => ({ ...d, handoff_view: undefined, flow: { ...d.flow, nodes: d.flow.nodes.map(strip) } });
 const card = (d: Narrative, nodeId: string, extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(StepCard, {
-  n: d.flow.nodes.find(x => x.id === nodeId)!, data: d, open: true, flash: false, onToggle() {}, onDetail() {}, handoff: d.handoff_view ?? null,
+  n: d.flow.nodes.find(x => x.id === nodeId)!, data: d, flash: false, onDetail() {}, handoff: d.handoff_view ?? null,
   thread: [], local: [], targetRole: null, closed: false, finished: false, draft: '', onDraft() {}, onSend: async () => {}, name: (r: string) => r, onJump() {}, ...extra,
 }));
 const ev = (seq: number, kind: string, detail: Record<string, unknown> = {}) => ({ seq, kind, actor: 'x', summary: `s${seq}`, detail, at: `2026-10-11T12:00:${String(seq).padStart(2, '0')}Z` });
 
-test('판단 과정은 요청 시 제공하고 기본 단계에는 요약과 진입점만 표시한다', () => {
+test('판단 과정과 사유는 기본 표시하고 판단 원문만 숨긴다', () => {
   const d = fixture(990); const html = card(d, 'router');
   const keys = [...html.matchAll(/data-step-key="([a-z]+)"/g)].map(m => m[1]);
-  assert.deepEqual(keys, []);
-  assert.ok(html.includes('판단 과정 보기'));
+  assert.deepEqual(keys, (d.flow.nodes.find(n=>n.id==='router')!.card as any).steps.map((s:any)=>s.key));
+  assert.ok(html.includes('decision-context'));
   const full = detail(d, 'router');
   assert.ok(full.includes('판단 사유 원문') && full.includes('AI 분류 의견 원문'));
   assert.ok(!html.includes('The rule engine identifies'), '판단 원문은 상세보기에서만 보인다');
 });
 
-test('그룹 단계는 간단히 표시하고 역할 구성·예산·진행 기록을 상세에서 보존한다', () => {
+test('그룹 단계는 역할 구성·예산·진행 기록을 펼치기 없이 표시한다', () => {
   const d = fixture(971); const html = card(d, 'group');
-  assert.ok(html.includes('복잡 그룹') && html.includes('역할 구성·선택 이유 보기'));
-  assert.equal((html.match(/data-role="/g) ?? []).length, 0, '접힌 구성은 DOM에 없다');
+  assert.ok(html.includes('복잡 그룹') && html.includes('역할 구성'));
+  assert.equal((html.match(/data-role="/g) ?? []).length, (d.flow.nodes.find(n=>n.id==='group')!.card as any).roles.length);
+  for (const t of ['예산', '진행 기록']) assert.ok(html.includes(t), t);
   const full = detail(d, 'group');
   for (const t of ['역할 구성', '예산', '진행 기록', '반론 검토', 'Group 종료: 검증 통과']) assert.ok(full.includes(t), t);
 });
@@ -168,12 +169,12 @@ test('단계 순서: 모든 카드에 시각이 있으면 시각순, 하나라�
   assert.ok(!orderSteps([...d.flow.nodes, { ...d.flow.nodes[0], id: 'command:1', type: 'command' }]).some(n => n.type === 'command'));
 });
 
-test('인계 카드는 인수 동작을 먼저 제공하고 판단·원문은 요청 전에 마운트하지 않는다', () => {
+test('인계 카드는 인수 동작과 판단을 먼저 제공하고 원문만 요청 시 표시한다', () => {
   const d = fixture(990); const inc = d.incident as Incident;
   const html = renderToStaticMarkup(createElement(HandoffCard, { incident: inc, view: d.handoff_view!, onChange() {} }));
-  const order = ['인계 인수', 'handoff-lead', 'next-steps', '인계 판단 보기', 'handoff-raw'].map(k => html.indexOf(k));
+  const order = ['인계 인수', 'handoff-lead', 'next-steps', 'decision-table', 'handoff-raw'].map(k => html.indexOf(k));
   assert.ok(order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])), JSON.stringify(order));
-  assert.equal((html.match(/data-key="/g) ?? []).length, 0);
+  assert.equal((html.match(/data-key="/g) ?? []).length, d.handoff_view!.decisions.length);
   assert.ok(!html.includes('kubectl'), '닫힌 원문은 DOM 자체에 없다');
   assert.ok(html.includes('인계 원문 보기'));
   assert.ok(!/<details[^>]* open/.test(html));

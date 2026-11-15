@@ -23,6 +23,7 @@ export function ActionApprovalCard({ action: a, onChange }: { action: Action; on
   return <article className="decision-card action-card" aria-label={`조치 승인 요청 ${a.id}`}>
     <header><b>자동 조치 승인 요청</b><span className="badge warn" role="status">승인 대기</span></header>
     <p>{ACTION_KO[a.type] ?? '등록되지 않은 조치'} · <span className="mono">{a.target}</span></p>
+    <p className="step-lead">{summaryKo(a.reason, '조치 사유 요약이 기록되지 않았습니다. 원문을 확인한 뒤 승인하세요.')}</p>
     <dl className="kv"><dt>정책</dt><dd>운영자 승인 필요</dd>{changes.length > 0 && <><dt>변경 값</dt><dd className="mono">{changes.join(', ')}</dd></>}</dl>
     <div className="confirm-gate"><strong>이 조치를 실행할까요?</strong><div className="inline"><button className="btn primary" type="button" disabled={busy} onClick={() => void decide('approve')}>승인</button><button className="btn" type="button" disabled={busy} onClick={() => void decide('reject')}>거절</button></div></div>
     <ErrorBox>{error}</ErrorBox>
@@ -48,9 +49,9 @@ export function HandoffCard({ incident: i, view, onChange }: { incident: Inciden
     <header><b>운영자 인계</b><span className={`badge ${h.claimed_by ? 'ok' : 'warn'}`} role="status">{h.claimed_by ? '인수됨' : '인수 전'}</span></header>
     {h.claimed_by ? <p className="muted">인수: {h.claimed_by}</p> : <button className="btn primary" type="button" disabled={busy} onClick={() => void claim()}>인계 인수</button>}
     <p className="handoff-lead">{summaryKo(view.summary_ko, '자동 대응을 멈췄습니다. 담당자 확인이 필요합니다.')}</p>
-    {view.next_steps_ko.length > 0 && <ol className="next-steps">{view.next_steps_ko.slice(0, 2).map((s, n) => <li key={n}>{summaryKo(s, '후속 조치 확인 필요')}</li>)}</ol>}
+    {view.next_steps_ko.length > 0 && <ol className="next-steps">{view.next_steps_ko.map((s, n) => <li key={n}>{summaryKo(s, '후속 조치 확인 필요')}</li>)}</ol>}
     <p className="muted">인수는 담당 기록이며 클러스터 변경을 허가하지 않습니다.</p>
-    <Disclosure label="인계 판단 보기">{() => <dl className="kv decision-table" aria-label="인계 결정사항">{view.decisions.map(d => <div className="decision-row" key={d.key} data-key={d.key}><dt>{summaryKo(d.label_ko, '결정')}</dt><dd>{summaryKo(d.value_ko, '판단 확인 중')}</dd></div>)}</dl>}</Disclosure>
+    <dl className="kv decision-table" aria-label="인계 결정사항">{view.decisions.map(d => <div className="decision-row" key={d.key} data-key={d.key}><dt>{summaryKo(d.label_ko, '결정')}</dt><dd>{summaryKo(d.value_ko, '판단 확인 중')}</dd></div>)}</dl>
     {(i.status_reason || raw.length > 0 || view.summary_raw || view.summary_ko) && <Disclosure className="handoff-raw" label="인계 원문 보기">{() => <>
       {view.summary_ko && <><h4>전체 한글 해석</h4><pre className="raw-text">{view.summary_ko}</pre></>}
       {view.summary_raw && <><h4>인계 요약 원문</h4><pre className="raw-text">{view.summary_raw}</pre></>}

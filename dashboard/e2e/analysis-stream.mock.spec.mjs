@@ -59,21 +59,26 @@ test('streamed answer stays inside the running card and preserves draft, focus a
   await draft.fill('다음 단계에서 네트워크 상태도 확인해 주세요.');
   await draft.focus();
   const before = await page.locator('.chat-feed').evaluate(el => el.scrollTop);
+  const beforeDraftTop = (await draft.boundingBox()).y;
   await send(makeEvent(3, 'responding', '요약\n서비스 상태와 이벤트를 확인하고 있습니다.'));
   await expect(card.locator('.execution-output')).toHaveText('요약\n서비스 상태와 이벤트를 확인하고 있습니다.');
   await expect(draft).toHaveValue('다음 단계에서 네트워크 상태도 확인해 주세요.');
   await expect(draft).toBeFocused();
-  expect(await page.locator('.chat-feed').evaluate(el => el.scrollTop)).toBeCloseTo(before, 0);
+  // Browser scroll anchoring may move scrollTop as text grows above a focused input.
+  // Either the scroll offset or the input's viewport position must remain stable.
+  const after = await page.locator('.chat-feed').evaluate(el => el.scrollTop);
+  const afterDraftTop = (await draft.boundingBox()).y;
+  expect(Math.abs(after - before) < 1 || Math.abs(afterDraftTop - beforeDraftTop) < 1).toBe(true);
+  await expect(draft).toBeInViewport();
   await expect(card).toContainText('생성 중인 임시 답변');
   await send(makeEvent(3, 'responding', '요약\n서비스 상태와 이벤트를 확인하고 있습니다.'));
   await expect(card.locator('.execution-output')).toHaveCount(1);
-  await card.getByRole('button', { name: '실행 내용 접기' }).click();
+  await expect(card.getByRole('button', { name: '실행 내용 접기' })).toHaveCount(0);
   await send(makeEvent(4, 'responding', '요약\n근거 확인 완료. 다음 검증 단계로 진행합니다.'));
-  await expect(card.locator('.execution-output')).toHaveCount(0);
-  await card.getByRole('button', { name: '실행 내용 펼치기' }).click();
+  await expect(card.locator('.execution-output')).toHaveCount(1);
   await expect(card.locator('.execution-output')).toContainText('근거 확인 완료');
   await layout(page);
-  await page.screenshot({ path: `../analysis-stream-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('analysis-stream.png'), fullPage: true });
   expect(es).toEqual([]);
 });
 
@@ -130,18 +135,18 @@ test('completed card keeps replayed answer and distinguishes it from the final c
 
 test('running output is visible without expanding and updates the open detail panel too', async ({ page }, info) => {
   const { card, send } = await setup(page, { expanded: false });
-  await expect(card.getByRole('button', { name: '펼치기', exact: true })).toBeVisible();
-  await send(makeEvent(3, 'responding', '접힌 카드에서도 보이는 현재 답변'));
+  await expect(card.getByRole('button', { name: '펼치기', exact: true })).toHaveCount(0);
+  await send(makeEvent(3, 'responding', '기본 표시되는 현재 답변'));
   await expect(card.locator('.execution-output')).toBeVisible();
   await card.getByRole('button', { name: '원문 보기', exact: true }).click();
   const detail = page.getByRole('complementary', { name: '단계 상세' });
-  await expect(detail.locator('.execution-output')).toHaveText('접힌 카드에서도 보이는 현재 답변');
+  await expect(detail.locator('.execution-output')).toHaveText('기본 표시되는 현재 답변');
   await send(makeEvent(4, 'responding', '상세보기를 열어 둔 동안 도착한 다음 답변'));
   await expect(detail.locator('.execution-output')).toHaveText('상세보기를 열어 둔 동안 도착한 다음 답변');
   await expect(card.locator('.execution-output')).toHaveText('상세보기를 열어 둔 동안 도착한 다음 답변');
   expect(await page.evaluate(() => window.__runStreams.length)).toBe(1);
   await layout(page);
-  await page.screenshot({ path: `../analysis-stream-visible-${info.project.name}.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('analysis-stream-visible.png'), fullPage: true });
 });
 
 test('stored running snapshot explains why it cannot generate another answer', async ({ page }) => {

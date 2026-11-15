@@ -92,7 +92,7 @@ export function Incidents() {
       <select className="select" aria-label="장애 환경 필터" value={environment} onChange={e => set({ environment: e.target.value, offset: 0, asOf: null })}><option value="">전체 환경</option>{historyEnvironmentOptions().map(env => <option key={env.value} value={env.value}>{env.label}</option>)}</select>
       <input className="input" aria-label="장애 검색" placeholder="제목 또는 워크로드 검색" maxLength={120} value={search} onChange={e => setSearch(e.target.value)} />
       <button className="btn" type="submit">검색</button>
-      <details className="history-more"><summary>상세 필터</summary>
+      <div className="history-more" aria-label="상세 필터">
         <div key={JSON.stringify([start,end,system,service])}>
       <select className="select" aria-label="출처 필터" value={origin} onChange={e => set({ origin: e.target.value, offset: 0, asOf: null })}><option value="">모든 출처</option>{origins.map(o => <option key={o} value={o}>{ORIGIN_KO[o]}</option>)}</select>
       <select className="select" aria-label="상태 필터" value={filter} onChange={e => set({ status: e.target.value, offset: 0, asOf: null })}><option value="">모든 상태</option>{statuses.map(s => <option key={s} value={s}>{INCIDENT_STATUS_KO[s]}</option>)}</select>
@@ -101,7 +101,7 @@ export function Incidents() {
           <label>시스템 ID<input className="input" name="system" maxLength={120} defaultValue={system} /></label>
           <label>서비스 이름<input className="input" name="service" maxLength={120} defaultValue={service} /></label>
         </div>
-      </details>
+      </div>
     </form>
     {offset > 0 && newer > 0 && <p className="notice" role="status">이 목록을 연 뒤 새 장애 {newer}건이 들어왔습니다. 현재 페이지는 그대로 유지됩니다. <button className="btn sm" type="button" onClick={() => set({ offset: 0, asOf: null })}>최신 목록 보기</button></p>}
     <ErrorBox>{error}</ErrorBox>

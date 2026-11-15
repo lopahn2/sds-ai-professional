@@ -23,7 +23,7 @@ test('handoff action first, raw absent from DOM/AX until keyboard open; polling 
   await expect(page.getByRole('button',{name:'인계 인수',exact:true})).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain('RAW_UX_SENTINEL');
   expect(await page.locator('body').ariaSnapshot()).not.toContain('RAW_UX_SENTINEL');
-  await expect(page.locator('.step-card')).toHaveCount(0);
+  expect(await page.locator('.step-card').count()).toBeGreaterThan(0);
   const summary=page.locator('.handoff-raw > summary');
   await keyboardOpen(summary);
   await expect(page.locator('.handoff-raw pre').first()).toContainText('RAW_UX_SENTINEL');
@@ -39,7 +39,6 @@ test('handoff action first, raw absent from DOM/AX until keyboard open; polling 
 });
 test('legacy stage failures never use raw label or conclusion; explicit panel remains escaped and closable',async({page})=>{
   await room(page,990,true);
-  await keyboardOpen(page.getByText(/^지난 분석 단계 .*개 보기$/));
   expect(await page.locator('.step-card').allTextContents()).not.toContain(RAW);
   await page.locator('.step-card').first().getByRole('button',{name:'원문 보기',exact:true}).click();
   const panel=page.getByRole('complementary',{name:'단계 상세'});

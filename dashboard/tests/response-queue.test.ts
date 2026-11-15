@@ -46,3 +46,9 @@ test('집계는 서버 값을 우선하고, 없으면 완전히 조회된 실시
 test('실시간 목록 조회가 끝나지 않았으면 0이 아니라 미관측이다', () => {
   assert.deepEqual(queueCounts(undefined, [], false), { approval: null, handoff: null, inProgress: null });
 });
+
+test('운영 현황 API의 claimed 값도 인수 상태로 표시한다', () => {
+  const q = responseQueue([], [inc(9, 'handed_off', 'NORMAL', {claimed:true})]);
+  assert.equal(q[0].claimed, true);
+  assert.equal(needsOperator(q[0].status,q[0].claimed),false);
+});

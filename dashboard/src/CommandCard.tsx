@@ -3,7 +3,7 @@ import { display, request, type Command } from './api';
 import { commandControls, commandErrorKo, commandStatusKo, downtimeKo, opKo, reversibleKo, rollbackReviewKo, secretKeys, secretSizeError } from './commands';
 import { ErrorBox, Spinner } from './ui';
 import { Disclosure } from './Disclosure';
-import { summaryKo } from './presentation';
+import { resultSummary, summaryKo } from './presentation';
 export function CommandCard({ command: c, onChange, readOnly = false }: { command: Command; onChange: () => void; readOnly?: boolean }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const form = useRef<HTMLFormElement>(null);
@@ -41,7 +41,7 @@ export function CommandCard({ command: c, onChange, readOnly = false }: { comman
     {!readOnly && ctl.confirm && <div className="confirm-gate"><strong>정말 진행하시겠습니까?</strong>{!ctl.confirmEnabled && <p className="notice">계획 해시, 부작용 설명, 모든 작업의 사전 검사 통과가 확인되어야 진행할 수 있습니다.</p>}<div className="inline"><button className="btn primary" disabled={busy || !ctl.confirmEnabled} onClick={() => void act('confirm')}>진행</button><button className="btn" disabled={busy} onClick={() => void act('cancel')}>취소</button></div></div>}
     {!readOnly && ctl.secret && <form ref={form} onSubmit={submitSecrets} className="secret-form" autoComplete="off"><h4>비밀값을 직접 입력하세요</h4><p className="notice">값은 AI에게 전달하거나 기록에 저장하지 않습니다. 전송 즉시 입력란을 비웁니다.</p>{keys.map(key => <label key={key}>{key}<input aria-label={`비밀값 ${key}`} name={key} type="password" autoComplete="off" spellCheck={false} required disabled={busy} maxLength={2048} /></label>)}{!keys.length && <p role="alert">입력할 키가 없습니다. 계획을 다시 확인하세요.</p>}<button className="btn primary" type="submit" disabled={busy || !keys.length || !c.plan_sha256}>비밀값 전달</button></form>}
     {!readOnly && ctl.cancel && !ctl.confirm && <button className="btn" disabled={busy} onClick={() => void act('cancel')}>취소</button>}
-    {(c.result != null || c.verification != null || c.rollback != null) && <div className="command-results">{[['실행 결과', c.result], ['검증 결과', c.verification], ['원복 결과', c.rollback]].map(([label, value]) => value != null && <div key={String(label)}><h4>{String(label)}</h4><p>{summaryKo(typeof value === 'object' ? (value as Record<string, unknown>).summary_ko : null, '기록 수신 · 세부 결과는 원문에서 확인하세요.')}</p><Disclosure label={`${String(label)} 원문 보기`}>{() => <pre className="raw-text">{display(value)}</pre>}</Disclosure></div>)}</div>}
+    {(c.result != null || c.verification != null || c.rollback != null) && <div className="command-results">{[['실행 결과', c.result], ['검증 결과', c.verification], ['원복 결과', c.rollback]].map(([label, value]) => value != null && <div key={String(label)}><h4>{String(label)}</h4><p>{resultSummary(value)}</p><Disclosure label={`${String(label)} 원문 보기`}>{() => <pre className="raw-text">{display(value)}</pre>}</Disclosure></div>)}</div>}
     {review && <div className="error" role="alert"><b>운영자 검토 필요</b><p>{review}</p></div>}
     {c.error && <div className="error" role="alert"><p>{commandErrorKo(c.error)}</p><Disclosure label="오류 원문 보기">{() => <pre className="raw-text">{c.error}</pre>}</Disclosure></div>}
     {!readOnly && ctl.rollback && <button className="btn" disabled={busy} onClick={() => void act('rollback')}>원복</button>}

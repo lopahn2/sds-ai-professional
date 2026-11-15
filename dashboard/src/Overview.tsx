@@ -8,6 +8,7 @@ import { Badge, Meter as UsageMeter, StatusIndicator } from '@naria/ui';
 import { age } from './api';
 import { useLive } from './live';
 import { needsOperator, nextStepShort, queueCounts, responseQueue } from './responseQueue';
+import { warningSummary } from './presentation';
 import { Disclosure } from './Disclosure';
 import { ResourceDetail, TopologyMap } from './TopologyMap';
 import { usePolling } from './usePolling';
@@ -39,7 +40,6 @@ function warningTarget(event: Warning, workloads: Set<string>) {
 function Events({ o }: { o: Overview }) {
   const all = o.events ?? [];
   const observed = ['ok', 'connected'].includes(o.sources?.kubernetes);
-  const [showAll, setShowAll] = useState(false);
   if (!all.length) return <div className="empty">{observed && Array.isArray(o.events) ? '관측된 경고가 없습니다.' : '경고 수집 상태를 확인하세요.'}</div>;
   const groups = new Map<string, Warning[]>();
   const workloads = new Set((o.workloads ?? []).map(w => `${w.namespace}/${w.name}`));
@@ -51,18 +51,18 @@ function Events({ o }: { o: Overview }) {
   }
   const rows = [...groups.entries()];
   return <>{!observed && <p className="notice">마지막으로 수집한 경고입니다.</p>}
-    {(showAll ? rows : rows.slice(0, 5)).map(([key, records]) => {
+    {rows.map(([key, records]) => {
       const latest = records[0];
       return <article className="warning-event" key={key}>
         <div><b>{warningTarget(latest, workloads)}</b><span className="badge warn">{eventReasonKo(latest.reason)}</span></div>
         <small>{latest.namespace || '클러스터'} · {clock(latest.at)} · {records.length === 1 && latest.count != null ? `발생 ${latest.count}회` : `경고 기록 ${records.length}건`}</small>
+        <p className="warning-summary">{warningSummary(latest.reason, latest.message)}</p>
         <Disclosure label="원문 보기">{() => records.map((record, index) => <div key={index}>
           <small>{clock(record.at)} · {record.object} · {record.reason}</small>
           <pre className="raw-text">{record.message || '메시지 미기록'}</pre>
         </div>)}</Disclosure>
       </article>;
     })}
-    {rows.length > 5 && <button type="button" className="link-btn warning-more" aria-expanded={showAll} onClick={() => setShowAll(v => !v)}>{showAll ? '최근 경고만 보기' : `경고 더 보기 · ${rows.length - 5}개`}</button>}
   </>;
 }
 /** 첫 화면의 첫 질문은 "지금 내가 결정해야 할 장애가 있는가"다. 승인·인수 대기를 숫자와 목록 맨 앞에 둔다. */
@@ -72,13 +72,14 @@ function ResponseQueue({ o }: { o: Overview }) {
   const counts = queueCounts(o.incidents?.counts, open, openState === 'ready');
   const waiting = queue.filter(i => needsOperator(i.status, i.claimed));
   const shown = queue.slice(0, 4);
-  const calm = openState === 'ready' && queue.length === 0;
+  const decisions = (counts.approval ?? 0) + (counts.handoff ?? 0);
+  const calm = openState === 'ready' && queue.length === 0 && decisions === 0 && counts.inProgress === 0;
   return <section className="ops-incidents response-queue" aria-labelledby="response-heading">
     <header>
       <h2 id="response-heading">지금 대응할 일</h2>
       <p className="queue-lead" role="status">{openState === 'error' ? '진행 중 장애 조회에 실패했습니다. 아래는 마지막으로 받은 목록입니다.'
-        : waiting.length ? `운영자 결정이 필요한 장애가 ${waiting.length}건 있습니다.`
-        : queue.length ? '운영자 결정이 필요한 장애는 없습니다. AI가 분석·조치 중입니다.'
+        : decisions || waiting.length ? `운영자 결정이 필요한 장애가 ${Math.max(decisions, waiting.length)}건 있습니다.`
+        : queue.length || (counts.inProgress ?? 0) > 0 ? '운영자 결정이 필요한 장애는 없습니다. AI가 분석·조치 중입니다.'
         : calm ? '진행 중인 장애가 없습니다.' : '진행 중 장애를 확인하고 있습니다.'}</p>
     </header>
     <dl className="incident-counts">
@@ -113,7 +114,7 @@ export function OverviewPage() {
     <TopologyMap overview={o} selected={selected} onSelect={setSelected} />
     <aside className="ops-side" aria-label="클러스터 상태"><header className="ops-side-head"><b>클러스터 상태</b><span className="faint">{clock(o.generated_at)} 기준</span><button className="btn sm" onClick={refresh}>새로고침</button></header>
       {error && <ErrorBox>갱신에 실패했습니다. 마지막으로 관측한 정보를 표시합니다.</ErrorBox>}
-      <Disclosure label="클러스터 진단">{() => <><div className="source-chips" aria-label="데이터 원천 상태">{['kubernetes', 'prometheus', 'hubble', 'envoy'].map(key => { const s = o.sources?.[key]; const ok = s === 'ok' || s === 'connected'; return <div className={`source-chip ${ok ? 'connected' : 'missing'}`} key={key}><b>{SOURCES[key]}</b><StatusIndicator status={ok ? 'ok' : s ? 'warning' : 'unknown'}>{ok ? '연결됨' : s ? '확인 필요' : '미관측'}</StatusIndicator>{s && !ok && <Disclosure label="수집 상태 원문 보기">{() => <pre className="raw-text">{s}</pre>}</Disclosure>}</div>; })}</div><Stats o={o} /></>}</Disclosure>
+      <section className="cluster-diagnostics" aria-label="클러스터 진단"><h3>클러스터 진단</h3><div className="source-chips" aria-label="데이터 원천 상태">{['kubernetes', 'prometheus', 'hubble', 'envoy'].map(key => { const s = o.sources?.[key]; const ok = s === 'ok' || s === 'connected'; return <div className={`source-chip ${ok ? 'connected' : 'missing'}`} key={key}><b>{SOURCES[key]}</b><StatusIndicator status={ok ? 'ok' : s ? 'warning' : 'unknown'}>{ok ? '연결됨' : s ? '확인 필요' : '미관측'}</StatusIndicator>{s && !ok && <Disclosure label="수집 상태 원문 보기">{() => <pre className="raw-text">{s}</pre>}</Disclosure>}</div>; })}</div><Stats o={o} /></section>
       <nav className="side-tabs" aria-label="보조 정보 전환">{tabs.map(([key, label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>{label}</button>)}</nav>
       <div className="side-scroll" aria-label={tab === 'events' ? '최근 경고 이벤트' : tab === 'namespaces' ? '네임스페이스별 자원' : '선택한 자원'}>{tab === 'events' ? <Events o={o} /> : tab === 'namespaces' ? <Namespaces o={o} /> : selected && <ResourceDetail key={selected} overview={o} id={selected} onClose={() => setSelected(null)} />}</div>
     </aside>

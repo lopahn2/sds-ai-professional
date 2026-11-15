@@ -59,7 +59,7 @@ function Frame() {
       <Link className="brand" to="/" aria-label="라이브프로브 운영 관제"><i aria-hidden><ActivityLogIcon /></i><span>라이브프로브<small>Kubernetes 장애 대응</small></span></Link>
       <span className="nav-caption">작업 공간</span>
       {NAV.map(([to, label, short, Icon]) => <NavLink key={to} to={to} end={to === '/'} className={link} aria-label={label}><span className="nav-icon" aria-hidden><Icon /></span><span className="lbl">{label}</span><span className="nav-short" aria-hidden>{short}</span>{to === '/incidents' && open.length > 0 && <span className="count">{open.length}</span>}</NavLink>)}
-      <a href="http://application.liveprobe.localhost/" target="_blank" rel="noopener noreferrer" aria-label="Application 관제 (새 창)"><span className="nav-icon" aria-hidden><ExternalLinkIcon /></span><span className="lbl">Application 관제</span><span className="nav-short">앱 관제</span></a>
+      <a href={import.meta.env.VITE_APPLICATION_URL || 'http://application.liveprobe.localhost/'} target="_blank" rel="noopener noreferrer" aria-label="Application 관제 (새 창)"><span className="nav-icon" aria-hidden><ExternalLinkIcon /></span><span className="lbl">Application 관제</span><span className="nav-short">앱 관제</span></a>
       <div className="foot"><StatusIndicator status="info">로컬 운영 환경</StatusIndicator><small>클러스터 · 워크로드 관제</small></div>
     </nav>
     <div className="bar"><nav className="crumbs" aria-label="현재 위치">{crumbs.map((c, i) => <span key={c} aria-current={i === crumbs.length - 1 ? 'page' : undefined}>{i > 0 && <span className="bar-divider" aria-hidden>/</span>}{c}</span>)}</nav>
