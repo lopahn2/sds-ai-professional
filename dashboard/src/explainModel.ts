@@ -9,9 +9,12 @@ const observed = (v: number | null | undefined): v is number => typeof v === 'nu
 /** 값이 하나라도 빠지면 합계는 미관측이다. 부분 합계를 전체처럼 보이지 않는다. */
 const sumAll = (values: (number | null | undefined)[]) => values.length && values.every(observed) ? values.reduce<number>((a, b) => a + (b as number), 0) : null;
 
-/** 실제로 실행된 모델 호출(기록 ID가 있는 노드)만 센다. 예정·건너뜀 단계는 호출이 아니다. */
+const EXECUTED = new Set(['done', 'failed', 'escalated']);
+/** 실제로 실행된 모델 호출만 센다: 실행 기록 ID가 있거나, (이전 서버 응답처럼 ID가 없어도) 모델이 기록된 끝난 단계.
+ *  예정·건너뜀·실행 중 단계는 아직 호출 결과가 아니다. */
+export const isModelCall = (n: FlowNode) => n.agent_run_id != null || (n.model != null && EXECUTED.has(n.status));
 export function usageSummary(nodes: FlowNode[]): Usage {
-  const runs = nodes.filter(n => n.agent_run_id != null);
+  const runs = nodes.filter(isModelCall);
   const counts = new Map<string, number>();
   for (const n of runs) { const m = n.model || '모델 미기록'; counts.set(m, (counts.get(m) ?? 0) + 1); }
   return {
