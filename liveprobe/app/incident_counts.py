@@ -37,8 +37,9 @@ def bucket_of(status: str | None, claimed: bool = False) -> str:
 def incident_counts(s, namespaces: list[str] | None = None) -> dict:
     """Read-only counts over the whole history (not a recent window). `by_environment` uses the same buckets."""
     from .models import Incident
-    rows = s.execute(select(Incident.namespace, Incident.status, Incident.handoff)
-                     .where(Incident.status.in_(IN_PROGRESS + ("handed_off",)))).all()
+    from .unified import effective_status_expr
+    rows = s.execute(select(Incident.namespace, effective_status_expr(), Incident.handoff)
+                     .where(effective_status_expr().in_(IN_PROGRESS + ("handed_off",)))).all()
     total = {"automatic": 0, "awaiting_approval": 0, "unclaimed_handoff": 0}
     by_env: dict[str, dict] = {ns: dict(total) for ns in namespaces or []}
     for namespace, status, handoff in rows:
@@ -48,7 +49,7 @@ def incident_counts(s, namespaces: list[str] | None = None) -> dict:
         total[bucket] += 1
         if namespace in by_env:
             by_env[namespace][bucket] += 1
-    closed = s.scalar(select(func.count()).select_from(Incident).where(Incident.status.in_(CLOSED))) or 0
+    closed = s.scalar(select(func.count()).select_from(Incident).where(effective_status_expr().in_(CLOSED))) or 0
     return {**total, "in_progress": total["automatic"] + total["awaiting_approval"], "closed_history": closed,
             "map_handoff_window_hours": map_handoff_window_hours(),
             "by_environment": {ns: {**c, "in_progress": c["automatic"] + c["awaiting_approval"]} for ns, c in by_env.items()}}

@@ -228,8 +228,14 @@ def execute(session_factory, cfg: AppConfig, kube: Any, action_id: int, actor: s
             level: str | None = None) -> ExecResult:
     """Run all checks, take the per-target lock (unique index), execute, verify. Separate txns per phase."""
     from . import actions as typed
+    from .unified import active_link
     with session_factory() as s:
         act = s.get(Action, action_id)
+        incident = s.get(Incident, act.incident_id) if act else None
+        if incident and active_link(s, incident.namespace, incident.workload):
+            act.status, act.reason = 'denied', '동일 대상의 코드 조치가 진행 중이거나 결과 확인이 필요합니다.'
+            audit(s, actor, 'action_denied', incident.id, action_id=action_id, reason='code_action_owns_target')
+            return ExecResult(action_id, 'denied', act.reason)
         is_typed = bool(act) and act.type in typed.TYPED
     if is_typed:  # KAN-135: the five typed safe actions have their own validated executor
         from .runtime_fencing import application_owned

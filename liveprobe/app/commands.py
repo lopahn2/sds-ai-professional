@@ -477,15 +477,24 @@ class CommandService:
 
     @classmethod
     def _start_row(cls, s, cid):
-        # Start claims and stop finalization share Incident -> Command lock order.
-        iid = s.scalar(select(OperatorCommand.incident_id).where(OperatorCommand.id == cid))
-        if iid is None:
+        # Target advisory locks precede Incident -> Command row locks everywhere.
+        # Read the immutable plan candidate first, then revalidate after admission:
+        # waiting for a target must never hold Incident against code continuation.
+        snapshot = s.get(OperatorCommand, cid)
+        if snapshot is None:
             raise CommandError("command_not_found", 404)
+        iid, plan = snapshot.incident_id, copy.deepcopy(snapshot.plan)
+        from .unified import guard_command_targets
+        guard_command_targets(s, snapshot)
         s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
+        s.expire(snapshot)
         try:
             # A live Command lock may span network I/O. Do not wait on it while
             # holding Incident: reject the duplicate and release the short claim TX.
-            return cls._row(s, cid, nowait=True)
+            row = cls._row(s, cid, nowait=True)
+            if row.incident_id != iid or row.plan != plan:
+                raise CommandError("command_plan_changed")
+            return row
         except OperationalError as exc:
             if getattr(exc.orig, "sqlstate", None) == "55P03":
                 raise CommandError("command_busy") from None
@@ -510,8 +519,13 @@ class CommandService:
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 8000:
             raise CommandError("invalid_instruction", 422)
         with db.session() as s:
-            if s.scalar(select(Incident).where(Incident.id == iid).with_for_update()) is None:
+            incident = s.get(Incident, iid)
+            if incident is None:
                 raise CommandError("incident_not_found", 404)
+            from .unified import active_link
+            if active_link(s, incident.namespace, incident.workload):
+                raise CommandError("code_action_owns_target")
+            s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
             row = OperatorCommand(incident_id=iid, instruction=redact(instruction), actor=redact(actor)[:64],
                                   message_id=message_id, status="planning")
             s.add(row)
@@ -606,6 +620,10 @@ class CommandService:
             expected = copy.deepcopy((row.plan, row.rollback))
         with db.session() as s:
             row = self._start_row(s, cid)
+            from .unified import active_link
+            incident = s.get(Incident, row.incident_id)
+            if incident and active_link(s, incident.namespace, incident.workload):
+                raise CommandError("code_action_owns_target")
             self._hash(row, plan_sha256)
             if row.status != "awaiting_confirmation" or (row.plan, row.rollback) != expected:
                 raise CommandError("command_not_confirmable")
@@ -739,6 +757,10 @@ class CommandService:
     def execute(self, cid):
         with db.session() as s:
             row = self._start_row(s, cid)
+            from .unified import active_link
+            incident = s.get(Incident, row.incident_id)
+            if incident and active_link(s, incident.namespace, incident.workload):
+                raise CommandError("code_action_owns_target")
             if row.status != "executing" or (row.result or {}).get("claimed"):
                 raise CommandError("command_not_executable")
             if any(op["op"] == "secret_update" for op in row.plan["operations"]):

@@ -28,6 +28,7 @@ from .lifecycle import transition, update_run
 from .redact import redact_obj
 from . import safety
 from .safety import POLICY_MODES
+from .unified import effective_status_expr, projection_rows, apply_projection, project_items, append_code_flow
 from .sse import broker
 
 log = logging.getLogger("liveprobe")
@@ -149,7 +150,16 @@ async def lifespan(app: FastAPI):
     if settings.background:
         rag_ingest_stop.clear()
         threading.Thread(target=_start_background, name="bootstrap", daemon=True).start()
-    yield
+    application = STATE.get("application")
+    if application is not None:
+        async with application.router.lifespan_context(application):
+            STATE['unified'].start()
+            try:
+                yield
+            finally:
+                STATE['unified'].stop()
+    else:
+        yield
     rag_ingest_stop.set()
     if STATE.get("collector"):
         STATE["collector"].stop()
@@ -173,6 +183,52 @@ from .commands import CommandError
 app.include_router(command_router(STATE))
 from .change_api import change_router
 app.include_router(change_router(STATE))
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
+
+
+def _unified_path(request):
+    path = request.url.path
+    return path.startswith(('/api/unified/', '/api/application/')) or '/code-action' in path
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation(request, exc):
+    if _unified_path(request):
+        return JSONResponse({'code': 'request_invalid', 'message_ko': '요청 형식을 확인하십시오.'}, status_code=422)
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(ValidationError)
+async def structured_validation(request, exc):
+    return JSONResponse({'code': 'request_invalid', 'message_ko': '요청 형식을 확인하십시오.'}, status_code=422)
+
+
+@app.exception_handler(SQLAlchemyError)
+async def unified_storage_error(request, exc):
+    return JSONResponse({'code': 'storage_unavailable', 'message_ko': '저장소를 사용할 수 없습니다.'}, status_code=503)
+
+
+@app.middleware('http')
+async def unified_no_store(request, call_next):
+    response = await call_next(request)
+    if _unified_path(request):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+from .unified_api import prepare_unified, unified_router
+prepare_unified(STATE)
+app.include_router(unified_router(STATE))
+if STATE.get("application") is not None:
+    # Preserve runner pull endpoints on the same origin. No host callback is added.
+    from fastapi.routing import APIRoute
+    for route in STATE["application"].routes:
+        if isinstance(route, APIRoute):
+            app.router.routes.append(route)
+    app.mount("/application-history", STATE["application"], name="application-history")
 
 
 @app.exception_handler(CommandError)
@@ -297,6 +353,7 @@ def post_message(iid: int, body: MessageIn, tasks: BackgroundTasks, user: str = 
     """Investigation steering at the next boundary; mutations and post-handoff instructions need confirmation."""
     from . import steering
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.get(Incident, iid)
         if inc is None:
             raise HTTPException(404, "incident not found")
@@ -316,6 +373,7 @@ def post_message(iid: int, body: MessageIn, tasks: BackgroundTasks, user: str = 
         targets = {"target_role": body.target_role, "target_node": body.target_node}
         if mid is not None:
             with db.session() as s:
+                _guard_incident_continuation(s, iid)
                 msg = s.get(OperatorMessage, mid)
                 if msg is not None:
                     msg.intent_detail = {**(msg.intent_detail or {}), **targets}
@@ -332,6 +390,7 @@ def post_message(iid: int, body: MessageIn, tasks: BackgroundTasks, user: str = 
 def control(iid: int, body: ControlIn, user: str = Depends(require_user)):
     from . import runlog
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.get(Incident, iid)
         if inc is None:
             raise HTTPException(404, "incident not found")
@@ -367,7 +426,8 @@ def topology(user: str = Depends(require_user)):
                       "severity_level": i.severity_level, "title": i.title,
                       "claimed": bool((i.handoff or {}).get("claimed_by")),
                       "updated_ts": i.updated_at.timestamp() if i.updated_at else 0}
-                     for i in s.scalars(select(Incident).where(Incident.status.not_in(("resolved", "failed", "closed"))))]
+                     for i in s.scalars(select(Incident).where(effective_status_expr().not_in(("resolved", "failed", "closed"))))]
+        incidents = project_items(s, incidents)
     return build_topology(_inventory(kube), store.snapshot(), store.freshness(), incidents, cfg=get_app_config())
 
 
@@ -408,8 +468,8 @@ def operations_overview(user: str = Depends(require_user)):
         now = datetime.now(timezone.utc)
         recent = now - timedelta(hours=1)
         rows = list(s.scalars(select(Incident).where(or_(
-            Incident.status.in_(("open", "analyzing", "action_pending", "acting")),
-            (Incident.status == "handed_off") & (Incident.updated_at >= recent))).order_by(Incident.id.desc()).limit(200)))
+            effective_status_expr().in_(("open", "analyzing", "action_pending", "acting")),
+            (effective_status_expr() == "handed_off") & (Incident.updated_at >= recent))).order_by(Incident.id.desc()).limit(200)))
         ids = [i.id for i in rows]
         routes = list(s.scalars(select(RoutingDecision).where(RoutingDecision.incident_id.in_(ids)).order_by(RoutingDecision.id))) if ids else []
         runs = list(s.scalars(select(AgentRun).where(AgentRun.incident_id.in_(ids)).order_by(AgentRun.id))) if ids else []
@@ -422,8 +482,9 @@ def operations_overview(user: str = Depends(require_user)):
                                         [r for r in runs if r.incident_id == i.id], [e for e in evs if e.incident_id == i.id])}
                      for i in rows]
         day_start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(hour=0, minute=0, second=0, microsecond=0)
-        counts = dict(s.execute(select(Incident.status, func.count()).where(Incident.created_at >= day_start)
-                                .group_by(Incident.status)).all())
+        incidents = project_items(s, incidents)
+        counts = dict(s.execute(select(effective_status_expr(), func.count()).where(Incident.created_at >= day_start)
+                                .group_by(effective_status_expr())).all())
         today = {"total": sum(counts.values()), **{k: counts.get(k, 0) for k in ("resolved", "handed_off", "failed", "closed")}}
         from .incident_counts import incident_counts
         shared = incident_counts(s, get_app_config().target_namespaces)
@@ -446,8 +507,11 @@ def _agg(s, ids: list[int]) -> dict[int, dict]:
                             func.count(AgentRun.estimated_cost_usd),
                             func.sum(AgentRun.estimated_cost_usd))
                      .where(AgentRun.incident_id.in_(ids)).group_by(AgentRun.incident_id)).all()
-    return {r[0]: {"agent_run_count": int(r[1]),
+    result = {r[0]: {"agent_run_count": int(r[1]),
                    **cost_view(int(r[1]), int(r[2]), float(r[3]) if r[3] is not None else None)} for r in rows}
+    for iid, projection in projection_rows(s, ids).items():
+        result.setdefault(iid, {"agent_run_count": 0, **cost_view(0, 0, None)})['code_action'] = projection
+    return result
 
 
 def _summary(i: Incident, agg: dict[int, dict]) -> dict:
@@ -455,7 +519,7 @@ def _summary(i: Incident, agg: dict[int, dict]) -> dict:
     from .narrative import incident_origin
     a = agg.get(i.id) or {"agent_run_count": 0, **cost_view(0, 0, None)}
     from .readings_ko import title_ko
-    return {
+    return apply_projection({
         "id": i.id, "title": i.title, "title_ko": title_ko(i.title, i.signal_reasons),
         "namespace": i.namespace, "workload": i.workload, "system": i.system, "environment": get_app_config().environment(i.namespace), "status": i.status,
         "severity_level": i.severity_level, "signal_count": i.signal_count, "created_at": iso(i.created_at),
@@ -463,7 +527,7 @@ def _summary(i: Incident, agg: dict[int, dict]) -> dict:
         "known_cost_usd": a["known_cost_usd"], "cost_missing_runs": a["cost_missing_runs"], "cost_status": a["cost_status"],
         "agent_run_count": a["agent_run_count"], "origin": incident_origin(i.fingerprint),
         "recovery_kind": 'observed' if (i.handoff or {}).get('observed_recovery') else None,
-    }
+    }, a.get('code_action'))
 
 
 INCIDENT_ORIGINS = ("evaluation", "unconfirmed")
@@ -502,7 +566,7 @@ def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, 
         if service:
             conds.append(Incident.workload == service)
         if status:
-            conds.append(Incident.status == status)
+            conds.append(effective_status_expr() == status)
         if search and search.strip():
             term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             conds.append(or_(Incident.title.ilike(f"%{term}%", escape="\\"),
@@ -605,6 +669,13 @@ def incident_narrative(iid: int, user: str = Depends(require_user)):
         inc = s.get(Incident, iid)
         active = inc is not None and inc.status not in INCIDENT_CLOSED_STATES
         out = build_narrative(s, iid, interpret_job=_interpret_job(iid))
+        projection = projection_rows(s, [iid]).get(iid)
+        if out is not None and projection:
+            out['incident'] = apply_projection(out['incident'], projection)
+            out['headline']['stage'] = {'key': 'code_action', 'label': projection['state_ko']}
+            out['headline']['next'] = '같은 관제실의 코드 수정 조치에서 진행 상태와 다음 조치를 확인하세요.'
+            out['handoff_view'] = None
+            out['flow'] = append_code_flow(out['flow'], projection)
         s.rollback()  # read path: nothing is ever committed from here
     if out is None:
         raise HTTPException(404, "incident not found")
@@ -628,9 +699,10 @@ def request_interpretation(iid: int, body: InterpretIn, user: str = Depends(requ
     if not get_app_config().assist.interpret_enabled:
         raise HTTPException(409, "interpretation is disabled by configuration")
     worker = STATE.get("interpret")
-    if worker is None or not hasattr(worker, "request_explicit"):
-        raise HTTPException(503, "interpretation worker unavailable")
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
+        if worker is None or not hasattr(worker, "request_explicit"):
+            raise HTTPException(503, "interpretation worker unavailable")
         out = build_narrative(s, iid, interpret_job=_interpret_job(iid))
         if out is None:
             raise HTTPException(404, "incident not found")
@@ -648,6 +720,7 @@ def request_interpretation(iid: int, body: InterpretIn, user: str = Depends(requ
 def claim_handoff(iid: int, user: str = Depends(require_user)):
     """Acknowledge ownership of an existing handoff; never authorize a cluster action."""
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
         if inc is None:
             raise HTTPException(404, "incident not found")
@@ -686,6 +759,7 @@ def close_incident(iid: int, body: CloseIn, user: str = Depends(require_user)):
     if not reason or len(reason) > 500:
         raise HTTPException(422, "reason must be 1-500 characters")
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
         if inc is None:
             raise HTTPException(404, "incident not found")
@@ -739,6 +813,7 @@ def reassess_incident(iid: int, body: ReassessIn, user: str = Depends(require_us
     if engine is None:
         raise HTTPException(503, 'engine not ready')
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
         if inc is None:
             raise HTTPException(404, 'incident not found')
@@ -811,6 +886,7 @@ def reassess_incident(iid: int, body: ReassessIn, user: str = Depends(require_us
         run_id = run.id
     engine.reassess_read_only(iid, run_id)
     with db.session() as s:
+        _guard_incident_continuation(s, iid)
         inc = s.get(Incident, iid)
         return redact_obj({'id': iid, 'status': inc.status, 'run_id': run_id, 'read_only': True,
                            'cluster_changed': False, 'handoff': inc.handoff})
@@ -990,6 +1066,11 @@ async def alertmanager_hook(request: Request):
 
 
 # ------------------------------------------------------------------ SSE
+def _guard_incident_continuation(session, iid):
+    from .unified import require_no_code_action
+    require_no_code_action(session, session.get(Incident, iid))
+
+
 def _current_status(iid: int) -> str | None:
     with db.session() as s:
         inc = s.get(Incident, iid)

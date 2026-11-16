@@ -302,7 +302,10 @@ class Engine:
             if runner._process(iid, arm=arm) is False:
                 return
             from .changes import auto_create_for_incident
-            if arm is None: auto_create_for_incident(runner, iid)
+            if arm is None:
+                auto_create_for_incident(runner, iid)
+                from .unified import auto_continue
+                auto_continue(iid)
         finally:
             try:
                 if attempt is not None and attempt.engine is self and attempt.incident_id == iid:
@@ -650,8 +653,11 @@ class Engine:
 
         final = out.get("verifier") or out.get("safety") or out.get("analyst") or out.get("curator") or {}
         summary = (final or {}).get("summary")
-        self._save_remediation(iid, bundle, final, verified=out.get('outcome') == 'propose_action'
+        selected_remediation = self._save_remediation(iid, bundle, final, verified=out.get('outcome') == 'propose_action'
                                or (out.get('handoff') or {}).get('workflow_status') == 'verified')
+        if isinstance(out.get('handoff'), dict):
+            # Keep deterministic provenance when the workflow's raw handoff is persisted.
+            out['handoff']['remediation'] = selected_remediation
 
         # KAN-53: every cited evidence/runbook ref must resolve to a source that was actually shown.
         # (SIMPLE/HIGH_RISK keep the MVP-0 message without verbatim quotes, so only ref resolution applies.)
@@ -716,7 +722,30 @@ class Engine:
         remediation = select_remediation(bundle, output, verified=verified)
         with db.session() as s:
             inc = s.get(Incident, iid)
-            inc.handoff = {**(inc.handoff or {}), "remediation": remediation}
+            latest = None
+            if verified and remediation.get('source') == 'llm' and remediation.get('kind') in ('code_fix', 'both'):
+                query = select(AgentRun).where(AgentRun.incident_id == iid,
+                    AgentRun.role.in_(['result_verifier', 'group_verifier']))
+                workflow_id = getattr(self, '_workflow_run_id', None)
+                if workflow_id is not None:
+                    workflow = s.get(WorkflowRun, workflow_id)
+                    query = query.where(AgentRun.created_at >= workflow.created_at) if workflow else query.where(False)
+                latest = s.scalar(query.order_by(AgentRun.id.desc()).limit(1))
+            review = (latest.output or {}) if latest is not None else {}
+            review_remediation = review.get('remediation') or {}
+            code_verified = bool(verified and remediation.get('source') == 'llm'
+                and remediation.get('kind') in ('code_fix', 'both') and latest is not None
+                and latest.status == 'succeeded' and review.get('verdict') == 'supported'
+                and not review.get('_acceptance_rejected')
+                and review_remediation.get('kind') == remediation.get('kind')
+                and review_remediation.get('code_refs') == remediation.get('code_refs'))
+            marker = {'verified': code_verified,
+                'verifier_run_id': latest.id if code_verified else None,
+                'workflow_run_id': getattr(self, '_workflow_run_id', None),
+                'basis': 'independent_workflow' if code_verified else 'unverified_or_not_code'}
+            # This also invalidates a previous diagnosis before any new analysis.
+            # It survives a successful K8s mitigation that returns before handoff assembly.
+            inc.handoff = {**(inc.handoff or {}), 'remediation': remediation, 'code_cause_verification': marker}
             audit(s, "workflow", "remediation_decided", iid, **remediation)
         return remediation
 

@@ -124,6 +124,20 @@ def build_simple_graph(run_agent: RunAgent):
         if agree and conf >= thr and pre and pre["propose"]:
             return {"outcome": "propose_action", "action": pa,
                     "reason": f"analyst and verifier agree on {pa['type']} (min confidence {conf:.2f} >= {thr})"}
+        # A supported code diagnosis is a verified handoff from the K8s domain,
+        # not a failed Kubernetes action. The unified coordinator may continue it.
+        ra, rv = a.get('remediation') or {}, v.get('remediation') or {}
+        code_agrees = (ra.get('kind') in ('code_fix', 'both') and ra.get('kind') == rv.get('kind')
+            and bool(ra.get('code_refs')) and ra.get('code_refs') == rv.get('code_refs')
+            and a.get('next_action') == v.get('next_action') == 'handoff'
+            and not a.get('action') and not v.get('action'))
+        if (code_agrees and conf >= thr and
+                (state.get('incident') or {}).get('severity_level') != 'HIGH_RISK'):
+            return {'outcome': 'handoff', 'reason': 'independently verified application code cause',
+                    'handoff': {**_handoff(v), 'workflow_status': 'verified',
+                                'verification': {'verdict': v.get('verdict'),
+                                    'candidate_verdicts': v.get('candidate_verdicts')},
+                                'confidence': conf}}
         why = []
         if not agree:
             why.append(f"agents disagree or reject action (analyst={a.get('next_action')}, verifier={v.get('next_action')})")

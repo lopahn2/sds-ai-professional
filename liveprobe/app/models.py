@@ -299,3 +299,23 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[dict] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CodeActionLink(Base):
+    """Additive root-to-code-action saga. Native incident records remain immutable."""
+    __tablename__ = "code_action_links"
+    action_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), unique=True, index=True)
+    application_id: Mapped[str] = mapped_column(String(64), unique=True)
+    request_id: Mapped[str | None] = mapped_column(String(128), unique=True)
+    request_sha256: Mapped[str] = mapped_column(String(64))
+    request: Mapped[dict] = mapped_column(JSONB)
+    state: Mapped[str] = mapped_column(String(32), default="requested")
+    application_state: Mapped[str] = mapped_column(String(64), default="requested")
+    projected_status: Mapped[str] = mapped_column(String(32), default="analyzing")
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observation: Mapped[str] = mapped_column(String(32), default="pending")
+    created_by: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
