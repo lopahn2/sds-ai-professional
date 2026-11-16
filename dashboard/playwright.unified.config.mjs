@@ -1,0 +1,3 @@
+import { defineConfig } from '@playwright/test';
+// All API requests in this suite are intercepted. Never reuse a running live server.
+export default defineConfig({ testDir: './e2e', testMatch: 'unified.spec.mjs', timeout: 30000, retries: 0, workers: 1, reporter: 'list', outputDir: '/private/tmp/liveprobe-unified-ui-results', use: { baseURL: 'http://127.0.0.1:4187', headless: true, screenshot: 'only-on-failure' }, projects: [375, 768, 1440].map(width => ({ name: `unified-${width}`, use: { viewport: { width, height: 1000 } } })), webServer: { command: 'npm run preview -- --host 127.0.0.1 --port 4187 --strictPort', url: 'http://127.0.0.1:4187', reuseExistingServer: false } });

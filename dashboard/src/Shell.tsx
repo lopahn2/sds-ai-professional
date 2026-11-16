@@ -1,6 +1,6 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityLogIcon, BellIcon, DashboardIcon, ExternalLinkIcon, GearIcon, ReaderIcon } from '@radix-ui/react-icons';
+import { ActivityLogIcon, BellIcon, DashboardIcon, GearIcon, ReaderIcon } from '@radix-ui/react-icons';
 import { StatusIndicator } from '@naria/ui';
 import { needsOperator, nextStepShort, responseQueue } from './responseQueue';
 import { age } from './api';
@@ -13,6 +13,7 @@ export function whereKo(path: string): string[] {
   const m = path.match(/^\/incidents\/(\d+)/);
   if (m) return ['장애 관제', `장애 #${m[1]}`];
   if (path.startsWith('/incidents')) return ['장애 관제'];
+  if (path.startsWith('/application')) return ['애플리케이션 장애'];
   if (path.startsWith('/ledger')) return ['검토 기록'];
   if (path.startsWith('/settings')) return ['설정'];
   return ['운영 관제'];
@@ -48,7 +49,7 @@ function AlertMenu() {
     </div>}
   </div>;
 }
-const NAV = [['/', '운영 관제', '관제', DashboardIcon], ['/incidents', '장애 관제', '장애', BellIcon], ['/ledger', '검토 기록', '검토', ReaderIcon], ['/settings', '설정', '설정', GearIcon]] as const;
+const NAV = [['/', '운영 관제', '관제', DashboardIcon], ['/incidents', '장애 관제', '장애', BellIcon], ['/application', '애플리케이션 장애', '앱 장애', ActivityLogIcon], ['/ledger', '검토 기록', '검토', ReaderIcon], ['/settings', '설정', '설정', GearIcon]] as const;
 function Frame() {
   const { open, toasts, dismiss, accounts } = useLive();
   const go = useNavigate(); const loc = useLocation();
@@ -56,11 +57,10 @@ function Frame() {
   const crumbs = whereKo(loc.pathname);
   return <div className="app">
     <nav className="nav" aria-label="주 메뉴">
-      <Link className="brand" to="/" aria-label="라이브프로브 운영 관제"><i aria-hidden><ActivityLogIcon /></i><span>라이브프로브<small>Kubernetes 장애 대응</small></span></Link>
+      <Link className="brand" to="/" aria-label="라이브프로브 운영 관제"><i aria-hidden><ActivityLogIcon /></i><span>라이브프로브<small>장애 대응 · 코드 조치</small></span></Link>
       <span className="nav-caption">작업 공간</span>
       {NAV.map(([to, label, short, Icon]) => <NavLink key={to} to={to} end={to === '/'} className={link} aria-label={label}><span className="nav-icon" aria-hidden><Icon /></span><span className="lbl">{label}</span><span className="nav-short" aria-hidden>{short}</span>{to === '/incidents' && open.length > 0 && <span className="count">{open.length}</span>}</NavLink>)}
-      <a href="http://application.liveprobe.localhost/" target="_blank" rel="noopener noreferrer" aria-label="Application 관제 (새 창)"><span className="nav-icon" aria-hidden><ExternalLinkIcon /></span><span className="lbl">Application 관제</span><span className="nav-short">앱 관제</span></a>
-      <div className="foot"><StatusIndicator status="info">로컬 운영 환경</StatusIndicator><small>클러스터 · 워크로드 관제</small></div>
+      <div className="foot"><StatusIndicator status="info">로컬 운영 환경</StatusIndicator><small>클러스터 · 애플리케이션 관제</small></div>
     </nav>
     <div className="bar"><nav className="crumbs" aria-label="현재 위치">{crumbs.map((c, i) => <span key={c} aria-current={i === crumbs.length - 1 ? 'page' : undefined}>{i > 0 && <span className="bar-divider" aria-hidden>/</span>}{c}</span>)}</nav>
       <div className="bar-right"><span className="bar-account"><StatusIndicator status={!accounts ? 'unknown' : accounts.accounts.some(a => a.state === 'available') ? 'ok' : 'warning'}>{!accounts ? '분석 계정 확인 중' : accounts.accounts.some(a => a.state === 'available') ? '분석 계정 사용 가능' : '분석 계정 확인 필요'}</StatusIndicator></span><AlertMenu /></div></div>

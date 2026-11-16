@@ -7,7 +7,7 @@ export type RawFilter = typeof RAW_FILTERS[number][0];
 export const FLOW_STATUS_KO: Record<string, string> = { planned: '예정', running: '실행 중', done: '완료', failed: '실패', skipped: '건너뜀', escalated: '상위 모델 승격' };
 /** Short status for the two-line node; the full wording stays in the accessible name and the step detail. */
 export const FLOW_STATUS_SHORT: Record<string, string> = { planned: '예정', running: '실행 중', done: '완료', failed: '실패', skipped: '건너뜀', escalated: '승격됨' };
-export const FLOW_TYPE_KO: Record<string, string> = { signal: '신호', evidence: '근거', router: '분류', group: '그룹', agent: '에이전트', verify: '검증', action: '조치', outcome: '결과', steer: '운영자 지시', command: '지시 실행', interpret: '한글 해석' };
+export const FLOW_TYPE_KO: Record<string, string> = { code_action: '코드 조치', signal: '신호', evidence: '근거', router: '분류', group: '그룹', agent: '에이전트', verify: '검증', action: '조치', outcome: '결과', steer: '운영자 지시', command: '지시 실행', interpret: '한글 해석' };
 export const EDGE_KIND_KO: Record<string, string> = { flow: '진행', escalate: '상위 모델 승격', reroute: '경로 변경', steer: '지시 반영', verify: '검증' };
 export const STAGE_KO: Record<string, string> = { routing: '사건 수준 판단 중', collecting: '근거 수집 중', analyzing: '에이전트 분석 중', verifying: '결과 확인 중', acting: '조치 실행 중', approval: '운영자 승인 대기', resolved: '자동 복구 완료', handed_off: '운영자 인계', failed: '처리 실패', closed: '운영자 종료' };
 export const flowStatusKo = (v: string) => FLOW_STATUS_KO[v] ?? '상태 미확인';

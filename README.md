@@ -27,8 +27,8 @@ LiveProbe는 Kubernetes 장애를 감지하고, AI가 근거를 수집·분석�
 
 | 구성 | 하는 일 | 별도로 필요한 설정 |
 |---|---|---|
-| **LiveProbe K8s** | Kubernetes 장애 감지, 서비스 지도, AI 분석·진행 스트리밍, 제한된 복구, 사건·감사 이력 | Kubernetes 읽기 권한, 관측 연결, DB, AI 인증, 복구용 별도 권한 |
-| **LiveProbe for Application** | 애플리케이션 오류 분석, 소스 수정, 재현·회귀 시험, dev 배포, 사용자 시험과 prd 승인 | 독립 DB·인증·AI 저장소, 서비스 프로필, 호스트 실행기 |
+| **LiveProbe K8s 관제 모듈** | Kubernetes 장애 감지, 서비스 지도, AI 분석·진행 스트리밍, 제한된 복구, 사건·감사 이력 | Kubernetes 읽기 권한, 관측 연결, DB, AI 인증, 복구용 별도 권한 |
+| **LiveProbe 코드 조치 모듈 (Application)** | 애플리케이션 오류 분석, 소스 수정, 재현·회귀 시험, dev 배포, 사용자 시험과 prd 승인 | 독립 DB·인증·AI 저장소, 서비스 프로필, 호스트 실행기 |
 | **테스트 시스템** | 주문·재고·상품·결제·배송·알림 및 트레이드·딜리버리·비즈니스 시스템 | 서비스 이미지, 업무 DB, Kafka, 내부 인증·TLS, 환경별 배포 |
 
 현재 활성 환경은 **`dev`와 `prd`**입니다. `stg`는 과거 기록을 조회하기 위한 퇴역 환경입니다. 새 실험은 dev에서 시작하고 prd에는 설치 확인 목적으로 장애를 주입하지 않습니다.
@@ -428,6 +428,26 @@ python3 scripts/render-samsung-environments.py \
 자세한 계약: [업무 기반](docs/operations/samsung-infra.md), [업무 시스템](docs/operations/samsung-domain.md). 이 문서의 이전 개발 환경 경로·stg 설명보다 **현재 소스와 위 dev/prd 구분**을 우선합니다.
 
 ## 9. Application 관제와 실행기
+
+### 9.0 하나의 사건으로 연결하는 통합 모드
+
+[통합 사건 설계](docs/plans/liveprobe-unified-incident-plan-2026-11-16.md)에 따라 하나의 관제실에서 K8s 분석과 코드 수정·시험·dev 검증·prd 승인을 이어가는 **선택적 통합 모드**를 추가했습니다. 기존 사건 번호·Application DB·원문 이력을 유지합니다. 통합 모드는 기본 비활성이고 이 소스 변경을 실제 클러스터에 적용한 것은 아닙니다.
+
+설치자는 다음을 별도로 준비해야 합니다.
+
+- core API에 `LIVEPROBE_UNIFIED_ENABLED=true`, 설치마다 고유하고 재시작 후에도 같은 `LIVEPROBE_INSTALLATION_ID`를 설정합니다. 같은 출처 `/api/application/v1`에 기존 pull API를 제공하며 호스트 실행기로 들어가는 통로는 만들지 않습니다.
+- 기존 `APPLICATION_*` 전용 DB·사람/기계 identity 파일·프로필·catalog·Codex 홈 설정을 core 프로세스가 사용할 수 있게 준비합니다. 기존 DB를 core DB로 바꾸거나 인증 파일을 합치지 않습니다. `0011`은 연결 표만 추가하며 기존 사건을 일괄 수정하지 않습니다.
+- **writer는 하나씩**: 통합 모드로 전환하기 전 기존 Application API의 분석 worker와 같은 일감을 받는 legacy runner를 drain하고 결과 불명 쓰기를 조정합니다. 두 독립 worker를 무조건 동시에 켜거나 기존 배포를 삭제해서 전환하지 않습니다.
+- 기계 identity는 다른 subject/token으로 `runner`+`runner:source`, `runner`+`runner:cluster`를 나눕니다. 두 scope를 한 계정에 주면 거부됩니다. 소스 실행기는 `--role source`, 배포 실행기는 `--role cluster`로 시작합니다. 전자는 Kubernetes 읽기 전용 proxy만 사용하며 저장소 쓰기 자격을 가질 수 있습니다. 후자는 등록 대상 배포 자격만 가지며 Git 쓰기 자격을 주지 않습니다. 기존 배포 선언은 이 계정 분리를 자동 설치하지 않습니다. 운영에서는 별도 OS 사용자 또는 자격이 격리된 실행 환경을 사용하고, 같은 사용자 홈·Git 자격·쓰기 가능한 실행기 설정을 공유하지 않습니다.
+- 서로 다른 실행기는 검증된 snapshots/artifacts/promotions 영수증을 제한된 파일 공유로 전달해야 합니다. 클러스터 계정에 소스 계정의 자격 디렉터리·Git 설정·Codex 인증을 공유하지 않습니다. 현재 파일 계약은 원격 산출물 전송 서비스를 제공하지 않으므로 실행 호스트/경로·소유권 검증이 필요합니다.
+- 사람은 기존 `incident:read`, `incident:create`, `tester`, `prd-approver` scope로 구분합니다. 로컬 운영자 접근만으로 시험·prd 승격 권한을 얻지 않습니다. 브라우저에 기계 토큰을 입력하지 않습니다.
+- `APPLICATION_REPOSITORIES_FILE`은 설치자가 확인한 repositories.json 경로입니다. 현재 파일의 예시 조직·비공개 저장소 이름을 자신의 실제 등록 저장소로 바꿉니다. `APPLICATION_GITHUB_READ_TOKEN_FILE`은 private repo 병합 조회 전용 자격 파일입니다. 파일 내용은 소스·이미지·문서·URL에 넣지 않습니다. 소스 runner의 PR 작성 자격과 분리합니다.
+
+코드 조치의 재현·회귀 시험 후 소스 계정은 `python -m liveprobe.application_runner.publish_pr --help`에 나온 명시 명령으로 **시험한 영수증의 PR만** 게시할 수 있습니다. 원래 main commit과 시험 소스 지문을 증명하지 못하면 게시하지 않으며 자동 병합하지 않습니다. 응답 유실 후에는 조회로만 조정하고 push/PR 생성을 무조건 다시 보내지 않습니다. 현재는 큐의 자동 PR 게시 작업이 아니므로 source runner 운영 절차에서 이 명령을 수행해야 합니다.
+
+관제실에서 시험자 기록 → PR 번호의 사람 병합 확인 → 정확한 버전의 prd 승인을 수행합니다. 서버는 등록 GitHub 저장소의 사람 병합·현재 main·실제 소스 파일 지문을 다시 읽어 확인합니다. 병합 메타데이터를 입력하는 것만으로 승인되지 않습니다. 읽기 자격·저장소·출처·병합이 미구성이면 prd는 차단됩니다. dev/prd만 새 승격에 사용하고 stg는 과거 기록으로 남깁니다.
+
+운영 전환은 설계 P5의 별도 인수 대상입니다. 비활성화해도 진행 중 조치를 미실행으로 바꾸지 않으며 연결·양쪽 DB·PVC를 남깁니다. 기존 코드 조치가 있으면 다른 K8s 변경을 차단하고 drain/reconcile 후 원복합니다. 아래 9.1–9.3은 기존 독립 배포의 설치 경로입니다.
 
 ### 9.1 독립 API·DB·인증
 

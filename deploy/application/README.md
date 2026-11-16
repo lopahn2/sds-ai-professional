@@ -1,7 +1,13 @@
-# LiveProbe for Application — 제한된 별도 배포
+# LiveProbe Application 실행 구성 — 제한된 별도 배포
 
 이 디렉터리는 **선언과 오프라인 시험**이다. 클러스터 적용·이미지 빌드·모델/실행기 연결 성공을 뜻하지 않는다.
 `rendered/*.yaml`의 현재 `000…000` digest는 **파싱 시험용 표식**이다. 실제 manifest digest로 다시 렌더하기 전에는 적용하지 않는다.
+
+## 통합 모드와 현재 조사
+
+2026-11-16 읽기 전용 확인에서는 Application API Deployment·Service·Ingress와 DB StatefulSet이 존재했습니다. 아래 11월 9일 미설치 기록은 과거 상태입니다. 존재 확인은 readiness·인증·runner·업무 복구 검증을 뜻하지 않습니다.
+
+새 통합 모드는 루트 사건/관제실을 K8s 쪽에 두고 이 DB와 실행 계약을 코드 조치 저장소로 재사용합니다. 이 디렉터리의 선언을 자동 변경하거나 적용하지 않았습니다. [설치 경계와 필요한 설정](../../README.md#90-하나의-사건으로-연결하는-통합-모드), [설계와 단계 계획](../../docs/plans/liveprobe-unified-incident-plan-2026-11-16.md)을 따릅니다. 특히 legacy writer/runner drain, 기계 신원 source/cluster 분리, 별도 읽기 전용 GitHub 병합 조회, 파일 영수증 전달이 운영 전환 전에 필요합니다. 기존 PVC·DB·Secret은 유지합니다.
 
 ## 배포 결정과 보존 경계
 

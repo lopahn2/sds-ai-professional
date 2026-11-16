@@ -21,6 +21,8 @@ import { stepExecution } from './execution';
 import { ErrorBox, LevelBadge, Spinner, StatusBadge } from './ui';
 import { Disclosure } from './Disclosure';
 import { incidentSymptom, nextActionKo, summaryKo } from './presentation';
+import { CodeActionCard } from './CodeActionCard';
+import { continuationActive, type CodeActionSummary } from './unified';
 
 type Tab = 'flow' | 'chat';
 /** Untargeted conversation entries. Run-record events are absorbed into step cards (contract 2.1). */
@@ -56,6 +58,10 @@ function InterpretRequest({ id, state, pending, onDone }: { id: string; state: s
 function Room({ id }: { id: string }) {
   const previousSearch = useLocation().state?.incidentListSearch;
   const listPath = typeof previousSearch === 'string' && previousSearch.startsWith('?') ? '/incidents' + previousSearch : '/incidents';
+  const codeAction = usePolling<CodeActionSummary>(`/incidents/${id}/code-action`, 5000);
+  const continuation = continuationActive(codeAction.data);
+  // Missing continuation status cannot authorize an independent cluster write. Linked incidents keep the old core controls historical.
+  const coreLocked = !codeAction.data || codeAction.error || continuation || codeAction.data.linked;
   const narrative = usePolling<Narrative>(`/incidents/${id}/narrative`, d => narrativePollMs(d?.incident.status ?? 'open'));
   const commands = usePolling<{ items: Command[] }>(`/incidents/${id}/commands`, d => commandPollMs(d?.items ?? []));
   const changes = usePolling<{items:ChangeRequest[]}>(`/changes?incident_id=${id}`, d => changePollMs(d?.items ?? []));
@@ -99,6 +105,7 @@ function Room({ id }: { id: string }) {
       const top = box.scrollTop + el.getBoundingClientRect().top - box.getBoundingClientRect().top - 8;
       box.scrollTo({ top: Math.max(0, top), behavior: reduce ? 'auto' : 'smooth' });
       el.focus({ preventScroll: true });
+      if (data?.flow.nodes.find(n => n.id === key)?.type === 'code_action') el.focus({ preventScroll: true });
       setFlash(key); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(null), 1800);
     });
     return () => cancelAnimationFrame(raf);
@@ -126,7 +133,7 @@ function Room({ id }: { id: string }) {
     });
     return () => cancelAnimationFrame(raf);
   }, [local, events, data, panel]);
-  const reload = useCallback(() => { narrative.refresh(); commands.refresh(); detail.refresh(); setEventRevision(r => r + 1); }, [narrative.refresh, commands.refresh, detail.refresh]);
+  const reload = useCallback(() => { narrative.refresh(); commands.refresh(); detail.refresh(); codeAction.refresh(); setEventRevision(r => r + 1); }, [narrative.refresh, commands.refresh, detail.refresh, codeAction.refresh]);
   const choose = useCallback((nid: string | null) => { if (!nid) return; const key = data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setHistoryOpen(true); if (key.startsWith('command:')) setPastCommandsOpen(true); setOpenCards(s => s.has(key) ? s : new Set(s).add(key)); setTab('chat'); jump.current = key; setJumpRev(r => r + 1); }, [data]);
   const toggle = useCallback((nid: string) => setOpenCards(s => { const next = new Set(s); const aliases = data?.flow.nodes.find(n => n.id === nid)?.aliases ?? []; const keys = [nid, ...aliases]; if (keys.some(k => next.has(k))) keys.forEach(k => next.delete(k)); else next.add(nid); return next; }), [data]);
   const openDetail = useCallback((t: DetailTarget, el: HTMLElement) => { responseScroll.current = null; opener.current = el; if (feed.current) { const top = feed.current.scrollTop; feed.current.scrollTo({ top, behavior: 'instant' }); panelScroll.current = top; } setPanel(t); }, []);
@@ -142,7 +149,7 @@ function Room({ id }: { id: string }) {
     });
   }, [panel, data]);
   async function send(e: FormEvent) {
-    e.preventDefault(); const body = text.trim(); if (snapshot || !body || busy || !data || !incident || !acceptsInstructions(incident.status)) return;
+    e.preventDefault(); const body = text.trim(); if (snapshot || coreLocked || !body || busy || !data || !incident || !acceptsInstructions(incident.status)) return;
     setBusy(true); setError(''); setSent(''); scrollNext.current = true;
     try {
       if (isFinished(incident.status)) await request(`/incidents/${id}/commands`, { method: 'POST', body: JSON.stringify({ instruction: body }) });
@@ -153,7 +160,7 @@ function Room({ id }: { id: string }) {
   }
   /** Step chat: target_role/target_node steering while analysing; after analysis the existing plan→side-effect→confirm command path. */
   async function sendStep(n: FlowNode, body: string) {
-    if (snapshot || !data || !incident || !acceptsInstructions(incident.status)) throw new Error('closed');
+    if (snapshot || coreLocked || !data || !incident || !acceptsInstructions(incident.status)) throw new Error('closed');
     const role = stepTargetRole(n, data.flow.nodes); const at = new Date().toISOString();
     const add = (l: LocalSent) => { responseScroll.current = { nodeId: n.id, messageId: l.message_id, until: Date.now() + 8000 }; setLocal(m => ({ ...m, [n.id]: [...(m[n.id] ?? []), l] })); };
     const viaCommand = async () => { await request(`/incidents/${id}/commands`, { method: 'POST', body: JSON.stringify({ instruction: body }) }); add({ message_id: null, body, ack_ko: null, target_role: null, hold: null, at, via: 'commands' }); };
@@ -167,7 +174,7 @@ function Room({ id }: { id: string }) {
     reload();
   }
   async function ctl(action: 'pause' | 'resume' | 'stop') {
-    if (snapshot) return;
+    if (snapshot || coreLocked) return;
     if (action === 'stop' && !window.confirm('분석을 중단하시겠습니까? 이미 시작된 조치는 검증을 마친 뒤 멈춥니다.')) return;
     setBusy(true); setError(''); try { await request(`/incidents/${id}/control`, { method: 'POST', body: JSON.stringify({ action }) }); reload(); } catch { setError('분석 제어 요청에 실패했습니다. 상태를 확인하고 다시 시도하세요.'); } finally { setBusy(false); }
   }
@@ -178,22 +185,22 @@ function Room({ id }: { id: string }) {
   const next = nextActionKo(i);
   const name = (r: string) => roleKo(r, data.flow.nodes.find(n => n.role === r)?.role_ko);
   const result = historyResult(i, data.flow.nodes, snapshot);
-  const recordView = done || snapshot;
-  const approvals = done || snapshot ? [] : pendingActions(detail.data?.actions);
+  const recordView = done || snapshot || codeAction.data?.linked === true;
+  const approvals = done || snapshot || coreLocked ? [] : pendingActions(detail.data?.actions);
   const pending = approvals.length > 0 || (commands.data?.items ?? []).some(c => c.status === 'awaiting_confirmation' || c.status === 'awaiting_secret');
   // 종료는 진행 중인 조치·지시가 없을 때만 연다. 최종 판단은 서버가 다시 한다.
   const liveCommand = (commands.data?.items ?? []).some(c => ['planning', 'awaiting_confirmation', 'awaiting_secret', 'executing', 'rolling_back'].includes(String(c.status)));
   const closeBlocked = pendingActions(detail.data?.actions).length ? '승인 대기 중인 조치가 있습니다. 먼저 승인 또는 거절하세요.' : liveCommand ? '진행 중인 운영자 지시가 있습니다. 지시를 마치거나 취소한 뒤 종료하세요.' : '';
-  const open = !snapshot && acceptsInstructions(i.status);
+  const open = !snapshot && !coreLocked && acceptsInstructions(i.status);
   // A newer incident status wins over a stale narrative: reuse the server's handoff_view only while the status agrees.
   const handoffView = (sameStatus ? data.handoff_view : null) ?? (['handed_off', 'closed', 'failed'].includes(i.status) ? handoffFallback(i) : null);
   const actionableCommands: Command[] = [], pastCommands: Command[] = [];
   for (const command of commands.data?.items ?? []) {
     const controls = commandControls(command);
-    if (!snapshot && (!done || controls.busy || controls.confirm || controls.secret || controls.rollback || followedCommands.current.has(command.id))) actionableCommands.push(command);
+    if (!snapshot && !coreLocked && (!done || controls.busy || controls.confirm || controls.secret || controls.rollback || followedCommands.current.has(command.id))) actionableCommands.push(command);
     else pastCommands.push(command);
   }
-  const commandCard = (c: Command) => <div className="step-anchor" id={stepDomId(`command:${c.id}`)} tabIndex={-1} key={c.id}><CommandCard command={c} onChange={reload} readOnly={snapshot} /></div>;
+  const commandCard = (c: Command) => <div className="step-anchor" id={stepDomId(`command:${c.id}`)} tabIndex={-1} key={c.id}><CommandCard command={c} onChange={reload} readOnly={snapshot || coreLocked} /></div>;
   const steps = orderSteps(data.flow.nodes);
   // Message ids rendered inside step cards: this browser's targeted sends and steering nodes (`steer:<message id>`).
   const ownedBy = new Map<string, string>();
@@ -224,7 +231,7 @@ function Room({ id }: { id: string }) {
   const talk = conversationEvents(events, owned, renderedTargets);
   const timed = steps.length > 0 && steps.every(n => n.at);
   const entries: { key: string; t: number; el: ReactNode }[] = [
-    ...steps.map((n, ix) => {
+    ...steps.filter(n => n.type !== 'code_action').map((n, ix) => {
       const aliases = aliasesFor(n);
       const key = aliases[0] ?? n.id;
       return { key: `step-${key}`, t: timed ? Date.parse(n.at!) : ix, el: <StepCard key={key} n={n} data={data} open={[n.id, ...aliases].some(key => openCards.has(key))} flash={flash === n.id} onToggle={() => toggle(n.id)} onDetail={openDetail} handoff={handoffView}
@@ -233,7 +240,7 @@ function Room({ id }: { id: string }) {
     ...talk.map(e => ({ key: `event-${e.seq}`, t: timed ? Date.parse(e.at) : steps.length + e.seq, el: <EventEntry e={e} key={`event-${e.seq}`} /> })),
   ].sort((a, b) => a.t - b.t);
   // 운영자 결정이 없으면 멈춰 있는 상태에서는 결정 카드까지 한 번에 데려간다(좁은 화면에서는 대화 탭으로 전환).
-  const decisionNeeded = !snapshot && (approvals.length > 0 || (i.status === 'handed_off' && !i.handoff?.claimed_by));
+  const decisionNeeded = !snapshot && !coreLocked && (approvals.length > 0 || (i.status === 'handed_off' && !i.handoff?.claimed_by));
   const jumpToDecision = () => {
     setTab('chat');
     window.requestAnimationFrame(() => {
@@ -244,36 +251,38 @@ function Room({ id }: { id: string }) {
     });
   };
   return <div className={`incident-room tab-${tab}${snapshot ? ' snapshot-view' : ''}`}>
-    <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span><LevelBadge value={i.severity_level} /><StatusBadge value={i.status} recorded={snapshot} recoveryKind={i.recovery_kind} /><h1>장애 관제실</h1><span className="headline-place">{placeKo(i.environment, i.system, null, i.namespace)}</span><span className="headline-facts">{!recordView && <span>{age(i.created_at)} 경과</span>}{i.origin && <span className={`badge ${i.origin === 'evaluation' ? 'info' : ''}`}>{i.origin === 'evaluation' ? '평가 실행' : '출처 미확인'}</span>}</span></div>
+    <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span><LevelBadge value={i.severity_level} /><>{codeAction.data?.linked ? <span className="badge info">{codeAction.data.state_ko}</span> : <StatusBadge value={i.status} recorded={snapshot} recoveryKind={i.recovery_kind} />}</><h1>장애 관제실</h1><span className="headline-place">{placeKo(i.environment, i.system, null, i.namespace)}</span><span className="headline-facts">{!recordView && <span>{age(i.created_at)} 경과</span>}{i.origin && <span className={`badge ${i.origin === 'evaluation' ? 'info' : ''}`}>{i.origin === 'evaluation' ? '평가 실행' : '출처 미확인'}</span>}</span></div>
       <h2>{i.workload} · {incidentSymptom(i)}</h2>
       <p className="headline-impact">{recordView && <span className="record-label">당시 영향</span>}{impactKo(data.headline.impact, recordView)}</p>
-      {result && <section className="record-result" aria-label="처리 결과">
+      {result && !codeAction.data?.linked && <section className="record-result" aria-label="처리 결과">
         <p><strong>처리 결과</strong> {result.label}{result.detail && <> · {result.detail}</>}</p>
         <p className="record-times"><span>감지 {result.detected}</span><span>{result.timeLabel} {result.at}</span>{result.duration && <span>{result.duration}</span>}</p>
       </section>}
-      <UsageLine incident={i} nodes={data.flow.nodes} />
+      {codeAction.data?.linked && <p className="core-history-note"><span>Kubernetes 단계 · 이전 처리 기록</span><StatusBadge value={i.kubernetes_status ?? data.incident.kubernetes_status ?? data.incident.status} recorded /><span>현재 진행은 코드 조치에서 확인하세요.</span></p>}
+      {codeAction.data?.linked && <p className="faint">Kubernetes 분석 사용량</p>}<UsageLine incident={i} nodes={data.flow.nodes} />
       {snapshot ? <div className="record-notice" role="note"><strong>저장 당시 · {stage?.label}</strong> {result ? '' : `· 감지 ${whenKo(i.created_at)} `}· 읽기 전용 표본</div>
-        : (!result || i.status === 'handed_off') && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
+        : codeAction.data?.linked ? <div className="headline-next"><span className="stage-label">{codeAction.data.state_ko}</span><p><b>다음</b> {codeAction.data.next_ko}</p></div> : (!result || i.status === 'handed_off') && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
     </section>
     {(narrative.error || commands.error || detail.error || eventError) && <div className="room-error"><ErrorBox>{narrative.error ? '상황 정보' : commands.error ? '지시 목록' : detail.error ? '조치 승인 정보' : '실행 기록'} 갱신에 실패했습니다. 마지막으로 받은 내용을 표시합니다.</ErrorBox><button className="btn sm" onClick={reload}>다시 불러오기</button></div>}
     <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '흐름'], ['chat', '대화']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>
     <div className={`room-columns ${panel ? 'with-detail' : ''}`}>
-      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><span className="pane-index">01</span><h2>AI 분석 흐름</h2></div><span className="badge info">{snapshot ? '저장 흐름' : done ? '실행 기록' : '실시간'}</span></header>
+      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><span className="pane-index">01</span><h2>AI 분석 흐름</h2></div><span className="badge info">{snapshot ? '저장 흐름' : continuation ? '코드 조치 진행 중' : done ? '실행 기록' : '실시간'}</span></header>
         <FlowGraph snapshot={snapshot} flow={data.flow} selected={selected ? resolveStepId(selected, steps) ?? selected : null} onSelect={choose} /></section>
       <section className="room-pane chat-pane conversation-pane" aria-label="분석 · 운영자 대화"><header className="pane-heading"><div><span className="pane-index">02</span><h2>분석 · 운영자 대화</h2></div><span className="faint">단계 {steps.length}개 · {snapshot ? '저장 기록' : i.status === 'closed' ? '종료 기록' : done ? '후속 작업' : '분석 지시'}</span></header>
         <div className="chat-feed" ref={feed} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>
-          {i.status === 'closed' && <ClosedCard incident={i} />}
+          <CodeActionCard nodeId={data.flow.nodes.find(n => n.type === 'code_action')?.id} flash={flash === data.flow.nodes.find(n => n.type === 'code_action')?.id} id={id} summary={codeAction.data} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={codeAction.refresh} readOnly={snapshot} />
+          {i.status === 'closed' && !codeAction.data?.linked && <ClosedCard incident={i} />}
           {approvals.map(a => <ActionApprovalCard action={a} key={`action-${a.id}`} onChange={reload} />)}
-          {!snapshot && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload} />}
+          {!snapshot && !coreLocked && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload} />}
           {actionableCommands.map(commandCard)}
           {pastCommands.length > 0 && <Disclosure label={`지난 운영자 지시 ${pastCommands.length}건 보기`} open={pastCommandsOpen} onOpen={setPastCommandsOpen}>{() => pastCommands.map(commandCard)}</Disclosure>}
-          {!snapshot && <Disclosure label="운영자 지시·한글 해석 안내">{() => <div className="chat-intro"><p>{snapshot ? '저장된 분석 기록입니다. 새 분석은 실행하지 않습니다.' : !open ? '종료된 장애입니다. 기록만 볼 수 있습니다.' : '아래 입력란에서 후속 작업이나 조사 방향을 지시하세요. 변경은 계획과 부작용을 확인한 뒤 진행합니다.'}</p>{data.interpreting && <p role="status">한글 해석 준비 중</p>}{!snapshot && !data.interpreting && <InterpretRequest id={id} state={data.interpret_state?.status} pending={data.interpret_pending_count} onDone={narrative.refresh} />}</div>}</Disclosure>}
+          {!snapshot && <Disclosure label="운영자 지시·한글 해석 안내">{() => <div className="chat-intro"><p>{snapshot ? '저장된 분석 기록입니다. 새 분석은 실행하지 않습니다.' : codeAction.data?.linked ? 'Kubernetes 분석은 이전 기록입니다. 현재 코드 조치는 위 카드에서 확인하세요.' : !open ? '종료된 장애입니다. 기록만 볼 수 있습니다.' : '아래 입력란에서 후속 작업이나 조사 방향을 지시하세요. 변경은 계획과 부작용을 확인한 뒤 진행합니다.'}</p>{data.interpreting && <p role="status">한글 해석 준비 중</p>}{!snapshot && !data.interpreting && <InterpretRequest id={id} state={data.interpret_state?.status} pending={data.interpret_pending_count} onDone={narrative.refresh} />}</div>}</Disclosure>}
           {recordView ? <Disclosure label={`지난 분석 단계 ${steps.length}개 보기`} open={historyOpen} onOpen={setHistoryOpen}>{() => entries.map(x => x.el)}</Disclosure> : entries.map(x => x.el)}
           <Disclosure label="사건 원문·모델 비용 보기">{() => <><dl className="kv"><dt>기록 비용</dt><dd>{costKo(i)}</dd></dl><pre className="raw-text">{JSON.stringify({ title: i.title, status_reason: i.status_reason, headline: data.headline, handoff: i.handoff }, null, 2)}</pre></>}</Disclosure>
           {/* 정돈-03: 기존 코드 변경 요청은 그대로 열람·진행한다. 새 코드 수정·시험·환경 승격은 LiveProbe for Application이 맡는다. */}
 
-          {(changes.data?.items ?? []).map(c => <ChangeRequestCard change={c} key={c.id} onChange={changes.refresh} readOnly={snapshot} />)}
-          {!snapshot && closable(i.status) && detail.data && <CloseCard incident={i} blocked={closeBlocked} onChange={reload} />}
+          {(changes.data?.items ?? []).map(c => <ChangeRequestCard change={c} key={c.id} onChange={changes.refresh} readOnly={snapshot || coreLocked} />)}
+          {!snapshot && !coreLocked && closable(i.status) && detail.data && <CloseCard incident={i} blocked={closeBlocked} onChange={reload} />}
 
         </div>
         {open && <div className="composer">{!done && <div className="ctrl"><span className="control-status">{control === 'paused' ? '일시정지됨' : control === 'stopping' ? '중단 중' : '자동 분석 중'}</span><button className="btn sm" disabled={busy || control === 'stopping'} onClick={() => void ctl(control === 'paused' ? 'resume' : 'pause')}>{control === 'paused' ? '재개' : '일시정지'}</button><button className="btn sm danger" disabled={busy || control === 'stopping'} onClick={() => void ctl('stop')}>중단</button></div>}<ErrorBox>{error}</ErrorBox>{sent && <p className="composer-notice" role="status">{sent}</p>}<form onSubmit={send}><textarea aria-label="운영자 메시지" rows={2} value={text} maxLength={done ? 8000 : 2000} placeholder={done ? 'AI에게 작업을 지시하세요 (실행 전 부작용을 확인합니다)' : 'AI 분석에 지시하세요 (다음 단계부터 반영)'} onChange={e => setText(e.target.value)} /><button className="btn primary" type="submit" disabled={busy || !text.trim()}>{busy ? '전송 중' : '보내기'}</button></form><small>비밀값은 대화에 쓰지 말고 전용 입력란을 사용하세요.</small></div>}

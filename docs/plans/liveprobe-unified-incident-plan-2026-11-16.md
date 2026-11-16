@@ -35,7 +35,7 @@
 
 ## 2. 통합 사건 모델
 
-**추천: K8s 사건을 논리 루트로 두고 Application DB는 코드 조치 실행 저장소로 유지한다.** 루트 ID는 기존 숫자 ID다. 추가 연결 표는 incident_id, action_id, application_id, 요청 해시, 연결 상태/시각을 가진다. 설치 ID를 포함한 결정적 child ID로 두 DB 사이 재전송·응답 유실을 복구한다. 과거 사건은 자동 backfill/재실행하지 않는다.
+**추천: K8s 사건을 논리 루트로 두고 Application DB는 코드 조치 실행 저장소로 유지한다.** 루트 ID는 기존 숫자 ID다. 추가 연결 표는 incident_id, action_id, application_id, 요청 해시, 연결 상태/시각, Application 상태·SQL 조회용 projected_status·관측 시각·실제 상태 변경 시각을 가진다. 설치 ID를 포함한 결정적 child ID로 두 DB 사이 재전송·응답 유실을 복구한다. 과거 사건은 자동 backfill/재실행하지 않는다.
 
 ```text
 신호 → 근거 수집(RAG/관측) → 수준 판단 → 그룹 분석/독립 검증
@@ -46,7 +46,7 @@
   └ 권한·데이터 안전 경계 / 제한된 복구 소진 → 인계
 ```
 
-기존 K8s status는 역사 사실로 남기고 통합 응답의 phase/state/next_ko/observation을 운영 상태로 사용한다. K8s 분석 종료와 전체 사건 종료를 혼동하지 않는다. 조회는 연결 생성·모델·만료·조치를 실행하지 않는다.
+기존 K8s status는 역사 사실로 남기고 통합 응답의 phase/state/next_ko/observation을 운영 상태로 사용한다. 별도 백그라운드 동기화가 연결 표의 상태 투영만 갱신한다. 목록·지도·건수는 같은 SQL 유효 상태를 필터·집계한 뒤 페이지를 나누고 kubernetes_status로 원래 상태를 병기한다. GET은 동기화하지 않는다. 관측 시각과 실제 상태 변경·종료 시각을 구분해 갱신 때 종료 시간이 움직이지 않게 한다. 확정 종료 기록은 주기적으로 재처리하지 않는다. K8s 분석 종료와 전체 사건 종료를 혼동하지 않는다. 조회는 연결 생성·모델·만료·조치를 실행하지 않는다.
 
 코드 연결 조건: 활성 dev/prd·등록 서비스/프로필, 실제 수집 코드 위치와 일치하는 code_fix/both, 독립 검증 통과, HIGH_RISK 아님, 결과 불명·데이터/인증 변경 아님, 진행 중 Action/OperatorCommand/구형 변경 없음. analyst 자유 문장이나 마지막 remediation만으로 연결하지 않는다. 자동 연결은 **새 분석 완료 경계에서만** 실행한다. 기존 사건은 명시 요청 후 같은 검사로 연결한다. Application은 소스 출처/인용/위험/패치 검사를 새로 수행한다.
 
@@ -56,7 +56,7 @@
 
 기존 pull JobResponse(id/kind/incident_id/payload/lease_token/fencing_token/idempotency_key/lease_expires_at)를 유지한다. 통합 ID·요청 해시는 출처 메타데이터이며 자유 명령·저장소 URL·호스트 callback은 받지 않는다. 호스트가 클러스터 API에서 claim/heartbeat/result를 호출한다. 클러스터에서 호스트로 들어가는 통로는 없다.
 
-소스 실행기는 source/test_build/PR, 클러스터 실행기는 collect/deploy/verify/reconcile만 담당한다. 서버는 인증 주체의 허용 종류와 capabilities 교집합을 배정하고 heartbeat/result도 동일 주체인지 검사한다. 소스 계정은 클러스터 변경 권한이 없고 배포 계정은 repo 쓰기 권한이 없다. 레거시 모드는 별도 유지하며 통합 모드의 제한을 명시 설정한다.
+소스 실행기는 source/test_build/PR, 클러스터 실행기는 collect/deploy/verify/reconcile만 담당한다. 서버는 인증 주체의 허용 종류와 capabilities 교집합을 배정하고 heartbeat/result도 동일 주체인지 검사한다. 소스 계정은 클러스터 변경 권한이 없고 배포 계정은 repo 쓰기 권한이 없다. 운영에서는 OS 사용자/자격 홈/실행 환경도 분리하며 같은 홈의 두 API 토큰만 나눠 권한이 분리됐다고 주장하지 않는다. 그 실제 인수는 P5에서 한다. 레거시 모드는 별도 유지하며 통합 모드의 제한을 명시 설정한다.
 
 연결 중간 실패는 결정적 ID/요청 지문으로 같은 child를 조회·재사용한다. 다른 payload는 409다. 보고는 result hash로 멱등이다. 읽기/빌드 lease 만료는 fence를 바꿔 재배정한다. deploy 만료·쓰기 불명은 reconciliation_required와 대상 잠금을 보존하며 재배포하지 않는다. runner_recent는 최근 claim 관측일 뿐 작업 성공이 아니다. 마지막 관측/연결 실패/대기/실행을 구분한다.
 
@@ -122,6 +122,47 @@ Application 메뉴는 내부 진입점으로 바꾼다. 과거 K8s 변경과 App
 
 - [x] main/의도/지정 소스·화면/현재 설치 존재 조사
 - [x] 합의 범위·설계·열린 결정·완료 기준 기록
-- [ ] P1–P4 구현·전용 회귀
-- [ ] 비밀 검사·커밋·브랜치 푸시
+- [x] P1–P4 소스 구현·전용 회귀 (운영 전환은 제외)
+- [x] 비밀 검사·작업 브랜치 커밋
+- [ ] 작업 브랜치 원격 푸시 확인
 - [ ] P5 운영 전환: 범위 제외
+
+
+### 구현 기록 · 2026-11-17
+
+- P1: `models.CodeActionLink`와 추가 migration `0011`, `unified.UnifiedService`를 구현했다. 기존 core/App 레코드의 일괄 이전·삭제 없이 연결한다. root 예약 커밋→child 생성→연결 확정 사이 응답 유실은 같은 ID·요청 지문으로 복구한다. 정제된 signal.sample의 해시도 다시 계산한다.
+- P2: `unified_api.py`, main lifespan/같은 출처 경로, Engine의 새 분석 종료 hook을 연결했다. 목록·지도·건수·narrative의 유효 상태를 통일하고 코드 조치 흐름 노드를 추가했다. core의 원래 상태·이력은 보존한다. 진행·불명 쓰기는 실제 대상 기준으로 기존 K8s 조치와 지시를 차단하며 feature off에서도 보존된 연결 잠금을 무시하지 않는다.
+- P3: `application/control.py`, `security.py`, `releases.py`와 runner의 source/cluster 역할을 분리했다. 자기신고 capabilities·다른 주체·탈취 lease·종료 후 남은 job으로 실행을 재개하지 못한다. 실행기 접속은 역할별 claim/유효 heartbeat로 관측한다. source 전용 `application_runner/publish_pr.py`는 로컬 시험 영수증과 원래 main commit·시험 트리를 증명한 PR만 게시하며 자동 병합하지 않는다. 현재 PR 게시는 별도 명시 CLI 단계이며 큐에서 자동 실행되는 단계는 아니다.
+- P3 병합 gate: `application/merge_policy.py`는 등록 저장소 정책, 사람 병합, 현재 main, 전체 허용 소스의 Git blob·SHA256 지문을 읽기로 검증한다. 요청한 메타데이터만 믿지 않으며 approve/claim/heartbeat/result에서 재검증한다. 기본은 미구성으로 차단한다. 화면 배지는 60초 관측 유효시간이며 권한 증명이 아니다.
+- P4: 내부 Application 접수/기존 이력, 관제실 코드 조치 카드·분석/모델 요약·원문 disclosure·사람 시험/병합/prd 확인을 추가했다. 같은 루트로 이동하고 자격은 메모리만 사용한다. 기존 스트리밍·RAG/인용·구형 변경 기록을 보존한다.
+- 설치·계정·영수증 전달·원복 준비는 README 9.0에 기록했다. Kubernetes 선언·실제 운영 설정은 변경하지 않았다. 기존 DB/PVC·사건·시험 자료는 조작하지 않았다.
+
+### 검증 원칙과 실제 관측
+
+이 작업의 API/worker/runner 시험은 합성 신원·합성 provider·가짜 GitHub/git/gh·폐기 DB로 실행했다. 실제 모델 호출, PR 게시, 사람 병합, 업무 배포·복구 성공을 검증한 것이 아니다. core PostgreSQL 시험은 이번에 생성한 메모리 전용 컨테이너의 임의 새 DB에서만 실행했다.
+
+초기 회귀에서 새 MergeReview 타입의 OpenAPI 참조 오류를 발견해 전역 계약으로 수정했고 API 25건을 재통과했다. 기존 `test_cleanup05_08_counts_and_snapshots.py::test_k8s_snapshot_records_feed_existing_offline_utility_without_inventing_values`의 offline utility 실패는 main `04a3e38`의 별도 읽기 사본에서도 동일하게 재현했다. 이 기존 실패를 수정하거나 통합 성공으로 덮지 않았다. Application pytest가 `test_runner_reports.py`에 import된 `build.test_command` 헬퍼를 테스트로 오인하는 기존 fixture 오류도 별도로 구분하며 최종 pytest에서는 해당 헬퍼 한 항목만 명시 제외한다.
+
+최종 수치·실행 명령·정적 비밀 검사 결과는 아래 최종 검증 표와 `docs/evidence/unified-incident-2026-11-16/verification.json`에 기록한다. 초기 실패 로그와 최종 결과를 구분한다. 저장소 전체 CI·기존 전체 E2E를 복구한 것으로 주장하지 않는다.
+
+
+### 최종 검증 표 · 2026-11-17
+
+| 검사 | 관측 결과 | 의미/한계 |
+|---|---|---|
+| Application 전체 오프라인 pytest | 342 통과, 기존 헬퍼 오인 수집 1항목 제외 | 실제 모델·GitHub·클러스터 미호출 |
+| 같은 루트의 dev→시험자→사람 병합→prd | 합성 API/두 별도 DB의 정상 흐름 통과 | 동일 root ID와 원래 K8s 이력 불변 확인; 업무 복구 성공 아님 |
+| 최종 core/단순·복합 연결·기존 수락 검사 | 48 통과 | 실제 SIMPLE 그래프·Engine 저장·자동 hook, K8s 완화 후 코드 조치, 상충/위조/고위험 차단 |
+| 기존 그룹·라우팅·엔진 문맥 회귀 | 61 통과 | 마지막 SIMPLE/BOTH 보완 후 재검증 |
+| 지시·중단·통합 경합 회귀 | 137 통과 | 실제 임시 PostgreSQL의 잠금 순서/대상 충돌 포함 |
+| 넓은 core 회귀 | 153 실행 중 152 통과, 기존 평가 실패 1 | 같은 실패를 원래 main에서도 재현. 이후 마지막 수정은 위 전용 검사로 재검증 |
+| 대시보드 단위/빌드 | 189 통과 / 빌드 통과 | 기존 전체 E2E/CI 통과 주장 아님 |
+| 통합 모의 E2E | 375/768/1440px에서 18 통과 | 실제 운영 API 미사용; 마지막 작은 수정의 영향 6건도 재통과 |
+| 정적 비밀값 검사 | 989개 소스/추적 대상 확인, 새 인증 파일·개인 키·OAuth 자료 미검출 | 패턴 일치 2개 파일은 기존 FAKE_/DUMMY_ 정제 시험 상수. 모든 형태의 비밀 부재를 보증하는 검사는 아님 |
+| 시험 자원 정리 | 이번 생성한 메모리 DB 컨테이너만 종료/자동 제거 | 운영 DB·기존 이력/PVC/Secret은 변경 없음 |
+
+각 검사에는 중복되는 시험이 있으므로 위 수치를 합산하지 않는다. 종료 결과 불명은 실패/미실행으로 덮지 않고 잠금과 조정 상태를 남긴다. 명령과 코드 연결의 잠금 순서는 실제 대상→사건 행→명령 행으로 맞추고 PostgreSQL 동시 진입으로 확인했다.
+
+`SIMPLE`의 실제 검증 역할(`result_verifier`)과 복잡 그룹의 검증 역할(`group_verifier`)을 사용한다. 현재 진단의 검증 실행 ID·workflow 출처를 저장하고, 새 검증 실패는 과거의 성공 표식을 무효화한다. K8s 완화가 성공해 조기에 반환해도 영구 코드 수정의 후속 연결이 빠지지 않도록 했다.
+
+**남은 운영 인수:** 통합 모드는 기본 비활성이다. P5의 계정/자격 격리, 저장소/원래 commit 등록, 읽기 전용 GitHub 조회, PR 게시 절차, 실행기 영수증 전달, 실제 dev 인수를 수행해야 한다. 현재 코드는 PR 게시 전용 CLI를 제공하며 PR 게시를 큐에서 자동 실행하지 않는다. 과거 이력의 자동 병합·물리 DB 통합·API 키 전환도 실행하지 않았다. 소유자 결정 사항은 8절에 유지한다.

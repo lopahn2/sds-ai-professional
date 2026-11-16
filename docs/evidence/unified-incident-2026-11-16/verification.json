@@ -1,0 +1,196 @@
+{
+  "scope": "main 04a3e38 기준 보존형 단일 사건 통합 소스 구현; 운영 전환 제외",
+  "verification_date": "2026-11-17 Asia/Seoul",
+  "application_offline": {
+    "tests": 342,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit": 0,
+    "excluded_existing_helper": "application_tests/test_runner_reports.py::test_command",
+    "command": "PYTHONPATH=.:liveprobe:liveprobe/application_tests python -m pytest liveprobe/application_tests --deselect=application_tests/test_runner_reports.py::test_command"
+  },
+  "core_regression_before_final_targeted_fixes": {
+    "tests": 153,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "exit": 1,
+    "known_baseline_failure": "test_cleanup05_08_counts_and_snapshots.py::test_k8s_snapshot_records_feed_existing_offline_utility_without_inventing_values",
+    "baseline_ref": "04a3e384b868be3dbff748978edb6e964b8c2b89",
+    "baseline_same_failure_reproduced": true
+  },
+  "core_command_and_concurrency_after_lock_fix": {
+    "tests": 137,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit": 0,
+    "command": "LIVEPROBE_TEST_DB_ADMIN=<temporary server> PYTHONPATH=.:liveprobe python -m pytest liveprobe/tests/test_unified_incidents.py liveprobe/tests/test_p15_commands.py liveprobe/tests/test_p15_command_api.py liveprobe/tests/test_p18_queued_stop_commands.py"
+  },
+  "dashboard": {
+    "scope": "통합 관제 P4 dashboard 구현; 운영 API/모델/클러스터 변경 없음; commit/push 없음",
+    "source_hashes": {
+      "dashboard/src/App.tsx": "1f3432bf0acdf6e309679a91baeff9b05469ffc2d7ba06d29edf5ca3279dd73a",
+      "dashboard/src/IncidentRoom.tsx": "3dcd0f8b0dd66b56a9a5868b6337ac36038bba80de63ce95d9298de8bcd2a8a5",
+      "dashboard/src/Shell.tsx": "d95a42817a0fefbee6c66147138c11b399dc6744eda1fb3719b904f4e48620f1",
+      "dashboard/src/api.ts": "895a594ef5d6052b0f53bdd3ef4cdf5036aba9b7b5ab915c293e67eb1868bc1d",
+      "dashboard/src/narrative.ts": "b2351225ebbb657c80ea3be68c1861dd9e82c4e7816382e6e849a63b0bc96db3",
+      "dashboard/src/ApplicationPage.tsx": "90be0d15815973c91d9155a392a4666e7381ac8230c01c52e6afe1f7eca0e3ce",
+      "dashboard/src/CodeActionCard.tsx": "3061a64d94ae130f9169af4bd4791c81ccbce6c59bf371034975bab60ea224a0",
+      "dashboard/src/HumanAccess.tsx": "e115ec7c193634e32ef1dc40c1a315f014dfb60138a7410e9e3faf7ac72b878f",
+      "dashboard/src/unified.ts": "e1545fe9990ccb2049bd2280f4f250e24ff0de6de1910428f2522793f93c3d59",
+      "dashboard/src/unified.css": "540dc242c6bed6cc7680fe95ecffb9b04f3e66c6087cd04ad481218cb529fac0",
+      "dashboard/tests/unified.test.ts": "5aa323a60810197108ad20d26577b5e250678eecb1117d36187ffc09e8ffeaeb",
+      "dashboard/e2e/unified.spec.mjs": "13585828994d6c65b5a771ed2823ad2475b0ca7ecdf267dcfcd15c9668f231b0",
+      "dashboard/e2e/mock-api.mjs": "c36f39a13ead92091ab6defb18ed8afcb9275ab50b769a5a89888c2af8fb10ae",
+      "dashboard/playwright.unified.config.mjs": "68016e1593e1f09d73dbe86ec97a4e646e01dfc0ac20f2dfe750dc17ee2259e6"
+    },
+    "verification": [
+      {
+        "name": "전체 대시보드 단위",
+        "passed": 189,
+        "exit": 0,
+        "log": "/private/tmp/unified-ui-unit.log",
+        "observed_output": "tests 189; pass 189; fail 0; skipped 0"
+      },
+      {
+        "name": "최종 TypeScript/Vite 빌드",
+        "exit": 0,
+        "log": "/private/tmp/unified-ui-build-final.log",
+        "observed_output": "TypeScript noEmit and Vite build exited 0"
+      },
+      {
+        "name": "통합 모의 E2E 6종 × 375/768/1440",
+        "passed": 18,
+        "exit": 0,
+        "log": "/private/tmp/unified-ui-e2e.log",
+        "note": "이후 이력 권한 오류 인증 해제·흐름 라벨 두 변경은 아래 영향 검사로 재검증"
+      },
+      {
+        "name": "최종 영향 모의 E2E: 공개 요약/흐름 이동, 접수/이력/권한 오류 × 3폭",
+        "log": "/private/tmp/unified-ui-e2e-final.log",
+        "passed": 6,
+        "exit": 0,
+        "observed_output": "6 passed (9.2s)"
+      }
+    ],
+    "limits": [
+      "실제 Application/인증 서버/모델/GitHub/클러스터 연동은 실행하지 않음",
+      "기존 전체 E2E는 범위 밖이며 통합 전용 검사와 기존 단위 회귀만 수행",
+      "새 PR 생성은 제공하지 않고 등록 저장소의 사람이 병합한 PR을 확인하는 절차만 표시",
+      "App 상세의 실제 roles/result/usage를 표시하며 저장 안 된 비용·시간은 미관측"
+    ]
+  },
+  "static_secret_scan": {
+    "kind": "static_high_signal_pattern_scan",
+    "scanned_files": 989,
+    "findings": [
+      {
+        "path": "liveprobe/tests/test_evidence.py",
+        "rule": "aws_access_key",
+        "test_fixture": true,
+        "review": "기존 비밀값 정제 시험의 합성 상수; 이번 변경 파일 아님",
+        "synthetic_constant_names": [
+          "FAKE_JWT",
+          "FAKE_SK",
+          "FAKE_PW",
+          "FAKE_AWS"
+        ]
+      },
+      {
+        "path": "liveprobe/tests/test_llm_providers.py",
+        "rule": "openai_key",
+        "test_fixture": true,
+        "review": "기존 비밀값 정제 시험의 합성 상수; 이번 변경 파일 아님",
+        "synthetic_constant_names": [
+          "DUMMY_TOKEN",
+          "DUMMY_KEY"
+        ]
+      }
+    ],
+    "credential_paths": [],
+    "limitations": "패턴 기반 소스 검사이며 모든 종류의 비밀값 부재를 보증하지 않는다. 내용은 출력하지 않는다.",
+    "new_secret_material_detected": false,
+    "final_review": "마지막 workflow/test 추가 후 같은 패턴으로 재검사; 기존 합성 상수 2개 파일 외 검출 없음"
+  },
+  "runtime_limits": [
+    "실제 모델 호출·업무 배포·장애 주입·GitHub PR 생성/병합은 수행하지 않음",
+    "운영 DB·기존 이력·Secret 본문은 읽거나 변경하지 않음",
+    "Application API/DB의 존재만 읽기 확인; 현재 readiness·로그인·실행기 성공으로 간주하지 않음",
+    "통합 모드는 기본 비활성. 계정·등록 저장소·PR·영수증 전달·운영 인수는 설계 P5",
+    "기존 전체 CI/E2E 실패를 수정하거나 전체 통과를 주장하지 않음"
+  ],
+  "test_resources": {
+    "kind": "new disposable pgvector container with tmpfs and random per-session test DBs",
+    "name": "liveprobe-unified-test-20261117",
+    "cleanup": "completed: stopped exact task-created container ID; --rm/tmpfs removed only disposable test DB"
+  },
+  "final_simple_both_integration": {
+    "tests": 48,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit": 0,
+    "command": "LIVEPROBE_TEST_DB_ADMIN=<temporary server> PYTHONPATH=.:liveprobe python -m pytest liveprobe/tests/test_unified_incidents.py liveprobe/tests/test_unified_workflow_continuation.py liveprobe/tests/test_application_runtime_acceptance.py liveprobe/tests/test_p18_remediation.py"
+  },
+  "existing_group_router_context_regression": {
+    "tests": 61,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "exit": 0,
+    "files": [
+      "liveprobe/tests/test_agent_groups.py",
+      "liveprobe/tests/test_router_workflows.py",
+      "liveprobe/tests/test_application_runtime_context_engine.py"
+    ]
+  },
+  "branch": "codex/unified-incident-product",
+  "design_commit": "cc84eca",
+  "application_commit": "98337d7",
+  "source_sha256": {
+    "dashboard/e2e/mock-api.mjs": "c36f39a13ead92091ab6defb18ed8afcb9275ab50b769a5a89888c2af8fb10ae",
+    "dashboard/e2e/unified.spec.mjs": "13585828994d6c65b5a771ed2823ad2475b0ca7ecdf267dcfcd15c9668f231b0",
+    "dashboard/playwright.unified.config.mjs": "68016e1593e1f09d73dbe86ec97a4e646e01dfc0ac20f2dfe750dc17ee2259e6",
+    "dashboard/src/App.tsx": "1f3432bf0acdf6e309679a91baeff9b05469ffc2d7ba06d29edf5ca3279dd73a",
+    "dashboard/src/ApplicationPage.tsx": "90be0d15815973c91d9155a392a4666e7381ac8230c01c52e6afe1f7eca0e3ce",
+    "dashboard/src/CodeActionCard.tsx": "3061a64d94ae130f9169af4bd4791c81ccbce6c59bf371034975bab60ea224a0",
+    "dashboard/src/HumanAccess.tsx": "e115ec7c193634e32ef1dc40c1a315f014dfb60138a7410e9e3faf7ac72b878f",
+    "dashboard/src/IncidentRoom.tsx": "3dcd0f8b0dd66b56a9a5868b6337ac36038bba80de63ce95d9298de8bcd2a8a5",
+    "dashboard/src/Shell.tsx": "d95a42817a0fefbee6c66147138c11b399dc6744eda1fb3719b904f4e48620f1",
+    "dashboard/src/api.ts": "895a594ef5d6052b0f53bdd3ef4cdf5036aba9b7b5ab915c293e67eb1868bc1d",
+    "dashboard/src/narrative.ts": "b2351225ebbb657c80ea3be68c1861dd9e82c4e7816382e6e849a63b0bc96db3",
+    "dashboard/src/unified.css": "540dc242c6bed6cc7680fe95ecffb9b04f3e66c6087cd04ad481218cb529fac0",
+    "dashboard/src/unified.ts": "e1545fe9990ccb2049bd2280f4f250e24ff0de6de1910428f2522793f93c3d59",
+    "dashboard/tests/unified.test.ts": "5aa323a60810197108ad20d26577b5e250678eecb1117d36187ffc09e8ffeaeb",
+    "liveprobe/alembic/versions/0011_code_action_links.py": "24bec4bdec01d0f9d117e6542b344c43845105c3f4a2b94cf571801b433baa7c",
+    "liveprobe/app/application/control.py": "b28680ee57a5f8455e77b634331a9ac2ba08790dee5042fc81cea6be554f9967",
+    "liveprobe/app/application/main.py": "6d9db5c74516983c782ad1215949f2d33d10a668d3b94ee89ab1633452828873",
+    "liveprobe/app/application/merge_policy.py": "6b1dc26fd1e8c7f79c0255c6d94af36979c32d982bbb1800d123cf8565ee71f8",
+    "liveprobe/app/application/releases.py": "21a498b039d673b030213462e6944c4dafb1fbcab387d6502d06542f14710cae",
+    "liveprobe/app/application/security.py": "a10b24169bf0c1a35adc7c6012f480d736933d9cfef99273d72564203cf28edc",
+    "liveprobe/app/application/settings.py": "83c5fd08759748c6a41cb47f5a0af220fc12cd66f9280037418af9bd4e587220",
+    "liveprobe/app/commands.py": "362e0917ad8309f5e2f5c3827c76dabbc9a3747fffce3431a92ad37a836312a8",
+    "liveprobe/app/engine.py": "89b4bd66c06fb4cfd753cf94361f83169b2207ce7fe217340479cd8487db31ed",
+    "liveprobe/app/incident_counts.py": "7e6b0ab2dda5039e3267dbe3a8092a7ee43089da6fc44d676ac1c8488fc97e61",
+    "liveprobe/app/main.py": "676a46f32de13fdf0fa10f33c82d7432546a4bddd3277a22955ab41765cee3b4",
+    "liveprobe/app/models.py": "35689350192f56a96d130e5615140db80c0cf8baf0fff853e2c1c99706cab844",
+    "liveprobe/app/safety.py": "1f8aec0ce553f7ff07a380b3ed3d58d5e59cb198f45d8db65f1627ae98610534",
+    "liveprobe/app/unified.py": "a3ee903f6087d95ff66f7bbeda8436288412a07ed19e308be5f6be86ddcc1f55",
+    "liveprobe/app/unified_api.py": "23a42b62db5bdf308792496e81d34229a47069c583577e68ab5c8226d8a1fb63",
+    "liveprobe/app/workflows.py": "1ac18b018bb526bb04b3eccce28dea21e48a5e3d6e9c99219206a170b9cefcd3",
+    "liveprobe/application_runner/cli.py": "81b48137a3a5e3aae13956bfede3f2034e3cc45bf2e18af0a401198dd0a88c2c",
+    "liveprobe/application_runner/deploy.py": "da7cda23c3bbf7f9c0bbce9a75ab0fddef4c691d70ae7ae9717eb84e36791135",
+    "liveprobe/application_runner/executor.py": "c731b7eed32ad631a44aac0ff02f7b9572dd6c4198aaab63a5921838dc2a5284",
+    "liveprobe/application_runner/publish_pr.py": "5e47b2e2f10fe699f67341ced7dd2fe443c84ee14c81732ce79f3386c78fc59c",
+    "liveprobe/application_runner/worker.py": "5e5d68585055c78f4c1a6d8023f429593efa91dcb03dc33407bca6804eb4e6d5",
+    "liveprobe/application_tests/test_unified_application.py": "75585c339075fa686d6b2e623f7d49a6605627409813ba75bceac25acf806a5a",
+    "liveprobe/application_tests/test_unified_merge_policy.py": "2bf73ac2bd80a5ffce0cbf4feab2912f814ce19834337841c86f819949854d7e",
+    "liveprobe/application_tests/test_unified_pr_publisher.py": "ff6a72db653fe608bcc60226d97fa806b89c58b9568206d1ba8454c65f25b44b",
+    "liveprobe/application_tests/test_unified_release_flow.py": "8d82838828da75474d693b4876f961cf945754c59355f6808c74b0e8b6f01810",
+    "liveprobe/tests/test_unified_incidents.py": "8c4fdafdf299e620b72b4b9664ae63587425ef9890e8eb31e8afb0a685c1f1cf",
+    "liveprobe/tests/test_unified_workflow_continuation.py": "41310037f8c8865d15d9fc7a2f336789f407ee8dcb48525eabbca36ee2ce59d2"
+  },
+  "core_commit": "1bc4ec7"
+}
