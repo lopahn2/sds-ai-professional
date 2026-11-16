@@ -190,6 +190,15 @@ class ReleaseControl:
         else:
             self.queue_deploy(session, incident, stage)
 
+    def unified_prd_gate(self, incident):
+        if incident.document.get('data', {}).get('unified_origin'):
+            # Re-observe through a server-owned transport; request metadata is never proof.
+            try:
+                return self.merge_authorized(incident.document) is True
+            except Exception:
+                return False
+        return True
+
     def prd_authorized(self, release, consumed_by=None):
         approval, test = release.get('approval') or {}, release.get('user_test') or {}
         return bool(release_protocol(release) == RELEASE_PROTOCOL and release.get('valid') is True and
@@ -208,6 +217,8 @@ class ReleaseControl:
 
     def queue_deploy(self, session, incident, stage):
         release = copy.deepcopy(incident.document['data']['release'])
+        if stage == 'prd' and not self.unified_prd_gate(incident):
+            fail(409, 'pull_request_merge_unobserved', '시험한 소스의 PR·사람 병합 확인이 필요합니다.')
         if stage == 'prd' and (incident.state != 'awaiting_prd_approval' or not self.prd_authorized(release)):
             return self._invalidate(session, incident, 'approval_or_release_invalid')
         targets = release['targets'][stage]
@@ -235,12 +246,14 @@ class ReleaseControl:
     def deployment_authorized(self, incident, job):
         release = incident.document['data'].get('release') or {}
         stage = job.payload['stage']
+        if not self.job_phase_valid(incident, job):
+            return False
         valid = (release_protocol(release) == RELEASE_PROTOCOL and stage in ('dev', 'prd') and release.get('valid') is True and release.get('release_id') == job.payload['release_id'] and
                  release.get('artifact') == job.payload['artifact'] and sha(release['artifact']) == release['artifact_sha256'] and
                  release['artifact_sha256'] == job.payload['artifact_sha256'] and
                  release.get('targets', {}).get(stage) == job.payload['targets'])
         if stage == 'prd':
-            valid = (valid and incident.state == 'prd_deploy_queued' and self.prd_authorized(release, job.id) and
+            valid = (valid and self.unified_prd_gate(incident) and incident.state == 'prd_deploy_queued' and self.prd_authorized(release, job.id) and
                      release.get('plan_sha256') == job.payload['plan_sha256'])
         return valid
 
@@ -453,6 +466,8 @@ class ReleaseControl:
         self.require_store()
         with self.store.transaction() as session:
             incident = self.get(session, incident_id)
+            if not self.unified_prd_gate(incident):
+                fail(409, 'pull_request_merge_unobserved', '시험한 소스의 PR·사람 병합 확인이 필요합니다.')
             if incident.state != 'awaiting_prd_approval':
                 fail(409, 'approval_state_conflict', '사용자 시험 후 명시 승인이 필요합니다.')
             release = self.matching_release(incident, body)

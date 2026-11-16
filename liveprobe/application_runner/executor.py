@@ -29,6 +29,9 @@ class Executor:
         self.kube.write_guard=getattr(self,'write_guard',self.guard)
         self.host.write_guard=getattr(self,'write_guard',self.guard)
         kind=job['kind'];payload=job['payload']
+        from .worker import ROLE_KINDS
+        role=self.config.get('runner_role','legacy')
+        if role not in ROLE_KINDS or kind not in ROLE_KINDS[role]:raise ValueError('runner_role_job_forbidden')
         if kind=='collect':return self.collect(payload)
         if kind=='source':return self.source(payload)
         if kind=='test_build':return self.test_build(payload)

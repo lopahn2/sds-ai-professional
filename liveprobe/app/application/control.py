@@ -30,6 +30,8 @@ class ControlPlane(ReleaseControl):
         self.clock = clock or time.time
         self.catalog = Catalog(settings)
         self.human_authorized = lambda subject, scope: False
+        # Injected server-owned read-only merge observer. No runner/human request can set this.
+        self.merge_authorized = lambda document: False
 
     def require_store(self):
         if not self.store.ready():
@@ -121,6 +123,60 @@ class ControlPlane(ReleaseControl):
                 'catalog_sha256': self.catalog.sha256})
             result = self.serialize(incident)
         return result
+
+    def create_linked(self, request, actor, *, origin, application_id=None, request_sha256=None):
+        """Create exactly one code-action execution for the durable core reservation.
+
+        The core owns authorization/eligibility. This method owns atomic idempotence under
+        the Application mutex. Existing unrelated documents are never rebound or merged.
+        """
+        import re
+        self.require_store()
+        required = {'installation_id', 'incident_id', 'action_id', 'request_sha256'}
+        if (not isinstance(origin, dict) or set(origin) != required or
+            not isinstance(origin['installation_id'], str) or not origin['installation_id'] or
+            len(origin['installation_id']) > 128 or type(origin['incident_id']) is not int or origin['incident_id'] < 1 or
+            not isinstance(origin['action_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', origin['action_id']) or
+            not re.fullmatch(r'[a-f0-9]{64}', str(origin['request_sha256']))):
+            fail(422, 'unified_origin_invalid')
+        expected_id = sha({key: origin[key] for key in ('installation_id', 'incident_id', 'action_id')})
+        if application_id is not None and application_id != expected_id:
+            fail(409, 'unified_application_id_conflict')
+        if request_sha256 is not None and request_sha256 != origin['request_sha256']:
+            fail(409, 'unified_request_conflict')
+        if request.service not in SERVICE_SYSTEMS or request.environment not in ('dev', 'prd'):
+            fail(422, 'service_unknown')
+        if not self.catalog.configured:
+            fail(503, 'profiles_unconfigured')
+        if request.reproduction is not None:
+            fail(422, 'reproduction_unregistered')
+        request_fingerprint = sha(request.model_dump(mode='json'))
+        with self.store.transaction() as session:
+            existing = session.get(Incident, expected_id)
+            if existing is not None:
+                data = existing.document.get('data', {})
+                if (data.get('unified_origin') != origin or
+                    data.get('unified_request_fingerprint') != request_fingerprint):
+                    fail(409, 'unified_request_conflict')
+                return self.serialize(existing)
+            now = self.clock()
+            incident = Incident(id=expected_id, created_at=now, state='detected', document={
+                'environment': request.environment, 'service': request.service,
+                'system': SERVICE_SYSTEMS[request.service], 'reason': scrub(request.reason),
+                'stages': [], 'error': None, 'data': {'catalog_sha256': self.catalog.sha256,
+                    'unified_origin': copy.deepcopy(origin), 'unified_request_fingerprint': request_fingerprint}})
+            session.add(incident)
+            if request.signal is not None:
+                signal = scrub(request.signal.model_dump(mode='json'))
+                signal['sample'] = signal['sample'][:2000]
+                signal['sha256'] = text_sha(signal['sample'])
+                self.data(incident, 'signal', signal)
+            self.event(session, incident, 'detected', {'actor': actor['subject'], 'origin': origin})
+            self.transition(session, incident, 'collecting')
+            self.enqueue(session, incident, 'collect', {'environment': request.environment, 'service': request.service,
+                'since': datetime.fromtimestamp(now - 900, timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'catalog_sha256': self.catalog.sha256})
+            return self.serialize(incident)
 
     def get(self, session, incident_id):
         incident = session.get(Incident, incident_id)
@@ -237,22 +293,77 @@ class ControlPlane(ReleaseControl):
         incident.document = document
         self.preserve_unknown_write(session, incident, job, reason)
 
+    def job_phase_valid(self, incident, job):
+        if not incident.document.get('data', {}).get('unified_origin'):
+            return True  # preserve historical standalone behavior
+        if job.kind == 'collect':
+            expected = (job.payload.get('environment', '') + '_targets_collecting'
+                        if job.payload.get('purpose') == 'release_target' else 'collecting')
+        elif job.kind == 'deploy':
+            expected = job.payload.get('stage', '') + '_deploy_queued'
+        elif job.kind == 'verify':
+            expected = job.payload.get('stage', '') + '_verifying'
+        else:
+            expected = {'source': 'source_pinning', 'test_build': 'test_build_queued',
+                        'reconcile': 'reconciliation_required'}.get(job.kind)
+        return expected is not None and incident.state == expected
+
     def lease_violation(self, session, job):
         """heartbeat/결과 보고 직전 재검증. 상태 변경은 호출자가 커밋한 뒤 409로 응답한다."""
         self.expire(session)
         if job.status != 'leased':
             return 'job_lease_expired'
+        incident = self.get(session, job.incident_id)
+        if not self.job_phase_valid(incident, job):
+            if job.kind == 'deploy':
+                self.preserve_unknown_write(session, incident, job, 'write_phase_changed')
+            else:
+                job.status = 'cancelled'
+                self.event(session, incident, 'job_cancelled', {'job_id': job.id, 'reason': 'incident_phase_changed'})
+            return 'job_state_conflict'
         if job.kind == 'deploy' and not self.deployment_authorized(self.get(session, job.incident_id), job):
             self.revoke_write_authorization(session, self.get(session, job.incident_id), job)
             return 'job_authorization_revoked'
         return None
 
-    def runner_recent(self):
-        if not self.store.ready():
+    RUNNER_OBSERVATION_IDS = {None: 1, 'source': 2, 'cluster': 3}
+
+    def runner_recent(self, role=None):
+        if role is None and self.settings.unified_mode:
+            return self.runner_recent('source') and self.runner_recent('cluster')
+        if role not in self.RUNNER_OBSERVATION_IDS or not self.store.ready():
             return False
         with self.store.read() as session:
-            pulse = session.get(RunnerObservation, 1)
-            return bool(pulse and 0 <= self.clock() - pulse.last_claim_at <= self.settings.lease_seconds * 2)
+            pulse = session.get(RunnerObservation, self.RUNNER_OBSERVATION_IDS[role])
+            recent = bool(pulse and 0 <= self.clock() - pulse.last_claim_at <= self.settings.lease_seconds * 2)
+            if recent or role is None:
+                return recent
+            # A long build's authenticated heartbeats can keep its lease alive without a new claim.
+            return session.scalar(select(Job.id).where(Job.status == 'leased', Job.kind.in_(self.RUNNER_KINDS[role]),
+                Job.lease_until > self.clock(), Job.worker_id.like('subject:%')).limit(1)) is not None
+
+    def runner_status_for_incident(self, incident_id):
+        """Read-only connection observation for the next actual external job's role.
+
+        A cluster poll must not make an offline source runner look connected. Model
+        analysis and human gates do not require an external runner at that moment.
+        """
+        self.require_store()
+        result = {'observed': None, 'role': None, 'last_claim_at': None, 'lease_expires_at': None}
+        with self.store.read() as session:
+            incident = self.get(session, incident_id)
+            jobs = session.scalars(select(Job).where(Job.incident_id == incident_id,
+                Job.status.in_(['queued', 'leased'])).order_by(Job.created_at, Job.id))
+            job = next((row for row in jobs if self.job_phase_valid(incident, row)), None)
+            if job is None:
+                return result
+            role = 'source' if job.kind in self.RUNNER_KINDS['source'] else 'cluster'
+            pulse = session.get(RunnerObservation, self.RUNNER_OBSERVATION_IDS[role])
+            recent = bool(pulse and 0 <= self.clock() - pulse.last_claim_at <= self.settings.lease_seconds * 2)
+            lease = job.lease_until if job.status == 'leased' else None
+            result.update(role=role, last_claim_at=pulse.last_claim_at if pulse else None,
+                          lease_expires_at=lease, observed=recent or bool(lease and lease > self.clock()))
+            return result
 
     MODEL_FAILURE_CODES = ('model_unconfigured', 'model_transport_failed', 'model_output_invalid',
                            'model_app_preamble_unavailable')
@@ -290,18 +401,55 @@ class ControlPlane(ReleaseControl):
         return {'awaiting_user_test': rows.get('awaiting_user_test', 0),
                 'awaiting_prd_approval': rows.get('awaiting_prd_approval', 0)}
 
-    def claim(self, request):
+    RUNNER_KINDS = {'source': frozenset({'source', 'test_build'}),
+                    'cluster': frozenset({'collect', 'deploy', 'verify', 'reconcile'})}
+
+    def runner_kinds(self, actor, *, linked=False):
+        role = (actor or {}).get('runner_role')
+        if role in self.RUNNER_KINDS:
+            return self.RUNNER_KINDS[role]
+        if self.settings.unified_mode or linked:
+            fail(403, 'runner_role_separation_required')
+        return frozenset({'collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile'})
+
+    def runner_lease(self, job, actor):
+        """Principal binding survives stolen lease tokens and spoofed worker labels."""
+        if job is None:
+            fail(404, 'job_not_found')
+        # Bound jobs are recognizable without schema changes to historical application_jobs.
+        if (job.worker_id or '').startswith('subject:'):
+            if not actor or job.worker_id != 'subject:' + sha(actor.get('subject')):
+                fail(403, 'runner_job_subject_conflict')
+            if job.kind not in self.runner_kinds(actor, linked=True):
+                fail(403, 'runner_job_kind_forbidden')
+        elif self.settings.unified_mode:
+            fail(403, 'runner_legacy_lease_forbidden')
+
+    def claim(self, request, actor=None):
         self.require_store()
+        allowed = set(request.capabilities) & self.runner_kinds(actor)
         with self.store.transaction() as session:
-            pulse = session.get(RunnerObservation, 1)
+            observation_id = self.RUNNER_OBSERVATION_IDS[(actor or {}).get('runner_role')]
+            pulse = session.get(RunnerObservation, observation_id)
             if pulse is None:
-                session.add(RunnerObservation(id=1, last_claim_at=self.clock()))
+                session.add(RunnerObservation(id=observation_id, last_claim_at=self.clock()))
             else:
                 pulse.last_claim_at = self.clock()
             self.expire(session)
             session.flush()
-            job = session.scalars(select(Job).where(Job.status == 'queued', Job.kind.in_(request.capabilities))
-                                  .order_by(Job.created_at, Job.id).limit(1)).first()
+            job = None
+            for candidate in session.scalars(select(Job).where(Job.status == 'queued', Job.kind.in_(allowed))
+                                             .order_by(Job.created_at, Job.id)):
+                owner = self.get(session, candidate.incident_id)
+                linked = bool(owner.document.get('data', {}).get('unified_origin'))
+                if linked and not self.job_phase_valid(owner, candidate):
+                    candidate.status = 'cancelled'
+                    self.event(session, owner, 'job_cancelled', {'job_id': candidate.id, 'reason': 'incident_phase_changed'})
+                    continue
+                if linked and not (actor or {}).get('runner_role'):
+                    continue
+                job = candidate
+                break
             if job is None:
                 return {'job': None}
             incident = self.get(session, job.incident_id)
@@ -314,7 +462,8 @@ class ControlPlane(ReleaseControl):
             if job.kind == 'deploy' and not self.deploy_claim_valid(session, self.get(session, job.incident_id), job):
                 return {'job': None}
             token = secrets.token_urlsafe(32)
-            job.status, job.worker_id, job.lease_hash = 'leased', request.worker_id, text_sha(token)
+            worker = ('subject:' + sha(actor['subject'])) if actor and actor.get('runner_role') else request.worker_id
+            job.status, job.worker_id, job.lease_hash = 'leased', worker, text_sha(token)
             job.fence += 1
             job.lease_until = self.lease_deadline(session, job)
             return {'job': {'id': job.id, 'kind': job.kind, 'incident_id': job.incident_id,
@@ -334,10 +483,11 @@ class ControlPlane(ReleaseControl):
         if job.lease_hash != text_sha(request.lease_token) or job.fence != request.fencing_token:
             fail(409, 'job_fence_conflict')
 
-    def heartbeat(self, job_id, request):
+    def heartbeat(self, job_id, request, actor=None):
         self.require_store()
         with self.store.transaction() as session:
             job = session.get(Job, job_id)
+            self.runner_lease(job, actor)
             self.lease_check(job, request)
             code = self.lease_violation(session, job)
             if code is None:
@@ -347,11 +497,12 @@ class ControlPlane(ReleaseControl):
         # 보존 전이를 커밋한 뒤 거부한다(트랜잭션 안에서 실패하면 전이가 롤백된다).
         fail(409, code)
 
-    def report(self, job_id, request):
+    def report(self, job_id, request, actor=None):
         self.require_store()
         result_hash = sha(request.result)
         with self.store.transaction() as session:
             job = session.get(Job, job_id)
+            self.runner_lease(job, actor)
             self.lease_check(job, request)
             if job.result_hash is not None:
                 if job.result_hash != result_hash:

@@ -42,6 +42,10 @@ class ApplicationSettings:
     evidence_max_age_seconds: int = 3600
     database_init_retry_seconds: int = 30
     worker_enabled: bool = False
+    # Opt-in runtime job/identity separation; linked incidents require it independently.
+    unified_mode: bool = False
+    repositories_file: str | None = None
+    github_read_token_file: str | None = None
 
     def model_for(self, role):
         return getattr(self, role + '_model') or self.model
@@ -65,7 +69,11 @@ class ApplicationSettings:
                    catalog_file=os.getenv('APPLICATION_CATALOG_FILE'),
                    codex_home=os.getenv('APPLICATION_CODEX_HOME'),
                    model=common or 'gpt-6.1-sol',
-                   worker_enabled=os.getenv('APPLICATION_WORKER_ENABLED') == 'true', **roles)
+                   worker_enabled=os.getenv('APPLICATION_WORKER_ENABLED') == 'true',
+                   repositories_file=os.getenv('APPLICATION_REPOSITORIES_FILE'),
+                   github_read_token_file=os.getenv('APPLICATION_GITHUB_READ_TOKEN_FILE'),
+                   unified_mode=(os.getenv('APPLICATION_UNIFIED_MODE') == 'true' or
+                                 os.getenv('LIVEPROBE_UNIFIED_ENABLED') == 'true'), **roles)
 
     def resolved_database_url(self):
         if self.database_url_file:

@@ -42,6 +42,20 @@ class Identities:
                 return self.authenticate(authorization, 'incident:create', machine=True)
         return self.authenticate(authorization, 'incident:create')
 
+    def runner(self, authorization):
+        """Authenticate identity and load server-owned role scopes, never client capabilities."""
+        actor = self.authenticate(authorization, 'runner', machine=True)
+        rows = self._load(True) or []
+        principals = [row for row in rows if row['subject'] == actor['subject']]
+        # A duplicate subject must not bind two independently privileged tokens to one lease.
+        if len(principals) != 1:
+            fail(403, 'runner_subject_ambiguous')
+        scopes = principals[0]['scopes']
+        roles = [role for role in ('source', 'cluster') if 'runner:' + role in scopes]
+        if len(roles) > 1 or (self.settings.unified_mode and len(roles) != 1):
+            fail(403, 'runner_role_separation_required', '소스 실행기와 배포 실행기는 별도 계정이어야 합니다.')
+        return {**actor, 'runner_role': roles[0] if roles else None}
+
     def authenticate(self, authorization, scope, *, machine=False):
         own = self._load(machine)
         other = self._load(not machine)

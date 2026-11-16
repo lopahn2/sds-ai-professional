@@ -15,6 +15,7 @@ import uuid
 from .profiles import digest
 
 KINDS=['collect','source','test_build','deploy','verify','reconcile']
+ROLE_KINDS={'source':['source','test_build'], 'cluster':['collect','deploy','verify','reconcile'], 'legacy':KINDS}
 
 
 def redact(text):
@@ -139,16 +140,19 @@ class LeaseGuard:
 
 class Worker:
     def __init__(self,api,executor,state_root,worker_id,heartbeat_seconds=10,
-                 wall_clock=time.time,monotonic=time.monotonic):
+                 wall_clock=time.time,monotonic=time.monotonic,role='legacy'):
+        if role not in ROLE_KINDS:raise ValueError('runner_role_invalid')
+        self.capabilities=list(ROLE_KINDS[role])
+        self.role=role
         self.api=api;self.executor=executor;self.state_root=Path(state_root);self.worker_id=worker_id
         self.heartbeat_seconds=heartbeat_seconds;self.wall_clock=wall_clock;self.monotonic=monotonic
 
     def once(self,dry_run=False):
-        if dry_run:return {'ok':True,'claimed':False,'dry_run':True,'capabilities':KINDS}
-        response=self.api.post('/runner/claim',{'worker_id':self.worker_id,'capabilities':KINDS})
+        if dry_run:return {'ok':True,'claimed':False,'dry_run':True,'capabilities':self.capabilities}
+        response=self.api.post('/runner/claim',{'worker_id':self.worker_id,'capabilities':self.capabilities})
         job=response.get('job') if response else None
         if job is None:return {'ok':True,'claimed':False}
-        if not re.fullmatch(r'[A-Za-z0-9_-]+',job['id']) or job['kind'] not in KINDS or type(job['fencing_token']) is not int or job['fencing_token']<1:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+',job['id']) or job['kind'] not in self.capabilities or type(job['fencing_token']) is not int or job['fencing_token']<1:
             raise ValueError('invalid_job_contract')
         auth={'lease_token':job['lease_token'],'fencing_token':job['fencing_token']}
         heartbeat='/runner/jobs/'+job['id']+'/heartbeat'

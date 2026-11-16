@@ -94,11 +94,13 @@ def validate_business(profile,response):
 
 
 class KubeTransport:
-    def __init__(self,api,business_reader=None):
+    def __init__(self,api,business_reader=None,read_only=False):
         self.api=api;self.business_reader=business_reader
+        self.read_only=read_only
         self.guard=lambda:None
 
     def _call(self,path,method,body=None,query=None):
+        if self.read_only and method != 'GET':raise ValueError('source_runner_cluster_write_forbidden')
         remaining=getattr(self,'write_guard',self.guard)() if method=='PATCH' else self.guard()
         timeout=min(20,remaining) if isinstance(remaining,(int,float)) else 20
         try:

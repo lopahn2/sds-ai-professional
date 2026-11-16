@@ -80,6 +80,8 @@ def create_app(settings=None, *, provider=None, clock=None):
     control.human_authorized = identities.authorized_subject
     app.state.control = control
     app.state.worker = AnalysisWorker(control, provider)
+    from .merge_policy import install_merge_policy
+    install_merge_policy(app, control, identities, settings)
 
     @app.exception_handler(HTTPException)
     async def handle_http(request, exc):
@@ -137,7 +139,9 @@ def create_app(settings=None, *, provider=None, clock=None):
 
     @app.post(PREFIX + '/incidents', response_model=IncidentResponse, status_code=201)
     def create_incident(body: CreateIncident, actor=Depends(human_create)):
-        return control.create(body, actor)
+        # The combined product supplies canonical intake; standalone API stays compatible.
+        creator = getattr(app.state, 'incident_creator', None)
+        return creator(body, actor) if callable(creator) else control.create(body, actor)
 
     @app.get(PREFIX + '/incidents')
     def list_incidents(environment: str | None = None, service: str | None = None, system: str | None = None,
@@ -168,7 +172,11 @@ def create_app(settings=None, *, provider=None, clock=None):
 
     @app.post(PREFIX + '/incidents/{incident_id}/review-dev-metadata')
     def review_dev_metadata(incident_id: str, authorization: str | None = Header(default=None)):
-        identities.authenticate(authorization, 'runner', machine=True)
+        actor = identities.runner(authorization)
+        linked = bool(control.detail(incident_id).get('data', {}).get('unified_origin'))
+        if linked and actor.get('runner_role') != 'cluster':
+            from .safety import fail
+            fail(403, 'runner_job_kind_forbidden')
         return control.review_dev_metadata(incident_id)
 
     @app.get(PREFIX + '/incidents/{incident_id}/events', response_model=EventsResponse)
@@ -178,18 +186,18 @@ def create_app(settings=None, *, provider=None, clock=None):
 
     @app.post(PREFIX + '/runner/claim', response_model=ClaimResponse)
     def claim(body: Claim, authorization: str | None = Header(default=None)):
-        identities.authenticate(authorization, 'runner', machine=True)
-        return control.claim(body)
+        actor = identities.runner(authorization)
+        return control.claim(body, actor)
 
     @app.post(PREFIX + '/runner/jobs/{job_id}/heartbeat')
     def heartbeat(job_id: str, body: Lease, authorization: str | None = Header(default=None)):
-        identities.authenticate(authorization, 'runner', machine=True)
-        return control.heartbeat(job_id, body)
+        actor = identities.runner(authorization)
+        return control.heartbeat(job_id, body, actor)
 
     @app.post(PREFIX + '/runner/jobs/{job_id}/result', response_model=Receipt)
     def report(job_id: str, body: Report, authorization: str | None = Header(default=None)):
-        identities.authenticate(authorization, 'runner', machine=True)
-        return control.report(job_id, body)
+        actor = identities.runner(authorization)
+        return control.report(job_id, body, actor)
 
     @app.get(PREFIX + '/incidents/{incident_id}/release', response_model=ReleaseResponse)
     def release(incident_id: str, authorization: str | None = Header(default=None)):
