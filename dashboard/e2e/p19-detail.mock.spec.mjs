@@ -1,12 +1,14 @@
 // 보완-11: 기존 mock-api + p15 helper만 사용, 운영 API 미접속.
 import {test,expect} from '@playwright/test';
-import {tab,resetMock,layout,mock,errors,capture} from './p15-helpers.mjs';
-const out='../docs/evidence/application/lanes/ui/p19';
+import {tab,resetMock,layout,mock,errors} from './p15-helpers.mjs';
 test.skip(!mock,'로컬 모의 API에서만 실행');
 test.beforeEach(async({request})=>resetMock(request));
-const ready=async page=>{await expect(page.locator('.incident-room')).toBeVisible();await expect(page.locator('.step-card').first()).toBeAttached();};
+const ready=async page=>{await expect(page.getByRole('region',{name:'선택 단계 입력과 결과'})).toBeVisible();};
 async function open(page,id='evidence'){
-  await tab(page,'대화');const card=page.locator(`[id="step-${id}"]`),trigger=card.getByRole('button',{name:'상세보기',exact:true});
+  await tab(page,'대화');
+  const history=page.locator('details:not([open]) > summary').filter({hasText:/지난 분석 단계 \d+개 보기/});
+  if(await history.isVisible())await history.click();
+  const card=page.locator(`[id="step-${id}"]`),trigger=card.locator('.step-actions').getByRole('button',{name:'원문 보기',exact:true});
   await trigger.scrollIntoViewIfNeeded();await trigger.focus();await page.keyboard.press('Enter');
   const panel=page.locator('.detail-panel');await expect(panel).toBeVisible();await expect(panel.getByRole('button',{name:'닫기',exact:true})).toBeFocused();
   return {card,trigger,panel};
@@ -20,14 +22,14 @@ test('좁은 상세는 배경 키보드를 차단하고 Tab 순환·Esc·닫기�
     const protectedBackground=()=>page.locator('.app>.nav,.app>.bar,.headline,.room-tabs,.conversation-pane,.flow-pane').evaluateAll(es=>es.map(e=>({name:e.className,blocked:!!e.closest('[inert]')})));
     for(const b of await protectedBackground())expect(b.blocked,b.name).toBe(true);
     // native inert는 JS focus()조차 막아야 한다(탭 인덱스만 바꾸는 것으로 대체 불가).
-    await page.locator('.composer textarea').evaluate(e=>e.focus());
+    await page.locator('.headline a').evaluate(e=>e.focus());
     expect(await panel.evaluate(e=>e.contains(document.activeElement))).toBe(true);
     for(let i=0;i<30;i++){await page.keyboard.press('Tab');expect(await panel.evaluate(e=>e.contains(document.activeElement))).toBe(true);}
     await panel.getByRole('button',{name:'닫기',exact:true}).focus();await page.keyboard.press('Shift+Tab');expect(await panel.evaluate(e=>e.contains(document.activeElement))).toBe(true);
   }else{
     expect(await page.locator('.conversation-pane').evaluate(e=>!!e.closest('[inert]'))).toBe(false);
   }
-  await layout(page);await capture(page,info,'keyboard-open',out);
+  await layout(page);await page.screenshot({path:info.outputPath('keyboard-open.png')});
   await page.keyboard.press('Escape');await expect(panel).toHaveCount(0);await expect(trigger).toBeFocused();
   await expect(page.locator('.app [inert]')).toHaveCount(0);
   await trigger.press('Enter');await expect(panel).toBeVisible();await panel.getByRole('button',{name:'닫기',exact:true}).click();await expect(trigger).toBeFocused();
@@ -70,7 +72,7 @@ test('단계 전체의 중복 ref·빈 스냅샷·실패 원문을 각각 분리
   for(const id of [902,903,904])await expect(panel.locator(`[data-evidence-id="${id}"]`)).toContainText('원문은 현재 응답에 없습니다.');
   await expect(panel.locator('[data-evidence-id="904"]')).toContainText('HTTP 503 <실패> & 원문 사유');await expect(panel).not.toContainText('공통 최신값 혼입 금지');
   expect(await page.evaluate(()=>window.p19Injected)).toBeUndefined();await expect(panel.locator('img')).toHaveCount(0);
-  await layout(page);await capture(page,info,'boundaries',out);expect(es).toEqual([]);
+  await layout(page);await page.screenshot({path:info.outputPath('boundaries.png')});expect(es).toEqual([]);
 });
 
 test('Group와 한글 해석 상세의 긴 문자열·특수문자 본문은 전체 그대로 읽힌다',async({page},info)=>{
@@ -83,10 +85,12 @@ test('Group와 한글 해석 상세의 긴 문자열·특수문자 본문은 전
   });
   await page.goto('/incidents/990');await ready(page);let {panel,trigger}=await open(page,'group');
   for(const text of ['판단 이유 '+long,'전체 판단 '+long,'하위 판단 '+long,'실제 진행 '+long,'Agent 호출 최대 0회','제한 시간 0초'])await expect(panel).toContainText(text);
-  await layout(page);await capture(page,info,'group-long',out);await page.keyboard.press('Escape');await expect(trigger).toBeFocused();
-  ({panel}=await open(page,'p19-interpret'));await panel.locator('details summary').click();
-  await expect(panel.locator('details p')).toHaveText('정확한 한글 '+long);await expect(panel.locator('details .raw-text')).toHaveText('EXACT RAW '+long);
-  expect(await page.evaluate(()=>window.p19Injected)).toBeUndefined();await layout(page);await capture(page,info,'interpret-long',out);expect(es).toEqual([]);
+  await layout(page);await page.screenshot({path:info.outputPath('group-long.png')});await page.keyboard.press('Escape');await expect(trigger).toBeFocused();
+  ({panel}=await open(page,'p19-interpret'));
+  const translation=panel.locator('details').filter({has:panel.page().locator('summary').filter({hasText:'p19-translation'})});
+  await translation.locator('summary').click();
+  await expect(translation.locator('p')).toHaveText('정확한 한글 '+long);await expect(translation.locator('.raw-text')).toHaveText('EXACT RAW '+long);
+  expect(await page.evaluate(()=>window.p19Injected)).toBeUndefined();await layout(page);await page.screenshot({path:info.outputPath('interpret-long.png')});expect(es).toEqual([]);
 });
 
 test('사건 상세 로드 실패는 다시 불러오기로 회복하며 마지막 승인 정보를 성공으로 꾸미지 않는다',async({page})=>{

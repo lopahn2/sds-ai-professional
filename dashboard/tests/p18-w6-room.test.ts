@@ -176,12 +176,12 @@ test('단계 순서: 모든 카드에 시각이 있으면 시각순, 하나라�
   assert.ok(!orderSteps([...d.flow.nodes, { ...d.flow.nodes[0], id: 'command:1', type: 'command' }]).some(n => n.type === 'command'));
 });
 
-test('인계 카드는 인수 동작을 먼저 제공하고 판단·원문은 요청 전에 마운트하지 않는다', () => {
+test('인계 카드는 인수·판단·다음 조치를 본문에 표시하고 원문은 요청 시 연다', () => {
   const d = fixture(990); const inc = d.incident as Incident;
   const html = renderToStaticMarkup(createElement(HandoffCard, { incident: inc, view: d.handoff_view!, onChange() {} }));
-  const order = ['인계 인수', 'handoff-lead', 'next-steps', '인계 판단 보기', 'handoff-raw'].map(k => html.indexOf(k));
+  const order = ['인계 인수', 'handoff-lead', 'decision-table', 'next-steps', 'handoff-raw'].map(k => html.indexOf(k));
   assert.ok(order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])), JSON.stringify(order));
-  assert.equal((html.match(/data-key="/g) ?? []).length, 0);
+  assert.equal((html.match(/data-key="/g) ?? []).length, d.handoff_view!.decisions.length);
   assert.ok(!html.includes('kubectl'), '닫힌 원문은 DOM 자체에 없다');
   assert.ok(html.includes('인계 원문 보기'));
   assert.ok(!/<details[^>]* open/.test(html));

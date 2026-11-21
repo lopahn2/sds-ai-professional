@@ -6,19 +6,19 @@ const fixture = name => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json
 const clone = x => structuredClone(x); const now = () => new Date().toISOString();
 const templates = fixture('command-plans');
 let narratives, eventLogs, overview, commands, nextId, automationMode, modelSettings, actions;
-const role = (model = 'gpt-6.1-sol', effort = 'medium') => ({ model, effort });
+const role = (model = 'gpt-6.2-sol', effort = 'medium') => ({ model, effort });
 const groups = {
   SIMPLE: { primary_mode: 'router', roles: { signal_analyst: role('gpt-6-luna','low'), result_verifier: role() } },
   NORMAL: { primary_mode: 'router', roles: { k8s_analyst: role(), log_summarizer: role('gpt-6-luna','low'), coordinator: role(), group_verifier: role() } },
-  COMPLEX: { primary_mode: 'router', roles: { k8s_log_analyst: role(), cause_reasoner: role(), challenger: role('gpt-6-astra','high'), recovery_planner: role(), group_verifier: role() } },
-  HIGH_RISK: { primary_mode: 'router', roles: { evidence_curator: role('gpt-6-astra','high'), safety_verifier: role('gpt-6-astra','xhigh') } },
+  COMPLEX: { primary_mode: 'router', roles: { k8s_log_analyst: role(), cause_reasoner: role(), challenger: role('gpt-6.2-astra','high'), recovery_planner: role(), group_verifier: role() } },
+  HIGH_RISK: { primary_mode: 'router', roles: { evidence_curator: role('gpt-6.2-astra','high'), safety_verifier: role('gpt-6.2-astra','xhigh') } },
 };
 function reset() {
   narratives = new Map([971,987,990,976,1976].map(id => [id, fixture(`narrative-${id}`)]));
   eventLogs = new Map([...narratives.keys()].map(id => [id, fixture(`events-${id}`)]));
   overview = fixture('overview-envs'); commands = new Map(); nextId = 1; automationMode = 'approval'; actions = new Map();
   const draft = { router: role('gpt-6-luna','low'), groups: clone(groups) };
-  modelSettings = { revision: 0, source: 'config', provider: 'codex_cli', editable: true, ...draft, defaults: clone(draft), catalog: ['gpt-6-luna','gpt-6.1-sol','gpt-6-astra'].map(model => ({ model, efforts: ['low','medium','high','xhigh'] })), limits: { model_ladder: ['gpt-6-luna','gpt-6.1-sol','gpt-6-astra'], max_cost_usd: { NORMAL:1.3,COMPLEX:2.3 } } };
+  modelSettings = { revision: 0, source: 'config', provider: 'codex_cli', editable: true, ...draft, defaults: clone(draft), catalog: ['gpt-6-luna','gpt-6.2-sol','gpt-6.2-astra'].map(model => ({ model, efforts: ['low','medium','high','xhigh'] })), limits: { model_ladder: ['gpt-6-luna','gpt-6.2-sol','gpt-6.2-astra'], max_cost_usd: { NORMAL:1.3,COMPLEX:2.3 } } };
 }
 reset();
 function append(id, kind, summary, detail = {}) { const log = eventLogs.get(id); if (log) log.events.push({ seq: (log.events.at(-1)?.seq ?? 0)+1, kind, actor: 'liveprobe', summary, detail, at: now() }); }
@@ -94,9 +94,14 @@ const server = http.createServer(async (req,res) => {
   if(actionMatch&&method==='POST'){const a=actions.get(Number(actionMatch[1]));if(!a)return send({detail:'조치를 찾지 못했습니다.'},404);if(a.status!=='pending_approval')return send({detail:`action is ${a.status}, not pending_approval`},409);const n=narratives.get(a.incident_id);if(actionMatch[2]==='approve'){a.status='succeeded';a.executed=true;n.incident.status='resolved';append(a.incident_id,'action_executed','운영자 승인 후 조치를 실행했습니다.',{action_id:a.id});}else{a.status='rejected';a.reason=String(body.reason||'');n.incident.status='handed_off';n.incident.handoff={recommended_steps:['kubectl -n liveprobe-target get pods']};append(a.incident_id,'note','운영자가 조치를 거절했습니다.',{action_id:a.id});}a.updated_at=now();return send(a);}
   if(path==='/api/overview')return send(overview);
   if(path==='/api/topology')return send(overview.topology);
-  if(path==='/api/incidents'){
+  if(path==='/api/incidents' || path==='/api/console/incidents'){
     // 정돈-04: same contract as the server — every filter on the whole set before total/paging; as_of pins later pages.
     let items=[...narratives.values()].reverse().map(n=>({...n.incident,stage:n.headline.stage})); const status=u.searchParams.get('status'), search=u.searchParams.get('search'), env=u.searchParams.get('environment'), origin=u.searchParams.get('origin'), asOf=u.searchParams.get('as_of');
+    if(path==='/api/console/incidents'){
+      items=items.map(i=>({...i,kind:i.code_action?.linked?'mixed':'kubernetes'}));
+      const kind=u.searchParams.get('kind');
+      if(kind && kind!=='all')items=items.filter(i=>i.kind===kind);
+    }
     if(status)items=items.filter(i=>i.status===status); if(search)items=items.filter(i=>(i.title+' '+i.workload).includes(search));
     if(env)items=items.filter(i=>(i.environment??i.namespace)===env); if(origin)items=items.filter(i=>(i.origin??'unconfirmed')===origin);
     const newest=Math.max(0,...[...narratives.keys()]); const anchor=asOf?Math.min(Number(asOf),newest):newest; items=items.filter(i=>i.id<=anchor);

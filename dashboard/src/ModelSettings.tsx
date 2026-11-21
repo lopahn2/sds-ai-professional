@@ -4,9 +4,16 @@ import { request } from './api';
 type Placement = { model: string; effort: string };
 type Group = { primary_mode: 'router' | 'fixed'; roles: Record<string, Placement> };
 type Draft = { router: Placement; groups: Record<string, Group>; assist?: {code_fixer:Placement} };
+type Price = { input: number; cached_input?: number; output: number };
 type ModelSettingsData = Draft & { revision: number; source: string; provider: string; editable: boolean;
-  defaults: Draft; catalog: { model: string; efforts: string[] }[];
+  defaults: Draft; catalog: { model: string; efforts: string[]; price?: Price | null; price_source?: string | null }[];
+  prices_version?: string; legacy_normalized?: boolean;
   limits: { model_ladder: string[]; max_cost_usd: Record<string, number> } };
+// 2026-11-18 계층. 서버 승격 순서(낮음→높음)가 있으면 그것을 따른다.
+const TIERS = { low: 'gpt-6-luna', mid: 'gpt-6.2-sol', high: 'gpt-6.2-astra' };
+export const tiersOf = (ladder?: string[]) => ladder && ladder.length >= 3
+  ? { low: ladder[0], mid: ladder[1], high: ladder[ladder.length - 1] } : TIERS;
+const usd = (n?: number) => n == null ? '—' : `$${n.toFixed(2)}`;
 const LEVELS = [['SIMPLE', '단순 그룹'], ['NORMAL', '보통 그룹'], ['COMPLEX', '복잡 그룹'], ['HIGH_RISK', '고위험 그룹']];
 const ROLES: Record<string, string> = { code_fixer:'코드 수정', router: '사건 분류', signal_analyst: '신호 분석', result_verifier: '결과 확인',
   coordinator: '진행 조정', k8s_analyst: '쿠버네티스 분석', log_summarizer: '로그 요약', group_verifier: '독립 결과 확인',
@@ -20,7 +27,7 @@ const ROLE_ORDER: Record<string, string[]> = {
   HIGH_RISK: ['evidence_curator', 'safety_verifier'],
 };
 const EFFORTS: Record<string, string> = { low: '낮음', medium: '중간', high: '높음', xhigh: '최고' };
-const cloneDraft = (s: Draft): Draft => structuredClone({ router: s.router, groups: s.groups, assist:s.assist ?? {code_fixer:{model:'gpt-6.1-sol',effort:'high'}} });
+const cloneDraft = (s: Draft): Draft => structuredClone({ router: s.router, groups: s.groups, assist:s.assist ?? {code_fixer:{model:TIERS.mid,effort:'high'}} });
 
 export function ModelSettings() {
   const [data, setData] = useState<ModelSettingsData | null>(null);
@@ -35,6 +42,7 @@ export function ModelSettings() {
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
+  const tier = tiersOf(data?.limits.model_ladder);
   const changes: string[] = [];
   if (data && draft) {
     if (JSON.stringify(draft.assist) !== JSON.stringify(data.assist ?? data.defaults.assist)) changes.push('코드 수정');
@@ -68,9 +76,9 @@ export function ModelSettings() {
     const primary = !common && PRIMARY[level] === role;
     const automatic = primary && draft?.groups[level].primary_mode === 'router';
     const restricted = role === 'safety_verifier' || role === 'challenger';
-    const candidates = (data?.catalog ?? []).filter(c => restricted ? c.model === 'gpt-6-astra'
-      : ['result_verifier', 'group_verifier'].includes(role) ? c.model !== 'gpt-6-luna' : true)
-      .filter(c => !primary || automatic || level === 'SIMPLE' || (level === 'HIGH_RISK' ? c.model === 'gpt-6-astra' : c.model !== 'gpt-6-luna'));
+    const candidates = (data?.catalog ?? []).filter(c => restricted ? c.model === tier.high
+      : ['result_verifier', 'group_verifier'].includes(role) ? c.model !== tier.low : true)
+      .filter(c => !primary || automatic || level === 'SIMPLE' || (level === 'HIGH_RISK' ? c.model === tier.high : c.model !== tier.low));
     const efforts = (data?.catalog.find(c => c.model === value.model)?.efforts ?? []).filter(e => role !== 'safety_verifier' || e === 'high' || e === 'xhigh');
     return <div className="model-role" key={role}>
       <div><b>{ROLES[role]}</b>{primary && <span className="badge">주 분석</span>}
@@ -90,6 +98,11 @@ export function ModelSettings() {
     {loading ? <p role="status">모델 설정을 불러오는 중…</p> : !data || !draft ? <button className="btn" onClick={load}>모델 설정 다시 불러오기</button> : <>
       {!data.editable && <p className="notice">현재 공급자는 {data.provider}입니다. 이 화면의 편집은 Codex CLI에서만 지원합니다.</p>}
       <p className="model-boundary">Codex CLI 전용 · API 키 전환 없음 · 고위험 자동 조치 금지</p>
+      {data.legacy_normalized && <p className="notice" role="note">저장된 설정에 이전 모델 ID가 있습니다. 다음 분석부터 현재 계층({tier.mid} / {tier.high})으로 실행합니다. 저장하면 현재 ID로 기록되며 과거 실행 기록은 바뀌지 않습니다.</p>}
+      <table className="model-prices"><caption>API 환산 단가 · 1M 토큰당 USD{data.prices_version ? ` · 가격표 ${data.prices_version}` : ''} (구독 CLI 청구액 아님)</caption>
+        <thead><tr><th scope="col">모델</th><th scope="col">입력</th><th scope="col">캐시 입력</th><th scope="col">출력</th><th scope="col">출처</th></tr></thead>
+        <tbody>{data.catalog.map(c => <tr key={c.model}><th scope="row">{c.model}</th><td>{usd(c.price?.input)}</td><td>{usd(c.price?.cached_input)}</td><td>{usd(c.price?.output)}</td>
+          <td>{c.price_source ? <a href={c.price_source} target="_blank" rel="noreferrer">모델 페이지</a> : <span className="muted">가격표 기본값</span>}</td></tr>)}</tbody></table>
       <div className="card"><header>공통 사건 분류</header><div className="body">{placement('router', draft.router, true)}</div></div>
       <div className="card"><header>변경 요청 코드 수정</header><div className="body">{placement('code_fixer', draft.assist!.code_fixer, true)}</div></div>
       <div className="model-group-buttons" aria-label="사건 수준별 그룹">{LEVELS.map(([key, label]) => <button className={`btn ${level === key ? 'primary' : ''}`} key={key} aria-pressed={level === key} onClick={() => setLevel(key)}>{label}</button>)}</div>
@@ -98,7 +111,7 @@ export function ModelSettings() {
           const mode = e.target.value as Group['primary_mode']; setMessage(''); setDraft(old => {
             if (!old) return old;
             const next = cloneDraft(old); next.groups[level].primary_mode = mode;
-            if (mode === 'fixed' && level === 'HIGH_RISK') next.groups[level].roles.evidence_curator.model = 'gpt-6-astra';
+            if (mode === 'fixed' && level === 'HIGH_RISK') next.groups[level].roles.evidence_curator.model = tier.high;
             return next;
           });
         }}><option value="router">라우터 자동 선택</option><option value="fixed">직접 지정</option></select></label>

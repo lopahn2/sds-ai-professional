@@ -19,7 +19,7 @@ test('승인 확인을 취소하면 요청을 보내지 않고, 거절은 인계
  page.once('dialog',d=>void d.accept());await card.getByRole('button',{name:'거절',exact:true}).click();await expect(card).toHaveCount(0);expect(posts).toBe(1);
  const h=page.getByRole('article',{name:'운영자 인계'});await expect(h).toBeVisible({timeout:12000});
  // P18 W6: 원문 권장 조치는 기본 미표시, 원문 보기 안에서 서버 원문 그대로 보인다.
- const raw=h.getByText('kubectl -n liveprobe-target get pods',{exact:true});await expect(raw).toBeHidden();await expect(h.locator('.decision-table')).toContainText('운영자 인계 · 자동 복구 아님');await h.getByText('원문 보기',{exact:true}).click();await expect(raw).toBeVisible();
+ const raw=h.getByText('kubectl -n liveprobe-target get pods',{exact:true});await expect(raw).toBeHidden();await expect(h.locator('.decision-table')).toContainText('운영자 인계 · 자동 복구 아님');await h.getByText('인계 원문 보기',{exact:true}).click();await expect(raw).toBeVisible();
  await h.getByRole('button',{name:'인계 인수',exact:true}).click();await expect(h).toContainText('인수: operator');await layout(page);
 });
 test('필터를 바꾼 뒤 늦게 도착한 이전 목록 응답은 새 목록을 덮어쓰지 않는다',async({page})=>{
@@ -27,7 +27,7 @@ test('필터를 바꾼 뒤 늦게 도착한 이전 목록 응답은 새 목록�
  const old={...base,id:321,workload:'이전-목록',status:'open'},fresh={...base,id:322,workload:'새-해결목록',status:'resolved'};
  let calls=0,held,saw,resolvedCalls=0;const waiting=new Promise(r=>saw=r);
  // 새 필터의 첫 응답 이후 조회는 보류해, 목록이 바뀔 수 있는 길을 늦은 이전 응답 하나로만 남긴다(재시도 단언의 5초 안에 다음 주기 조회가 끼어들지 않게).
- await page.route('**/api/incidents?*',async route=>{const q=new URL(route.request().url()).searchParams;if(q.get('limit')!=='50')return route.fallback();if(q.get('status')==='resolved'){if(++resolvedCalls>1)return;return route.fulfill({json:{items:[fresh],total:1}});}if(++calls===2){held=route;saw();return;}return route.fulfill({json:{items:[old],total:1}});});
+ await page.route('**/api/console/incidents?*',async route=>{const q=new URL(route.request().url()).searchParams;if(q.get('limit')!=='50')return route.fallback();if(q.get('status')==='resolved'){if(++resolvedCalls>1)return;return route.fulfill({json:{items:[fresh],total:1}});}if(++calls===2){held=route;saw();return;}return route.fulfill({json:{items:[old],total:1}});});
  await page.goto('/incidents');await expect(page.getByText('이전-목록',{exact:true})).toBeVisible();await waiting;
  await page.getByRole('button',{name:'자동 복구',exact:true}).click();await expect(page.getByText('새-해결목록',{exact:true})).toBeVisible();
  await held.fulfill({json:{items:[old],total:1}}).catch(()=>undefined);await page.waitForTimeout(1500);

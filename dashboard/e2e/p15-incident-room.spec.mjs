@@ -1,59 +1,121 @@
-import { test, expect } from '@playwright/test';
-import { capture, errors, layout, noPageScroll, resetMock, tab } from './p15-helpers.mjs';
+import {test,expect} from '@playwright/test';
+import {capture,errors,layout,noPageScroll,resetMock,tab} from './p15-helpers.mjs';
+
 test.beforeEach(async({request})=>resetMock(request));
-const ready = page => expect(page.locator('.incident-room')).toBeVisible({timeout:10000});
-test('표본을 고정하지 않고 API에서 단순·복잡·고위험·진행 중 관제실을 확인한다',async({page,request},info)=>{
- test.setTimeout(90000);const es=errors(page);const {items}=await(await request.get('/api/incidents?limit=200')).json();
- const selected=[items.find(i=>['open','analyzing','acting','action_pending'].includes(i.status)),...['COMPLEX','SIMPLE','HIGH_RISK'].map(l=>items.find(i=>i.severity_level===l)),items.find(i=>i.status==='resolved')].filter(Boolean);const cases=[...new Map(selected.map(i=>[i.id,i])).values()];expect(cases.length).toBeGreaterThan(0);
- for(const i of cases){
-  const response=await request.get(`/api/incidents/${i.id}/narrative`);expect(response.ok()).toBe(true);const n=await response.json();
-  await page.goto(`/incidents/${i.id}`);await ready(page);await expect(page.getByRole('heading',{name:'장애 관제실',exact:true})).toBeAttached();await expect(page.getByLabel('장애 상황 요약')).toContainText(n.headline.what);
-  // 흐름: 모든 단계가 노드 버튼이며 depth가 클수록 아래에 있다.
-  await tab(page,'흐름');await expect(page.getByRole('heading',{name:'AI 분석 흐름',exact:true})).toBeVisible();
-  await expect(page.locator('.flow-step button')).toHaveCount(n.flow.nodes.length);
-  if(n.flow.nodes.length){const tops=await page.locator('.react-flow__node').evaluateAll(es=>es.map(e=>({id:e.dataset.id,y:e.getBoundingClientRect().top})));const y=new Map(tops.map(t=>[t.id,t.y]));for(const a of n.flow.nodes)for(const b of n.flow.nodes)if(a.depth<b.depth)expect(y.get(a.id),`${a.id}→${b.id}`).toBeLessThan(y.get(b.id));}
-  await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-flow`);
-  // P18 W6: 근거는 02 대화의 단계 카드 안에 있다. 근거 수집 노드 → 카드, 한글 요약이 먼저이고 원문은 원문 보기(상세 패널)에서 API 원문과 같다.
-  const ev=n.flow.nodes.find(x=>x.type==='evidence');
-  if(ev){
-   await tab(page,'흐름');await page.locator(`.react-flow__node[data-id="${ev.id}"] button`).click();const card=page.locator(`[id="step-${ev.id}"]`);await expect(card).toBeVisible();await expect(card).toHaveClass(/open/);
-   if(ev.card?.kind==='evidence'){
-    await expect(card.locator('[data-evidence-id]')).toHaveCount(ev.card.total);expect(ev.card.items.length).toBe(ev.card.total);
-    await expect(card.locator('.raw-item')).toHaveCount(0);
-    const k=ev.card.items.findIndex(it=>it.ref&&n.raw.some(r=>r.ref===it.ref));
-    if(k>=0){const it=ev.card.items[k];await card.locator('[data-evidence-id]').nth(k).getByRole('button',{name:/원문 보기/}).click();const panel=page.getByRole('complementary',{name:'단계 상세'});await expect(panel).toBeVisible();const rows=n.raw.filter(r=>r.ref===it.ref);await expect(panel.locator('.raw-item')).toHaveCount(rows.length);for(const [j,r] of rows.entries())await expect(panel.locator('.raw-item .raw-text').nth(j)).toHaveText(r.raw);await layout(page);await page.keyboard.press('Escape');await expect(panel).toHaveCount(0);}
-   } else await expect(card).toContainText('수집 항목별 목록은 아직 받지 못했습니다');
+const stage = page => page.getByRole('region',{name:'선택 단계 입력과 결과'});
+async function selectNode(page,id) {
+  const exact=page.locator(`.react-flow__node[data-id="${id}"] button`);
+  await exact.focus(); await page.keyboard.press('Enter');
+  await expect(stage(page)).toHaveAttribute('data-selected-step',id);
+  await expect(stage(page)).toBeVisible();
+}
+async function allSteps(page) {
+  await tab(page,'흐름');
+  const back=page.getByRole('button',{name:/흐름으로 돌아가기/});
+  if(await back.isVisible())await back.click();
+  const all=page.getByRole('button',{name:'전체 흐름',exact:true});
+  if (await all.isVisible()) await all.click();
+}
+async function inspectComposer(page, state, snapshot) {
+  if (snapshot || state==='closed') {
+    await expect(page.locator('textarea:visible')).toHaveCount(0);
+    return;
   }
-  await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-evidence`);
-  // 흐름 단계 선택(키보드) → 02의 정확한 카드로 이동·펼침, 상세보기에서 메타와 입력 근거 원문(API 원문과 일치)을 본다.
-  const ix=n.flow.nodes.findIndex(x=>x.role&&x.inputs?.some(ref=>n.raw.some(r=>r.ref===ref||r.id===ref)));const index=ix>=0?ix:n.flow.nodes.findIndex(x=>x.role);
-  if(index>=0){
-   const target=n.flow.nodes[index];
-   await tab(page,'흐름');const control=page.locator('.flow-step button').nth(index);await control.focus();await page.keyboard.press('Enter');
-   const card=page.locator(`[id="step-${target.id}"]`);await expect(card).toBeVisible();await expect(card).toHaveClass(/open/);await expect(card).toBeFocused();
-   await tab(page,'흐름');await expect(control).toHaveAttribute('aria-pressed','true');await expect.poll(()=>page.locator('.flow-step.selected').evaluate(e=>{const a=e.getBoundingClientRect(),b=e.closest('.react-flow').getBoundingClientRect();return a.left>=b.left-1&&a.right<=b.right+1&&a.top>=b.top-1&&a.bottom<=b.bottom+1;})).toBe(true);
-   await tab(page,'대화');await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-step`);
-   await card.getByRole('button',{name:'상세보기',exact:true}).click();const detail=page.getByRole('complementary',{name:'단계 상세'});await expect(detail).toBeVisible();await expect(detail).toContainText('입력 / 출력 토큰');
-   const ref=(target.inputs??[]).find(r=>n.raw.some(x=>x.ref===r||x.id===r));
-   if(ref){const d=detail.locator('details.detail-input').filter({hasText:ref}).first();await d.locator('summary').click();const rows=n.raw.filter(x=>x.ref===ref||x.id===ref);for(const [j,r] of rows.entries())await expect(d.locator('.raw-text').nth(j)).toHaveText(r.raw);}
-   await layout(page);await detail.getByRole('button',{name:'닫기',exact:true}).click();await expect(detail).toHaveCount(0);
+  const done=['resolved','handed_off','failed'].includes(state);
+  if (done) await page.getByRole('button',{name:'후속 작업 요청',exact:true}).click();
+  const composer=page.getByRole('textbox',{name:done?'후속 작업 요청 내용':'운영자 메시지',exact:true});
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveAttribute('maxlength',done?'8000':'2000');
+  await expect(page.getByRole('button',{name:done?'계획 요청':'보내기',exact:true})).toBeDisabled();
+}
+test('API의 진행·복구·인계 사건에서 신호, 병렬 단계, 근거 원문과 후속 행동을 구분한다',async({page,request},info)=>{
+  test.setTimeout(90000);
+  const trouble=errors(page),{items}=await(await request.get('/api/incidents?limit=200')).json();
+  const requested=[items.find(i=>['open','analyzing','acting','action_pending'].includes(i.status)),...['COMPLEX','SIMPLE','HIGH_RISK'].map(level=>items.find(i=>i.severity_level===level)),items.find(i=>i.status==='resolved')].filter(Boolean);
+  const cases=[...new Map(requested.map(i=>[i.id,i])).values()];
+  expect(cases.length).toBeGreaterThan(0);
+  for (const i of cases) {
+    const response=await request.get('/api/incidents/'+i.id+'/narrative');expect(response.ok()).toBe(true);
+    const n=await response.json();
+    await page.goto('/incidents/'+i.id);await page.locator('.step-panel').waitFor({state:'attached'});
+    await expect(page.getByRole('region',{name:'장애 상황 요약'})).toContainText('#'+i.id);
+    await expect(page.locator('.headline h2')).toContainText(i.workload);
+    await expect(page.locator('pre.raw-text:visible')).toHaveCount(0);
+    await allSteps(page);await expect(page.locator('.flow-step button')).toHaveCount(n.flow.nodes.filter(node=>node.type!=='interpret').length);
+    await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-flow`);
+    const evidence=n.flow.nodes.find(node=>node.type==='evidence');
+    if(evidence){
+      await selectNode(page,evidence.id);
+      await expect(stage(page)).toContainText('근거');
+      const raw=stage(page).locator('summary').filter({hasText:'관측 원문 상세보기'}).first();
+      if(await raw.count()){
+        await raw.focus();await raw.press('Enter');
+        await expect(raw.locator('..').locator('pre.raw-text').first()).toBeVisible();
+        await raw.press('Enter');await expect(raw.locator('..').locator('pre.raw-text')).toHaveCount(0);await expect(raw).toBeFocused();
+      }
+      await tab(page,'대화');
+      const past=page.locator('details:not([open]) > summary').filter({hasText:/지난 분석 단계 \d+개 보기/});
+      if(await past.isVisible())await past.click();
+      const card=page.locator(`[id="step-${evidence.id}"]`);
+      const expand=card.getByRole('button',{name:'펼치기',exact:true});
+      if(await expand.isVisible())await expand.click();
+      if(evidence.card?.kind==='evidence'){
+        const rows=evidence.card.items, items=card.locator('[data-evidence-id]');
+        await expect(items).toHaveCount(rows.length);await expect(card.locator('.raw-item')).toHaveCount(0);
+        const index=rows.findIndex(row=>row.raw_items?.length || (row.ref && rows.filter(a=>a.ref===row.ref).length===1 && n.raw.some(r=>r.ref===row.ref)));
+        if(index>=0){
+          const row=rows[index], expected=row.raw_items ?? n.raw.filter(r=>r.ref===row.ref);
+          await items.nth(index).getByRole('button',{name:/원문 보기/}).click();
+          const detail=page.getByRole('complementary',{name:'단계 상세'});await expect(detail).toBeVisible();
+          await expect(detail.locator('.raw-item')).toHaveCount(expected.length);
+          for(const [j,r] of expected.entries()) await expect(detail.locator('.raw-item .raw-text').nth(j)).toHaveText(r.raw);
+          await page.keyboard.press('Escape');await expect(detail).toHaveCount(0);
+        }
+      }
+    }
+    const agent=n.flow.nodes.find(node=>node.role&&['agent','router','verify'].includes(node.type));
+    if(agent){
+      await allSteps(page);await selectNode(page,agent.id);
+      await expect(stage(page)).toContainText('전달한 요청');
+      const widen=page.getByRole('button',{name:'단계 넓게 보기'});
+      if(await widen.isVisible()){
+        await widen.click();await expect(stage(page)).toHaveAttribute('data-selected-step',agent.id);
+        await page.getByRole('button',{name:'기본 너비로'}).click();
+      }
+
+    }
+    await tab(page,'대화');await inspectComposer(page,i.status,n.view_mode==='snapshot'||(await page.locator('.snapshot-view').count()>0));
+    await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-chat`);
   }
-  await tab(page,'대화');await expect(page.getByRole('textbox',{name:'운영자 메시지'})).toBeVisible();await expect(page.getByRole('textbox',{name:'운영자 메시지'})).toHaveAttribute('maxlength',['resolved','handed_off','failed'].includes(i.status)?'8000':'2000');await expect(page.getByRole('button',{name:'보내기',exact:true})).toBeDisabled();await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-chat`);
- }
- expect(es).toEqual([]);
+  expect(trouble).toEqual([]);
 });
-test('데스크톱 관제실은 페이지 스크롤 없이 세로 흐름 전체와 대화를 함께 보여 준다',async({page,request},info)=>{
- test.skip(info.project.name!=='width-1440','데스크톱 배치 기준');
- const {items}=await(await request.get('/api/incidents?limit=200')).json();const i=items.find(i=>i.severity_level==='COMPLEX')??items[0];test.skip(!i,'장애 기록 없음');
- await page.setViewportSize({width:1440,height:900});await page.goto(`/incidents/${i.id}`);await ready(page);await expect(page.locator('.flow-step').first()).toBeVisible();
- await noPageScroll(page);for(const pane of ['AI 분석 흐름','분석 · 운영자 대화'])await expect(page.getByRole('region',{name:pane,exact:true})).toBeVisible();
- await expect.poll(()=>page.locator('.flow-step').evaluateAll(es=>{const f=document.querySelector('.flow-canvas .react-flow').getBoundingClientRect();return es.every(e=>{const a=e.getBoundingClientRect();return a.left>=f.left-1&&a.right<=f.right+1&&a.top>=f.top-1&&a.bottom<=f.bottom+1;});})).toBe(true);
- await expect(page.getByRole('textbox',{name:'운영자 메시지'})).toBeInViewport();await layout(page);await capture(page,info,'room-desktop-1440x900');
+test('데스크톱에서 가로 단계·읽을 수 있는 전체 흐름·선택 요약이 한 화면에 보인다',async({page,request},info)=>{
+  test.skip(info.project.name!=='width-1440','데스크톱 배치 기준');
+  const {items}=await(await request.get('/api/incidents?limit=200')).json();
+  const i=items.find(i=>i.severity_level==='COMPLEX')??items[0];test.skip(!i,'장애 기록 없음');
+  await page.setViewportSize({width:1440,height:900});await page.goto('/incidents/'+i.id);await page.locator('.step-panel').waitFor({state:'attached'});
+  await noPageScroll(page);await allSteps(page);await page.getByRole('button',{name:'흐름 전체 보기',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>{
+    const label=document.querySelector('.flow-step strong'), view=document.querySelector('.flow-canvas .react-flow__viewport');
+    return parseFloat(getComputedStyle(label).fontSize)*new DOMMatrix(getComputedStyle(view).transform).a;
+  })).toBeGreaterThanOrEqual(11);
+  const graph=await page.locator('.flow-pane').boundingBox(), summary=await stage(page).boundingBox();
+  expect(graph.x+graph.width).toBeLessThanOrEqual(summary.x+1);
+  expect(await stage(page).evaluate(e=>e.scrollHeight-e.clientHeight)).toBeLessThanOrEqual(1);
+  await layout(page);await capture(page,info,'room-desktop-1440x900');
 });
-test('화면 전환·필터·흐름 노드의 키보드 접근과 모바일 대화 복귀',async({page,request})=>{
- const {items}=await(await request.get('/api/incidents?limit=200')).json();const i=items.find(i=>i.status==='resolved')??items[0];test.skip(!i,'장애 기록 없음');await page.goto(`/incidents/${i.id}`);await ready(page);
- const tabs=page.getByRole('navigation',{name:'관제실 화면 전환'});if(await tabs.isVisible()){const b=tabs.getByRole('button',{name:'대화',exact:true});await b.focus();await page.keyboard.press('Enter');await expect(b).toHaveAttribute('aria-pressed','true');}
- await tab(page,'흐름');const graph=page.locator('.flow-canvas .react-flow__viewport');await expect(page.locator('.flow-step').first()).toBeVisible();const before=await graph.getAttribute('style');await page.getByRole('button',{name:'흐름 확대',exact:true}).click();await expect(graph).not.toHaveAttribute('style',before);
- const nodes=page.locator('.flow-step button');if(await nodes.count()){await nodes.first().focus();await page.keyboard.press('Enter');await expect(page.locator('.step-card.open').first()).toBeVisible();await expect(page.locator('.step-card.open').first()).toBeFocused();}
- await tab(page,'대화');await page.getByRole('textbox',{name:'운영자 메시지'}).focus();await expect(page.getByRole('textbox',{name:'운영자 메시지'})).toBeFocused();await layout(page);
+test('키보드로 지난 사건 단계를 선택하고 상세를 닫은 뒤 동일한 입력으로 복귀한다',async({page,request})=>{
+  const {items}=await(await request.get('/api/incidents?limit=200')).json(), i=items.find(i=>i.status==='resolved')??items[0];
+  test.skip(!i,'장애 기록 없음');await page.goto('/incidents/'+i.id);await page.locator('.step-panel').waitFor({state:'attached'});
+  await allSteps(page);const graph=page.locator('.flow-canvas .react-flow__viewport'),before=await graph.getAttribute('style');
+  await page.getByRole('button',{name:'흐름 확대',exact:true}).click();await expect(graph).not.toHaveAttribute('style',before);
+  const node=page.locator('.flow-step button').first();await node.focus();await page.keyboard.press('Enter');
+  await expect(stage(page)).toHaveAttribute('data-selected-step',await node.locator('xpath=ancestor::*[@data-id][1]').getAttribute('data-id'));
+  const input=stage(page).locator('summary').first();
+  if(await input.count()){
+    await input.focus();await input.press('Enter');
+    await expect(input.locator('..')).toHaveAttribute('open','');
+    await input.press('Enter');await expect(input).toBeFocused();
+  }
+  await tab(page,'대화');await tab(page,'흐름');await expect(stage(page)).toBeVisible();await layout(page);
 });

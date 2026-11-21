@@ -1,6 +1,6 @@
 import type { Incident } from './api.ts';
 
-export const OPEN_STATES = ['open', 'analyzing', 'action_pending', 'acting'] as const;
+export const OPEN_STATES = ['open', 'analyzing', 'action_pending', 'acting', 'recovery_review'] as const;
 type Page = { items: Incident[]; total: number };
 /** 최근 기록의 개수와 관계없이 진행 중 장애를 조회한다. 부분 결과는 정상 목록으로 내보내지 않는다. */
 export async function loadOpenIncidents(load: (path: string) => Promise<Page>): Promise<Incident[]> {

@@ -10,7 +10,12 @@ const allInside = page => page.locator('.resource-button').evaluateAll(es => {
 // 새 기대: 지도 환경 선택지·전체 보기는 활성 dev·prd만이다(예전 기대: dev·stg·prd 3환경, 자원 21개, 환경 상자 3개).
 test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은 세 화면 폭에서 유지된다', async ({ page }, info) => {
   if (info.project.name === 'width-1440') await page.setViewportSize({ width: 1440, height: 900 });
-  const es = errors(page); await page.goto('/');
+  const es = errors(page);
+  await page.goto('/');
+  const inventory = page.getByRole('article', { name: 'inventory', exact: true });
+  await expect(inventory.getByRole('button', { name: /^inventory dev ·/ })).toBeVisible();
+  await expect(inventory.getByRole('link', { name: 'inventory prd · 장애 1건 · 사건 열기' })).toHaveAttribute('href', '/incidents/1976');
+  await page.getByRole('button', { name: '인프라·수집 진단' }).click();
   const scope = page.getByRole('combobox', { name: '지도 환경' });
   await expect(scope).toHaveValue('prd');
   await expect(scope.locator('option')).toHaveText(['dev', 'prd', '전체 환경']);
@@ -19,9 +24,10 @@ test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은
   await expect(page.locator('.system-box')).toHaveCount(6);
   await expect(page.locator('.resource-button')).toHaveCount(7);
   // 정돈-05: the heading no longer calls resources “services”; services (distinct workloads) and resources are counted apart.
-  await expect(page.locator('.system-box').first()).toContainText('order');
-  await expect(page.locator('.system-box').first()).toContainText('서비스 2개 · 자원 2개');
-  await expect(page.locator('.system-box').first()).toContainText('Deployment 2');
+  const orderGroup = page.locator('.system-box').filter({ hasText: 'order' });
+  await expect(orderGroup).toHaveCount(1);
+  await expect(orderGroup).toContainText('서비스 2개 · 자원 2개');
+  await expect(orderGroup).toContainText('1개 확인');
   await expect(page.getByLabel('환경별 관측 요약')).toContainText('진행 중 장애 1건');
   await expect.poll(() => allInside(page)).toBe(true);
   await layout(page); await capture(page, info, 'p18-envs-prd');
@@ -40,16 +46,19 @@ test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은
   await expect(page.locator('.environment-box')).toHaveCount(2);
   await expect(page.locator('.resource-button')).toHaveCount(14);
   expect(await page.locator('.react-flow__node-resource').evaluateAll(es => es.filter(e => e.dataset.id.startsWith('stg/')).length)).toBe(0);
-  await expect(page.locator('.resource-top small').first()).toHaveText('catalog');
+  await expect(page.locator('.resource-top strong').filter({ hasText: /^catalog$/ })).toHaveCount(2);
   await expect.poll(() => allInside(page)).toBe(true); await layout(page); await capture(page, info, 'p18-envs-all');
   await scope.selectOption('prd');
   await expect(page.locator('.resource-place')).toHaveText('prd · order · inventory');
-  await page.getByRole('button', { name: '진행 중 장애 1건', exact: true }).click();
-  await expect(page.locator('.alert-item')).toContainText('prd · order · inventory');
+  await page.getByRole('button', { name: /운영 알림/ }).click();
+  const alert = page.getByRole('link', { name: 'inventory 장애 1976 관제실 열기' });
+  await expect(alert).toContainText('inventory');
+  await expect(alert).toContainText('prd · order · #1976');
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'inventory 장애 1976 관제실 열기', exact: true }).click();
   await expect(page).toHaveURL(/\/incidents\/1976$/);
-  await expect(page.locator('.headline-place')).toHaveText('prd · order · inventory');
+  await expect(page.getByRole('heading', { name: '장애 관제실', exact: true })).toBeVisible();
+  await expect(page.locator('.headline-place')).toHaveText('prd · order');
   await layout(page); await capture(page, info, 'p18-envs-room'); expect(es).toEqual([]);
 });
 test('장애 목록의 환경 필터는 서버에서 전체 이력에 적용된다', async ({ page }, info) => {
@@ -58,17 +67,30 @@ test('장애 목록의 환경 필터는 서버에서 전체 이력에 적용된�
   const scope = page.getByRole('combobox', { name: '장애 환경 필터' });
   // 과거 이력 조회를 위해 stg 필터는 남기되 퇴역·이력으로 구분한다(값은 그대로 stg).
   await expect(scope.locator('option')).toHaveText(['전체 환경', 'dev', 'stg (퇴역·이력)', 'prd']);
-  await expect(page.locator('.environment-filter-note')).toContainText('stg는 퇴역 환경으로 과거 이력만 조회합니다');
-  await scope.selectOption('prd');
-  await expect(page.locator('.incident-row')).toHaveCount(1);
-  await expect(page.locator('.incident-row')).toContainText('prd · order · inventory');
-  await expect(page.locator('.environment-filter-note')).toContainText('서버에서 전체 이력에 먼저 적용');
-  await expect(page.locator('.badge').filter({ hasText: '조건 일치 1건' })).toBeVisible();
-  await scope.selectOption('dev'); await expect(page.locator('.incident-list')).toContainText('조건에 맞는 장애가 없습니다');
-  const stgRequest = page.waitForRequest(r => { const u = new URL(r.url()); return u.pathname === '/api/incidents' && u.searchParams.get('environment') === 'stg'; });
-  await scope.selectOption('stg');
-  await stgRequest;
-  await expect(page).toHaveURL(/environment=stg/);
-  await expect(page.locator('.incident-list')).toContainText('조건에 맞는 장애가 없습니다');
+  async function selectEnvironment(environment) {
+    const received = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.request().method() === 'GET' && url.pathname === '/api/incidents'
+        && url.searchParams.get('environment') === environment && !url.searchParams.has('status');
+    });
+    await scope.selectOption(environment);
+    const response = await received;
+    expect(response.ok()).toBe(true);
+    await expect(page).toHaveURL(new RegExp('environment=' + environment));
+    return response.json();
+  }
+  const prd = await selectEnvironment('prd');
+  expect(prd.items.map(i => i.id)).toEqual([1976]);
+  const row = page.getByRole('link', { name: '장애 1976 inventory 관제실 열기' });
+  await expect(row).toHaveAttribute('href', '/incidents/1976');
+  await expect(row.locator('strong')).toHaveText('inventory');
+  await expect(row).toContainText('prd · order');
+  await expect(page.locator('.page-head .badge')).toHaveText('조건 일치 1건');
+  for (const environment of ['dev', 'stg']) {
+    const history = await selectEnvironment(environment);
+    expect(history.total).toBe(0);
+    await expect(page.locator('.incident-row')).toHaveCount(0);
+    await expect(page.locator('.incident-list')).toContainText('조건에 맞는 장애가 없습니다');
+  }
   await layout(page); await capture(page, info, 'p18-envs-list');
 });

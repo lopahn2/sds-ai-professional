@@ -46,10 +46,10 @@ test('역할 아이콘·동일 depth 번호·별도 상태·모델 하단을 실
   assert.match(html, /class="flow-state done"/);
   assert.match(html, /class="flow-sub flow-model"[^>]*>gpt-6\.1-sol</);
   assert.match(html, /aria-pressed="true"/);
-  assert.match(html, /aria-label="[^"]*gpt-6\.1-sol[^"]*대화 카드로 이동"/);
+  assert.match(html, /aria-label="[^"]*gpt-6\.1-sol[^"]*단계 보기"/);
 });
 
-test('연결 문구는 인접 깊이의 빈 공간에만 보이고 어두운 바탕·전체 접근 이름을 유지한다', () => {
+test('연결 문구는 인접 깊이의 빈 공간에만 보이고 밝은 바탕·전체 접근 이름을 유지한다', () => {
   assert.equal(typeof flowModule.analysisFlowEdges, 'function', '흐름 선의 시각 계약을 검증할 변환이 필요하다');
   const nodes = [node({ id: 'a', depth: 0 }), node({ id: 'b', depth: 1 }), node({ id: 'c', depth: 1, lane: 1 }), node({ id: 'd', depth: 2 }), node({ id: 'e', depth: 3, lane: -1 })];
   const edges = flowModule.analysisFlowEdges({ nodes, edges: [
@@ -62,11 +62,12 @@ test('연결 문구는 인접 깊이의 빈 공간에만 보이고 어두운 바
   assert.equal(edges[1].label, undefined);
   assert.equal(edges[2].label, undefined, '중간 노드를 지나는 연결 문구를 카드 뒤에 놓지 않는다');
   assert.match(edges[2].ariaLabel ?? '', /분석 경로 변경/);
-  assert.equal(edges[3].label, '지시 반영');
-  assert.equal(edges[3].sourceHandle, 'st');
-  assert.equal(edges[3].targetHandle, 'tb');
+  assert.equal(edges[3].label, undefined, '대각선에서는 연결 설명을 접근 이름으로만 제공한다');
+  assert.match(edges[3].ariaLabel ?? '', /지시 반영/);
+  assert.equal(edges[3].sourceHandle, 'sl');
+  assert.equal(edges[3].targetHandle, 'tr');
   for (const edge of edges) {
-    assert.equal(edge.labelBgStyle?.fill, '#11181c');
+    assert.equal(edge.labelBgStyle?.fill, '#ffffff');
     assert.ok(Number(edge.labelStyle?.fontSize) >= 12);
   }
 });
@@ -86,7 +87,8 @@ test('완료된 운영자 인계는 복구 성공으로 바꾸지 않으며 미�
   assert.match(html, /class="flow-state done">완료/);
   assert.doesNotMatch(html, /자동 복구|복구 성공/);
   const unknown = render([node({ status: 'unobserved', model: null })]);
-  assert.match(unknown, /상태 미확인/);
+  assert.match(unknown, /종료 미관측/);
+  assert.match(render([node({status:"unknown-value"})]), /상태 미확인/);
   assert.match(unknown, /모델 미기록/);
 });
 

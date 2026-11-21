@@ -1,0 +1,4 @@
+# Opt in only for installations running the operator gateway at 127.0.0.1:4175.
+ARG DASHBOARD_IMAGE=liveprobe/dashboard:dev
+FROM ${DASHBOARD_IMAGE}
+COPY nginx.local-operator.conf /etc/nginx/nginx.conf

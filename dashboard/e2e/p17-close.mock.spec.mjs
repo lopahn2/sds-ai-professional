@@ -41,7 +41,8 @@ test('진행 중이거나 자동 복구된 장애에는 종료 카드가 없다'
   test.skip(!mock, '모의 API 전용');
   for (const id of [1976, 971]) {
     await page.goto(`/incidents/${id}`); await tab(page, '대화');
-    await expect(page.getByRole('textbox', { name: '운영자 메시지' })).toBeVisible();
+    if(id===971) await page.getByRole('button',{name:'후속 작업 요청',exact:true}).click();
+    await expect(page.getByRole('textbox',{name:id===971?'후속 작업 요청 내용':'운영자 메시지',exact:true})).toBeVisible();
     await expect(page.getByRole('article', { name: '장애 종료' })).toHaveCount(0);
   }
 });

@@ -10,12 +10,13 @@ type Source = (Incident | OpenIncident) & { handoff?: Record<string, unknown> | 
 
 const LEVEL_RANK: Record<string, number> = { HIGH_RISK: 0, COMPLEX: 1, NORMAL: 2, SIMPLE: 3 };
 /** 승인·인수처럼 운영자 결정이 없으면 멈춰 있는 상태만 '대응 필요'다. 분석·조치 중은 AI가 진행한다. */
-export const needsOperator = (status: string, claimed = false) => status === 'action_pending' || (status === 'handed_off' && !claimed);
+export const needsOperator = (status: string, claimed = false) => status === 'recovery_review' || status === 'action_pending' || (status === 'handed_off' && !claimed);
 const STATUS_RANK = (status: string, claimed: boolean) =>
   status === 'action_pending' ? 0 : status === 'handed_off' && !claimed ? 1 : status === 'acting' ? 2 : status === 'analyzing' ? 3 : status === 'open' ? 4 : 5;
 
 /** 목록·지도·관제실이 같은 말을 쓰도록 한 곳에서 정한 짧은 다음 행동. */
 export function nextStepShort(status: string, claimed = false): { label: string; tone: QueueTone } {
+  if (status === 'recovery_review') return { label: '소명 확인 대기', tone: 'warning' };
   if (status === 'action_pending') return { label: '승인·거절 필요', tone: 'danger' };
   if (status === 'handed_off') return claimed ? { label: '후속 지시 가능', tone: 'neutral' } : { label: '인수 필요', tone: 'warning' };
   if (status === 'acting') return { label: '조치 실행 중', tone: 'info' };
@@ -41,6 +42,14 @@ export function responseQueue(live: Source[], overviewOpen: Source[] = []): Queu
 }
 
 export type QueueCounts = { approval: number | null; handoff: number | null; inProgress: number | null };
+export function currentResponse(queue: QueueItem[], observed: boolean) {
+  if (!observed) return { services: null, automatic: null, approval: null };
+  const automatic = queue.filter(row => ['open', 'analyzing', 'acting'].includes(row.status)).length;
+  const approval = queue.filter(row => row.status === 'action_pending').length;
+  const services = new Set(queue.filter(row => ['open', 'analyzing', 'acting', 'action_pending'].includes(row.status))
+    .map(row => JSON.stringify([row.environment ?? null, row.system ?? null, row.namespace, row.workload]))).size;
+  return { services, automatic, approval };
+}
 /** 서버 집계를 우선한다. 없으면 완전히 조회된 실시간 목록에서만 세고, 그것도 없으면 미관측(null)이다. */
 export function queueCounts(counts: IncidentCounts | undefined | null, live: Pick<Incident, 'status'>[], liveReady: boolean): QueueCounts {
   const fromLive = (status?: string) => liveReady ? live.filter(i => !status || i.status === status).length : null;

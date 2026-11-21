@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { needsOperator, nextStepShort, queueCounts, responseQueue } from '../src/responseQueue.ts';
+import { currentResponse, needsOperator, nextStepShort, queueCounts, responseQueue } from '../src/responseQueue.ts';
 
 const inc = (id: number, status: string, level: string | null = 'NORMAL', extra: Record<string, unknown> = {}) =>
   ({ id, title: `t${id}`, namespace: 'ns', workload: `w${id}`, status, severity_level: level, created_at: '2026-10-01T00:00:00Z', stage: null, ...extra }) as never;
@@ -45,4 +45,11 @@ test('집계는 서버 값을 우선하고, 없으면 완전히 조회된 실시
 
 test('실시간 목록 조회가 끝나지 않았으면 0이 아니라 미관측이다', () => {
   assert.deepEqual(queueCounts(undefined, [], false), { approval: null, handoff: null, inProgress: null });
+});
+
+test('서비스 중복을 제거하고 현재 승인과 자동 조치를 따로 집계한다', () => {
+  const live = responseQueue([inc(1, 'action_pending', null, { workload: 'orders' }), inc(2, 'analyzing', null, { workload: 'orders' }), inc(3, 'acting', null, { workload: 'orders', namespace: 'dev' }), inc(4, 'handed_off')]);
+  assert.deepEqual(currentResponse(live, true), { services: 2, automatic: 2, approval: 1 });
+  assert.deepEqual(currentResponse([], true), { services: 0, automatic: 0, approval: 0 });
+  assert.deepEqual(currentResponse(live, false), { services: null, automatic: null, approval: null });
 });

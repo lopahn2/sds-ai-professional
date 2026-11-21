@@ -9,12 +9,12 @@
 .nds-theme .incident-room .headline-top > a { color: var(--nds-muted); }
 .nds-theme .incident-room .headline-top > a:hover { color: var(--nds-accent); }
 .nds-theme .incident-room .headline h1 { font-size: 12px; letter-spacing: 0; font-weight: 400; color: var(--nds-muted); }
-.nds-theme .incident-room .headline h2 { font-size: 20px; line-height: 1.4; letter-spacing: -0.02em; margin: 8px 0 4px; }
+.nds-theme .incident-room .headline h2 { font-size: 18px; line-height: 1.4; letter-spacing: var(--nds-type-subheading-tracking); margin: 8px 0 4px; }
 .nds-theme .incident-room .headline-impact { font-size: 14px; color: var(--nds-muted); padding-bottom: 12px; }
 .nds-theme .incident-room .headline-facts { font-size: 12px; }
-.nds-theme .incident-room .record-result { padding: 10px 0; font-size: 14px; }
+.nds-theme .incident-room .record-result { padding: 12px 0; font-size: 14px; }
 .nds-theme .incident-room .headline-next { padding-bottom: 12px; font-size: 13px; }
-.nds-theme .incident-room .headline-next.needs-decision { margin: 0 0 12px; padding: 10px 14px; }
+.nds-theme .incident-room .headline-next.needs-decision { margin: 0 0 12px; padding: 12px 16px; }
 
 /* ── 두 작업 영역 */
 .nds-theme .incident-room .room-pane { border-right-color: var(--nds-border); }
@@ -34,15 +34,15 @@
 .nds-theme .incident-room .chat-feed > .disclosure { border-top: 0; padding: 0 4px; }
 .nds-theme .incident-room .disclosure > summary { font-size: 13px; color: var(--nds-accent); min-height: 36px; }
 .nds-theme .incident-room .chat-intro p { font-size: 13px; }
-.nds-theme .incident-room .chat-event { padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border-color: var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .chat-event { padding: 12px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border-color: var(--nds-border); font-size: 13px; }
 .nds-theme .incident-room .chat-event summary { font-size: 13px; }
 .nds-theme .incident-room .chat-event time { font: 12px var(--nds-mono); }
 .nds-theme .incident-room .chat-status { font-size: 12px; }
 
 /* ── 단계 카드 */
 .nds-theme .incident-room .step-card {
-  grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 10px;
-  padding: 14px 16px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card);
+  grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 8px;
+  padding: 16px 16px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card);
   background: var(--nds-surface); box-shadow: var(--nds-shadow); scroll-margin: 12px;
 }
 .nds-theme .incident-room .step-card > * { grid-column: 1 / -1; min-width: 0; }
@@ -65,32 +65,32 @@
 .nds-theme .incident-room .status-planned > .step-head::before, .nds-theme .incident-room .status-skipped > .step-head::before { background: transparent; border: 1.5px dashed var(--nds-strong-border); }
 @keyframes room-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--nds-accent) 45%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
 .nds-theme .incident-room .step-kind { font-size: 12px; font-weight: 600; padding: 2px 8px; border: 0; border-radius: var(--nds-radius-small); background: var(--nds-subtle); color: var(--nds-muted); }
-.nds-theme .incident-room .step-head h3 { font-size: 15px; font-weight: 600; line-height: 1.4; }
+.nds-theme .incident-room .step-head h3 { font-size: 14px; font-weight: 600; line-height: 1.4; }
 .nds-theme .incident-room .step-time { font: 12px var(--nds-mono); color: var(--nds-muted); }
 .nds-theme .incident-room .step-summary { font-size: 14px; line-height: 1.65; color: var(--nds-text); }
-.nds-theme .incident-room .step-lead { font-size: 15px; line-height: 1.65; }
-.nds-theme .incident-room .step-body { gap: 10px; }
+.nds-theme .incident-room .step-lead { font-size: 14px; line-height: 1.65; }
+.nds-theme .incident-room .step-body { gap: 8px; }
 .nds-theme .incident-room .step-body h4 { font-size: 13px; color: var(--nds-muted); font-weight: 600; margin-top: 4px; }
 .nds-theme .incident-room .step-kv { gap: 6px 16px; }
 .nds-theme .incident-room .kv dt { color: var(--nds-muted); }
 /* 펼치기·원문 보기: 카드마다 반복되므로 눈에 덜 띄는 보조 버튼으로 낮춘다. */
-.nds-theme .incident-room .step-actions .btn.sm { min-height: 32px; padding: 4px 10px; font-size: 12px; font-weight: 600; border-color: transparent; background: transparent; color: var(--nds-muted); }
+.nds-theme .incident-room .step-actions .btn.sm { min-height: 36px; padding: 4px 12px; font-size: 12px; font-weight: 600; border-color: transparent; background: transparent; color: var(--nds-muted); }
 .nds-theme .incident-room .step-actions .btn.sm:hover:not(:disabled) { background: var(--nds-subtle); color: var(--nds-text); }
 
 /* 근거·판단·역할 목록 */
 .nds-theme .incident-room .evidence-rows { gap: 8px; }
-.nds-theme .incident-room .evidence-rows > li { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); gap: 4px; }
+.nds-theme .incident-room .evidence-rows > li { padding: 12px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); gap: 4px; }
 .nds-theme .incident-room .evidence-rows > li.failed { border-left-width: 1px; border-color: color-mix(in srgb, var(--nds-danger) 40%, var(--nds-surface)); background: var(--nds-danger-soft); }
 .nds-theme .incident-room .evidence-row-head { gap: 8px; }
 .nds-theme .incident-room .evidence-row-head > b { font-weight: 600; }
 .nds-theme .incident-room .evidence-row-head > span:not(.badge) { font: 12px var(--nds-mono); color: var(--nds-muted); overflow-wrap: anywhere; min-width: 0; }
 .nds-theme .incident-room .evidence-rows .link-btn { justify-self: start; font-size: 13px; }
 .nds-theme .incident-room .decision-steps { gap: 8px; }
-.nds-theme .incident-room .decision-steps > li, .nds-theme .incident-room .role-list > li { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .decision-steps > li, .nds-theme .incident-room .role-list > li { padding: 12px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
 .nds-theme .incident-room .role-list > li > span { font-size: 12px; color: var(--nds-muted); }
 
 /* 실행 내용과 원문 */
-.nds-theme .incident-room .execution-stream { margin: 0; padding: 12px 14px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .execution-stream { margin: 0; padding: 12px 16px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); background: var(--nds-canvas); }
 .nds-theme .incident-room .execution-head > b, .nds-theme .incident-room .execution-head > strong { font-size: 13px; font-weight: 600; }
 .nds-theme .incident-room .execution-stage { font-size: 14px; color: var(--nds-text); }
 .nds-theme .incident-room .execution-records { font-size: 13px; }
@@ -102,10 +102,10 @@
 
 /* 대화 말풍선 */
 .nds-theme .incident-room .step-thread { gap: 8px; border-top: 1px solid var(--nds-border); padding-top: 12px; }
-.nds-theme .incident-room .operator-bubble { max-width: min(92%, 560px); padding: 10px 14px; border-radius: 16px 16px 4px 16px; background: var(--nds-accent-soft); color: var(--nds-text); font-size: 14px; }
+.nds-theme .incident-room .operator-bubble { max-width: min(92%, 560px); padding: 12px 16px; border-radius: 16px 16px 6px 16px; background: var(--nds-accent-soft); color: var(--nds-text); font-size: 14px; }
 .nds-theme .incident-room .operator-bubble small, .nds-theme .incident-room .ack-bubble small { font-size: 12px; color: var(--nds-muted); opacity: 1; }
 .nds-theme .incident-room .operator-bubble p, .nds-theme .incident-room .ack-bubble p { font-size: 14px; line-height: 1.65; margin: 4px 0 0; }
-.nds-theme .incident-room .ack-bubble { max-width: min(92%, 560px); padding: 10px 14px; border-radius: 16px 16px 16px 4px; background: var(--nds-canvas); border: 1px solid var(--nds-border); font-size: 14px; }
+.nds-theme .incident-room .ack-bubble { max-width: min(92%, 560px); padding: 12px 16px; border-radius: 16px 16px 16px 6px; background: var(--nds-canvas); border: 1px solid var(--nds-border); font-size: 14px; }
 .nds-theme .incident-room .chat-feed > .ack-bubble { background: var(--nds-surface); }
 .nds-theme .incident-room .ack-bubble .badge { margin-top: 8px; }
 .nds-theme .incident-room .steer-state { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--nds-accent); }
@@ -115,18 +115,18 @@
 .nds-theme .incident-room .step-chat { gap: 8px; border-top: 1px solid var(--nds-border); padding-top: 12px; }
 .nds-theme .incident-room .step-chat-target, .nds-theme .incident-room .step-chat-closed { font-size: 13px; color: var(--nds-muted); }
 .nds-theme .incident-room .step-chat-row { gap: 8px; }
-.nds-theme .incident-room .step-chat textarea { padding: 10px 12px; font-size: 14px; line-height: 1.5; min-height: 44px; background: var(--nds-surface); }
-.nds-theme .incident-room .step-chat .btn { min-height: 44px; padding: 8px 14px; }
+.nds-theme .incident-room .step-chat textarea { padding: 12px 12px; font-size: 14px; line-height: 1.5; min-height: 44px; background: var(--nds-surface); }
+.nds-theme .incident-room .step-chat .btn { min-height: 44px; padding: 8px 16px; }
 
 /* ── 결정 카드: 승인·인계·종료 */
 .nds-theme .incident-room .decision-card { margin: 0; padding: 0 16px 16px; gap: 12px; border-radius: var(--nds-radius-card); border: 1px solid color-mix(in srgb, var(--nds-warning) 45%, var(--nds-surface)); background: var(--nds-surface); box-shadow: var(--nds-shadow); font-size: 14px; overflow: hidden; }
-.nds-theme .incident-room .decision-card > header { margin: 0 -16px; padding: 10px 16px; background: var(--nds-warning-soft); border-bottom: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); }
-.nds-theme .incident-room .decision-card > header > b, .nds-theme .incident-room .decision-card > header > strong { font-size: 15px; font-weight: 600; }
+.nds-theme .incident-room .decision-card > header { margin: 0 -16px; padding: 12px 16px; background: var(--nds-warning-soft); border-bottom: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); }
+.nds-theme .incident-room .decision-card > header > b, .nds-theme .incident-room .decision-card > header > strong { font-size: 14px; font-weight: 600; }
 .nds-theme .incident-room .decision-card > :not(header):first-child { margin-top: 16px; }
 .nds-theme .incident-room .decision-card .kv { grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 14px; }
 .nds-theme .incident-room .handoff-card { background: var(--nds-surface); padding: 0 16px 16px; gap: 12px; }
 .nds-theme .incident-room .handoff-card > .btn.primary { min-height: 44px; min-width: 140px; }
-.nds-theme .incident-room .handoff-lead { font-size: 15px; line-height: 1.65; }
+.nds-theme .incident-room .handoff-lead { font-size: 14px; line-height: 1.65; }
 .nds-theme .incident-room .next-steps { font-size: 14px; gap: 4px; }
 .nds-theme .incident-room .decision-table { gap: 6px 16px; }
 .nds-theme .incident-room .decision-table dt { font-weight: 400; color: var(--nds-muted); }
@@ -134,25 +134,25 @@
 .nds-theme .incident-room .close-card > header, .nds-theme .incident-room .closed-card > header { background: var(--nds-subtle); border-bottom-color: var(--nds-border); }
 .nds-theme .incident-room .close-effects { font-size: 13px; color: var(--nds-muted); }
 .nds-theme .incident-room .close-reason { font-size: 13px; }
-.nds-theme .incident-room .close-reason textarea { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); padding: 10px 12px; font-size: 14px; }
-.nds-theme .incident-room .confirm-gate { gap: 12px; padding-top: 14px; border-top-color: var(--nds-border); }
-.nds-theme .incident-room .confirm-gate strong { font-size: 15px; font-weight: 600; }
+.nds-theme .incident-room .close-reason textarea { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); padding: 12px 12px; font-size: 14px; }
+.nds-theme .incident-room .confirm-gate { gap: 12px; padding-top: 16px; border-top-color: var(--nds-border); }
+.nds-theme .incident-room .confirm-gate strong { font-size: 14px; font-weight: 600; }
 .nds-theme .incident-room .confirm-gate .btn { min-height: 44px; font-size: 14px; }
 
 /* ── 운영자 지시 카드 */
-.nds-theme .incident-room .command-card { padding: 16px; gap: 14px; border-radius: var(--nds-radius-card); border-color: var(--nds-border); background: var(--nds-surface); box-shadow: var(--nds-shadow); font-size: 14px; }
+.nds-theme .incident-room .command-card { padding: 16px; gap: 12px; border-radius: var(--nds-radius-card); border-color: var(--nds-border); background: var(--nds-surface); box-shadow: var(--nds-shadow); font-size: 14px; }
 .nds-theme .incident-room .command-card.status-succeeded { border-color: color-mix(in srgb, var(--nds-success) 45%, var(--nds-surface)); }
 .nds-theme .incident-room .command-card.status-failed, .nds-theme .incident-room .command-card.status-rejected { border-color: color-mix(in srgb, var(--nds-danger) 45%, var(--nds-surface)); }
 .nds-theme .incident-room .command-card .eyebrow { font: 12px var(--nds-mono); letter-spacing: 0; color: var(--nds-muted); }
-.nds-theme .incident-room .command-instruction { font-size: 16px; font-weight: 600; line-height: 1.5; padding-bottom: 14px; border-bottom-color: var(--nds-border); }
+.nds-theme .incident-room .command-instruction { font-size: 16px; font-weight: 600; line-height: 1.5; padding-bottom: 16px; border-bottom-color: var(--nds-border); }
 .nds-theme .incident-room .command-card h4 { font-size: 13px; font-weight: 600; color: var(--nds-muted); }
 .nds-theme .incident-room .command-card .operations { padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: op; }
-.nds-theme .incident-room .command-card .operations > li { counter-increment: op; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-canvas); }
-.nds-theme .incident-room .command-card .operations > li::before { content: counter(op, decimal-leading-zero); grid-row: 1 / span 4; font: 12px/1.9 var(--nds-mono); color: var(--nds-muted); }
+.nds-theme .incident-room .command-card .operations > li { counter-increment: op; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; margin: 0; padding: 12px 12px; border-radius: var(--nds-radius-control); background: var(--nds-canvas); }
+.nds-theme .incident-room .command-card .operations > li::before { content: counter(op, decimal-leading-zero); grid-row: 1 / span 4; font: 12px/calc(var(--nds-type-small-size) * var(--nds-type-small-line)) var(--nds-mono); color: var(--nds-muted); }
 .nds-theme .incident-room .command-card .operations > li > * { grid-column: 2; min-width: 0; }
 .nds-theme .incident-room .command-card .operations code { color: var(--nds-muted); overflow-wrap: anywhere; }
-.nds-theme .incident-room .dry-run { padding: 10px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); font-size: 13px; }
-.nds-theme .incident-room .side-effects { gap: 10px; padding: 14px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
+.nds-theme .incident-room .dry-run { padding: 12px 12px; border-radius: var(--nds-radius-control); border-color: var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .side-effects { gap: 8px; padding: 16px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 25%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
 .nds-theme .incident-room .side-effects h4 { color: var(--nds-warning); }
 .nds-theme .incident-room .side-effects .kv { grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 13px; }
 .nds-theme .incident-room .side-effects .notice { background: var(--nds-surface); border: 1px solid color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); font-size: 13px; }
@@ -163,33 +163,33 @@
 /* ── 하단 입력 */
 .nds-theme .incident-room .composer { padding: 12px 16px; gap: 8px; background: var(--nds-surface); border-top-color: var(--nds-border); }
 .nds-theme .incident-room .composer form { gap: 8px; }
-.nds-theme .incident-room .composer textarea { min-height: 52px; padding: 10px 12px; font-size: 14px; line-height: 1.5; }
+.nds-theme .incident-room .composer textarea { min-height: var(--nds-control-height); padding: 10px var(--nds-control-padding); font-size: 14px; line-height: 1.5; }
 .nds-theme .incident-room .composer form .btn { min-height: 44px; padding: 8px 16px; }
 .nds-theme .incident-room .composer > small { font-size: 12px; color: var(--nds-muted); }
 .nds-theme .incident-room .composer-notice { font-size: 13px; color: var(--nds-success); }
 .nds-theme .incident-room .control-status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .nds-theme .incident-room .control-status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--nds-accent); }
-.nds-theme .incident-room .ctrl .btn.sm { min-height: 32px; padding: 4px 12px; font-size: 12px; }
+.nds-theme .incident-room .ctrl .btn.sm { min-height: 36px; padding: 4px 12px; font-size: 12px; }
 
 /* ── 원문 상세 패널 */
 .nds-theme .incident-room .detail-panel { background: var(--nds-surface); border-left-color: var(--nds-border); }
 .nds-theme .incident-room .detail-head { padding: 12px 16px; align-items: center; }
 .nds-theme .incident-room .detail-head .eyebrow { font-size: 12px; letter-spacing: 0; font-weight: 400; color: var(--nds-muted); margin-bottom: 2px; }
 .nds-theme .incident-room .detail-head h3 { font-size: 16px; font-weight: 600; }
-.nds-theme .incident-room .detail-scroll { padding: 16px; gap: 14px; }
+.nds-theme .incident-room .detail-scroll { padding: 16px; gap: 12px; }
 .nds-theme .incident-room .detail-scroll h4 { font-size: 13px; font-weight: 600; color: var(--nds-muted); }
 .nds-theme .incident-room .detail-scroll .kv { gap: 6px 16px; }
 .nds-theme .incident-room .detail-scroll .raw-text { font-size: 12px; padding: 12px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-subtle); }
-.nds-theme .incident-room .raw-item { border-top: 1px solid var(--nds-border); padding-top: 10px; margin-top: 10px; }
+.nds-theme .incident-room .raw-item { border-top: 1px solid var(--nds-border); padding-top: 12px; margin-top: 12px; }
 .nds-theme .incident-room .raw-ref { font-size: 12px; color: var(--nds-muted); }
 .nds-theme .incident-room .raw-ref code, .nds-theme .incident-room .raw-ref time { font: 12px var(--nds-mono); }
 
 /* ── AI 분석 흐름 노드 */
-.nds-theme .flow-canvas .flow-step { border-radius: var(--nds-radius-control); box-shadow: 0 2px 6px #0000002e; }
+.nds-theme .flow-canvas .flow-step { border-radius: var(--nds-radius-control); box-shadow: var(--nds-shadow); }
 .nds-theme .flow-canvas .flow-step > button { border-radius: var(--nds-radius-control); }
 .nds-theme .flow-canvas .flow-step strong { font-weight: 600; }
-.nds-theme .flow-canvas .flow-state { padding: 0 6px; border-radius: var(--nds-radius-small); background: #11181c; }
-.nds-theme .flow-canvas .flow-step.selected { box-shadow: 0 0 0 3px #b9c8da40; outline: 0; }
+.nds-theme .flow-canvas .flow-state { padding: 0 6px; border-radius: var(--nds-radius-small); background: var(--diagram-bg); }
+.nds-theme .flow-canvas .flow-step.selected { box-shadow: 0 0 0 3px var(--nds-accent-soft); outline: 0; }
 .nds-theme .graph-toolbar button { border-radius: var(--nds-radius-small); }
 
 @media (max-width: 1100px) {
@@ -202,9 +202,9 @@
   /* 좁은 화면에서는 보조 버튼을 카드 아래로 내려 제목이 잘리지 않게 한다. */
   .nds-theme .incident-room .step-card > .step-head { grid-column: 1 / -1; }
   .nds-theme .incident-room .step-card > .step-actions { grid-column: 1 / -1; grid-row: auto; justify-content: flex-end; }
-  .nds-theme .incident-room .headline h2 { font-size: 17px; }
+  .nds-theme .incident-room .headline h2 { font-size: 18px; }
   .nds-theme .incident-room .decision-card { padding: 0 12px 12px; }
-  .nds-theme .incident-room .decision-card > header { margin: 0 -12px; padding: 10px 12px; }
+  .nds-theme .incident-room .decision-card > header { margin: 0 -12px; padding: 12px 12px; }
   .nds-theme .incident-room .command-card { padding: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -213,11 +213,11 @@
 }
 
 /* ── P20 설명 요소: 역할별 모델, 모델 선택 이유, 근거 인용, 반대 근거, 검증 결과, 승격 사유, 참고 문서, AI 사용 요약 */
-.nds-theme .incident-room .headline-usage { display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 0; padding: 10px 0 12px; border-top: 1px solid var(--nds-border); font-size: 13px; }
+.nds-theme .incident-room .headline-usage { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0; padding: 12px 0 12px; border-top: 1px solid var(--nds-border); font-size: 13px; }
 .nds-theme .incident-room .headline-usage > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .nds-theme .incident-room .headline-usage dt { color: var(--nds-muted); white-space: nowrap; }
 .nds-theme .incident-room .headline-usage dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
-.nds-theme .incident-room .usage-models { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; margin-left: 10px; font-weight: 400; color: var(--nds-muted); }
+.nds-theme .incident-room .usage-models { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; margin-left: 12px; font-weight: 400; color: var(--nds-muted); }
 
 .nds-theme .incident-room .role-models { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .nds-theme .incident-room .role-models > li { display: grid; grid-template-columns: minmax(96px, 1.1fr) minmax(0, 1.2fr) auto auto; align-items: center; gap: 4px 12px; padding: 8px 12px; border-radius: var(--nds-radius-control); background: var(--nds-canvas); font-size: 13px; }
@@ -230,7 +230,7 @@
 .nds-theme .incident-room .model-choice > p > b { margin-right: 6px; font-weight: 600; color: var(--nds-muted); }
 .nds-theme .incident-room .model-choice > p > .mono { color: var(--nds-accent); font-weight: 600; }
 .nds-theme .incident-room .model-candidates { width: 100%; border-collapse: collapse; font-size: 13px; }
-.nds-theme .incident-room .model-candidates th, .nds-theme .incident-room .model-candidates td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--nds-border); font-weight: 400; }
+.nds-theme .incident-room .model-candidates th, .nds-theme .incident-room .model-candidates td { padding: 8px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--nds-border); font-weight: 400; }
 .nds-theme .incident-room .model-candidates thead th { font-size: 12px; color: var(--nds-muted); font-weight: 600; white-space: nowrap; }
 .nds-theme .incident-room .model-candidates tbody th { white-space: nowrap; }
 .nds-theme .incident-room .model-candidates tbody th .badge { margin-left: 8px; }
@@ -239,39 +239,39 @@
 
 .nds-theme .incident-room .group-progress { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; line-height: 1.6; color: var(--nds-text); }
 
-.nds-theme .incident-room .escalation-note { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 30%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
+.nds-theme .incident-room .escalation-note { display: grid; gap: 4px; padding: 12px 12px; border-radius: var(--nds-radius-control); border: 1px solid color-mix(in srgb, var(--nds-warning) 30%, var(--nds-surface)); background: var(--nds-warning-soft); font-size: 14px; }
 .nds-theme .incident-room .escalation-note > p > b { margin-right: 8px; color: var(--nds-warning); font-weight: 600; }
 .nds-theme .incident-room .escalation-path { font-size: 12px; color: var(--nds-muted); }
 
 .nds-theme .incident-room .agent-basis { display: grid; gap: 8px; padding-top: 4px; }
 .nds-theme .incident-room .cause-list, .nds-theme .incident-room .verdict-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; counter-reset: cause; }
-.nds-theme .incident-room .cause-list > li { counter-increment: cause; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; padding: 10px 12px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); }
-.nds-theme .incident-room .cause-list > li::before { content: '후보 ' counter(cause); grid-row: 1 / span 2; font-size: 12px; font-weight: 600; color: var(--nds-muted); white-space: nowrap; line-height: 1.9; }
+.nds-theme .incident-room .cause-list > li { counter-increment: cause; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 12px 12px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); }
+.nds-theme .incident-room .cause-list > li::before { content: '후보 ' counter(cause); grid-row: 1 / span 2; font-size: 12px; font-weight: 600; color: var(--nds-muted); white-space: nowrap; line-height: calc(var(--nds-type-small-size) * var(--nds-type-small-line)); }
 .nds-theme .incident-room .cause-list > li > p { grid-column: 2; font-size: 14px; line-height: 1.6; }
-.nds-theme .incident-room .cause-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px !important; color: var(--nds-muted); }
+.nds-theme .incident-room .cause-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px !important; color: var(--nds-muted); }
 .nds-theme .incident-room .cause-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.nds-theme .incident-room .cause-refs code, .nds-theme .incident-room .quote-meta code, .nds-theme .incident-room .agent-basis .notice code { padding: 1px 6px; border-radius: var(--nds-radius-small); background: var(--nds-subtle); font-size: 11px; }
-.nds-theme .incident-room .basis-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .cause-refs code, .nds-theme .incident-room .quote-meta code, .nds-theme .incident-room .agent-basis .notice code { padding: 2px 6px; border-radius: var(--nds-radius-small); background: var(--nds-subtle); font-size: 12px; }
+.nds-theme .incident-room .basis-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 14px; }
 .nds-theme .incident-room .basis-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.nds-theme .incident-room .quote-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.nds-theme .incident-room .quote-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
 .nds-theme .incident-room .quote-list > li { display: grid; gap: 4px; }
-.nds-theme .incident-room .quote-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--nds-muted); }
+.nds-theme .incident-room .quote-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; color: var(--nds-muted); }
 .nds-theme .incident-room .quote-meta > b { color: var(--nds-text); font-weight: 600; }
 .nds-theme .incident-room .quote-list > li.unknown .quote-meta > b { color: var(--nds-danger); }
 .nds-theme .incident-room .quote-list .raw-text, .nds-theme .incident-room .counter-list .raw-text, .nds-theme .incident-room .citation-list .raw-text { max-height: 160px; }
 .nds-theme .incident-room .counter-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; line-height: 1.6; }
 .nds-theme .incident-room .citation-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
-.nds-theme .incident-room .citation-list > li > p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .citation-list > li > p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 14px; }
 .nds-theme .incident-room .citation-list a { color: var(--nds-accent); text-decoration: underline; text-underline-offset: 3px; }
 
-.nds-theme .incident-room .verify-result { display: grid; gap: 10px; padding: 12px 14px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-canvas); }
+.nds-theme .incident-room .verify-result { display: grid; gap: 8px; padding: 12px 16px; border-radius: var(--nds-radius-control); border: 1px solid var(--nds-border); background: var(--nds-canvas); }
 .nds-theme .incident-room .verify-result.ok { border-color: color-mix(in srgb, var(--nds-success) 35%, var(--nds-surface)); background: var(--nds-success-soft); }
 .nds-theme .incident-room .verify-result.danger { border-color: color-mix(in srgb, var(--nds-danger) 35%, var(--nds-surface)); background: var(--nds-danger-soft); }
 .nds-theme .incident-room .verify-result.warn { border-color: color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); background: var(--nds-warning-soft); }
-.nds-theme .incident-room .verify-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 14px; }
+.nds-theme .incident-room .verify-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 14px; }
 .nds-theme .incident-room .verify-head > b { font-weight: 600; }
 .nds-theme .incident-room .verify-head > span:not(.badge) { color: var(--nds-muted); font-size: 13px; }
-.nds-theme .incident-room .verdict-list > li { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border: 1px solid var(--nds-border); font-size: 14px; }
+.nds-theme .incident-room .verdict-list > li { display: grid; gap: 4px; padding: 12px 12px; border-radius: var(--nds-radius-control); background: var(--nds-surface); border: 1px solid var(--nds-border); font-size: 14px; }
 .nds-theme .incident-room .verdict-list > li > p:first-child { display: flex; align-items: center; gap: 8px; }
 .nds-theme .incident-room .verdict-list > li > p:first-child > b { font-weight: 600; }
 @media (max-width: 480px) {

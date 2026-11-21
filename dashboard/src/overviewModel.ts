@@ -42,7 +42,7 @@ export function incidentFor(o: Overview, node: Pick<TopoNode, 'id' | 'namespace'
 export const resourceHealth = (n: TopoNode, w?: Workload) => {
   if (n.kind === 'ContractEndpoint') return '계약 경로 미배포';
   if (w) return !observed(w.ready) || !observed(w.desired) ? '미관측' : w.desired === 0 ? '중지됨' : w.ready >= w.desired ? '준비됨' : '준비 부족';
-  return ({ ready: '준비됨', degraded: '일부 비정상', down: '중단', completed: '완료', no_endpoints: '엔드포인트 없음', unknown: '미관측', observed_only: '흐름만 관측' } as Record<string, string>)[n.status] ?? '미관측';
+  return ({ ready: '준비됨', degraded: '일부 비정상', down: '중단', completed: '완료', no_endpoints: '준비된 연결 대상 없음', scaled_down: '목표 Pod 0개', external_name: '외부 DNS 연결', manual: '연결 대상 수동 관리', unknown: '미관측', observed_only: '흐름만 관측' } as Record<string, string>)[n.status] ?? '미관측';
 };
 /** 지도·환경 요약의 선택지는 활성 환경(dev, prd)만이다. 서버가 아직 퇴역 stg를 보내더라도(배포 순서 차이) 새 관제 대상으로 보이지 않는다.
  *  과거 stg 사건·검토 기록은 목록 필터에서만 조회한다. */

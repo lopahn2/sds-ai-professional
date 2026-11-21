@@ -77,7 +77,7 @@ test('엔드포인트 0인 단독 Service는 관측된 경고이며 시스템 �
   o.topology!.nodes.push(n('kube-system', 'dns-check', { kind: 'Service', id: 'kube-system/Service/dns-check', role: 'system', status: 'no_endpoints', endpoints_ready: 0 }));
   const m = overviewMap(o); const s = m.nodes.find(x => x.node.name === 'dns-check');
   assert.ok(s, '숨겨짐'); assert.equal(s!.alert, 'warn');
-  assert.equal(resourceHealth(s!.node), '엔드포인트 없음');
+  assert.equal(resourceHealth(s!.node), '준비된 연결 대상 없음');
 });
 
 test('연결선 문구는 이웃한 열·행 사이 빈 칸에 놓일 때만 보이고, 다른 자원을 건너뛰거나 묶음을 넘거나 양방향이면 숨긴다', () => {

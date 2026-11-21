@@ -1,3 +1,14 @@
+/* P21 naria 2차: 옛 변수는 naria 테마 안에서 naria 토큰으로 풀린다(값은 light·modern과 같고, 글꼴은 naria 글꼴). */
+.nds-theme {
+  --bg: var(--nds-surface); --surface: var(--nds-canvas); --surface-2: var(--nds-subtle);
+  --line: var(--nds-border); --line-strong: var(--nds-border);
+  --text: var(--nds-text); --text-2: var(--nds-muted); --text-3: var(--nds-muted);
+  --accent: var(--nds-accent); --accent-weak: var(--nds-accent-soft); --focus: var(--nds-focus);
+  --ok: var(--nds-success); --ok-bg: var(--nds-success-soft); --warn: var(--nds-warning); --warn-bg: var(--nds-warning-soft);
+  --danger: var(--nds-danger); --danger-bg: var(--nds-danger-soft);
+  --radius: var(--nds-radius-control); --radius-lg: var(--nds-radius-card);
+  --font: var(--nds-font); --mono: var(--nds-mono);
+}
 /* R1 · naria 디자인 시스템 연결.
    기존 화면 스타일(styles.css 등)의 변수를 디자인 시스템 토큰에 잇고, 형태(곡률·버튼·배지)를 맞춘다.
    색·서체 값은 여기서 새로 정하지 않는다. 다이어그램의 어두운 작업면만 디자인 시스템 다크 토큰 값을 그대로 옮겨 쓴다. */
@@ -13,7 +24,7 @@
   --radius: var(--nds-radius-control); --radius-lg: var(--nds-radius-card);
   --font: var(--nds-font); --mono: var(--nds-mono);
 }
-.nds-theme h1 { letter-spacing: -0.02em; font-weight: 600; }
+.nds-theme h1 { letter-spacing: var(--nds-type-heading-tracking); font-weight: 600; }
 .nds-theme h2, .nds-theme h3, .nds-theme h4 { font-weight: 600; }
 /* 디자인 시스템은 보라색을 쓰지 않는다: 경로 변경은 청록으로 구분한다. */
 .nds-theme .reroute-text { color: #086d72; }
@@ -23,11 +34,10 @@
 .nds-theme .btn:hover:not(:disabled) { background: var(--nds-subtle); }
 .nds-theme .btn:active:not(:disabled) { transform: scale(.98); }
 .nds-theme .btn.primary { background: var(--nds-primary); border-color: var(--nds-primary); color: var(--nds-on-primary); }
-.nds-theme .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--nds-primary) 86%, #000); }
 .nds-theme .btn.danger { color: var(--nds-danger); border-color: color-mix(in srgb, var(--nds-danger) 35%, var(--nds-surface)); }
 .nds-theme .input, .nds-theme .select { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); background: var(--nds-surface); }
 .nds-theme .composer textarea, .nds-theme .step-chat textarea, .nds-theme .detail-input { border-radius: var(--nds-radius-control); border-color: var(--nds-strong-border); }
-.nds-theme .badge { border-radius: var(--nds-radius-small); font-weight: 600; padding: 3px 8px; }
+.nds-theme .badge { border-radius: var(--nds-radius-small); font-weight: 600; padding: 4px 8px; }
 .nds-theme .card { border-radius: var(--nds-radius-card); box-shadow: var(--nds-shadow); }
 .nds-theme .notice, .nds-theme .error { border-radius: var(--nds-radius-control); }
 .nds-theme .link-btn { color: var(--nds-accent); }
@@ -35,14 +45,14 @@
 
 /* 틀: 메뉴와 상단 바 */
 .nds-theme .nav { background: var(--nds-surface); }
-.nds-theme .brand { font-weight: 600; letter-spacing: -0.02em; }
+.nds-theme .brand { font-weight: 600; letter-spacing: var(--nds-type-body-tracking); }
 .nds-theme .brand i { background: var(--nds-text); color: var(--nds-surface); border-radius: var(--nds-radius-control); }
 .nds-theme .brand i svg { width: 16px; height: 16px; }
-.nds-theme .nav > a:not(.brand) { border-radius: var(--nds-radius-control); min-height: 40px; }
+.nds-theme .nav > a:not(.brand) { border-radius: var(--nds-radius-control); min-height: 44px; }
 .nds-theme .nav > a.active { font-weight: 600; }
 .nds-theme .nav-icon { display: grid; place-items: center; font-size: 0; }
 .nds-theme .nav-icon svg { width: 16px; height: 16px; }
-.nds-theme .count { border-radius: var(--nds-radius-small); font-weight: 600; padding: 0 5px; }
+.nds-theme .count { border-radius: var(--nds-radius-small); font-weight: 600; padding: 0 6px; }
 .nds-theme .foot { line-height: 1.5; }
 .nds-theme .foot small { display: block; margin-top: 2px; }
 .nds-theme .foot .nds-status, .nds-theme .bar-account .nds-status { font-size: 12px; color: var(--nds-muted); }
@@ -65,8 +75,8 @@
 .nds-theme .ops .incident-counts > div { padding: 0 16px; border-left: 1px solid var(--line); min-width: 84px; }
 .nds-theme .ops .incident-counts > div:first-child { border-left: 0; padding-left: 0; }
 .nds-theme .ops .incident-counts dt { font-size: 12px; color: var(--nds-muted); white-space: nowrap; }
-.nds-theme .ops .incident-counts dd { margin: 2px 0 0; font-size: 20px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
-.nds-theme .ops .incident-counts dd.is-unknown { font-size: 14px; font-weight: 400; color: var(--nds-muted); line-height: 24px; }
+.nds-theme .ops .incident-counts dd { margin: 2px 0 0; font-size: 18px; line-height: 1.18; font-weight: 600; font-variant-numeric: tabular-nums; }
+.nds-theme .ops .incident-counts dd.is-unknown { font-size: 14px; font-weight: 400; color: var(--nds-muted); line-height: var(--nds-type-small-line); }
 .nds-theme .ops .incident-counts .is-alert dd { color: var(--nds-danger); }
 .nds-theme .ops .incident-counts .is-warn dd { color: var(--nds-warning); }
 .nds-theme .ops .priority-incidents { display: flex; gap: 8px; margin: 0; padding: 0; border: 0; list-style: none; min-width: 0; overflow-x: auto; scrollbar-width: thin; grid-column: auto; }
@@ -105,35 +115,161 @@
 .nds-theme .attention-strip ul { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; }
 .nds-theme .attention-strip a { color: var(--nds-text); text-decoration: underline; text-underline-offset: 3px; font-size: 13px; }
 .nds-theme .history-results { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.nds-theme .history-results > span { font-size: 12px; color: var(--nds-muted); margin-left: 10px; }
-.nds-theme .history-results button { border-radius: var(--nds-radius-pill); border: 1px solid var(--line-strong); background: var(--nds-surface); padding: 5px 14px; min-height: 36px; font-size: 13px; }
+.nds-theme .history-results > span { font-size: 12px; color: var(--nds-muted); margin-left: 12px; }
+.nds-theme .history-results button { border-radius: var(--nds-radius-pill); border: 1px solid var(--line-strong); background: var(--nds-surface); padding: 6px 16px; min-height: 36px; font-size: 13px; }
 .nds-theme .history-results button[aria-pressed="true"] { background: var(--nds-primary); border-color: var(--nds-primary); color: var(--nds-on-primary); font-weight: 600; }
 .nds-theme .incident-next { font-size: 12px; font-weight: 600; color: var(--nds-danger); white-space: nowrap; }
 .nds-theme .incident-row:hover { background: var(--nds-canvas); }
 .nds-theme .row-arrow { color: var(--nds-muted); }
 
 /* 장애 관제실: 지금 할 일 */
-.nds-theme .headline-next.needs-decision { align-items: center; gap: 12px; margin: 6px 0 10px; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); border-radius: var(--nds-radius-control); background: var(--nds-warning-soft); }
+.nds-theme .headline-next.needs-decision { align-items: center; gap: 12px; margin: 6px 0 12px; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--nds-warning) 35%, var(--nds-surface)); border-radius: var(--nds-radius-control); background: var(--nds-warning-soft); }
 .nds-theme .headline-next.needs-decision > p { color: var(--nds-text); flex: 1; min-width: 0; }
 .nds-theme .headline-next.needs-decision > p > b { color: var(--nds-warning); }
 .nds-theme .headline-next.needs-decision > .btn { flex: none; }
 
 /* 다이어그램: 디자인 시스템 다크 토큰 값(#11181c·#20292d·#303b40 …)으로 맞춘 작업면 */
 .nds-theme .topology-canvas, .nds-theme .flow-canvas {
-  --diagram-bg: #11181c; --diagram-group: #182126; --diagram-node: #20292d; --diagram-selected: #2b3a44; --diagram-border: #4a585f;
-  --diagram-text: #f6f8f8; --diagram-muted: #c9d2d6; --diagram-meta: #b6c0c4; --diagram-accent: #b9c8da;
+  --diagram-bg: #11181c; --diagram-group: #20292d; --diagram-node: #303b40; --diagram-selected: color-mix(in srgb, #b9c8da 22%, #303b40); --diagram-border: #707d83;
+  --diagram-text: #f6f8f8; --diagram-muted: #b6c0c4; --diagram-meta: #b6c0c4; --diagram-accent: #b9c8da;
   --diagram-ok: #89dcb0; --diagram-warn: #f3ca68; --diagram-danger: #ff9da6; --diagram-reroute: #80d9cc;
 }
-.nds-theme .topology-canvas .namespace-box { border-color: #303b40; background: #182126cc; border-radius: var(--nds-radius-card); }
+.nds-theme .topology-canvas .namespace-box { border-color: var(--diagram-node); background: var(--diagram-group); border-radius: var(--nds-radius-card); }
 .nds-theme .topology-canvas .resource-button { border-radius: var(--nds-radius-control); }
-.nds-theme .topology-canvas .resource-button:hover { border-color: #8a989f; background: #26313a; }
-.nds-theme .topology-canvas .resource-button.has-incident { background: #33262a; }
-.nds-theme .topology-canvas .legend-line.event { border-color: #80d9cc; }
-.nds-theme .flow-canvas .reroute-text, .nds-theme .graph-toolbar .reroute-text { color: #80d9cc; }
+.nds-theme .topology-canvas .resource-button:hover { border-color: var(--diagram-border); background: var(--diagram-node); }
+.nds-theme .topology-canvas .resource-button.has-incident { background: color-mix(in srgb, var(--diagram-danger) 14%, var(--diagram-node)); }
+.nds-theme .topology-canvas .legend-line.event { border-color: var(--diagram-reroute); }
+.nds-theme .flow-canvas .reroute-text, .nds-theme .graph-toolbar .reroute-text { color: var(--diagram-reroute); }
 
 /* 좁은 화면의 가로 메뉴: 아이콘이 생겨도 짧은 이름이 글자 단위로 꺾이지 않게 한다. */
 .nds-theme .nav-short { white-space: nowrap; }
 @media (max-width: 480px) {
   .nds-theme .nav { gap: 2px; padding: 4px 6px; justify-content: space-between; }
-  .nds-theme .nav > a:not(.brand) { flex-direction: column; gap: 2px; padding: 5px 8px; font-size: 11px; min-width: 0; }
+  .nds-theme .nav > a:not(.brand) { flex-direction: column; gap: 2px; padding: 6px 8px; font-size: 12px; min-width: 0; }
 }
+
+/* P21 · 기존 공용 클래스를 naria 구성요소 규격에 맞춘다(디자인 시스템 문서의 Button·Badge·Input·Card·DataTable·Tabs·Tag·
+   SideNavigation·Alert·Toast 치수와 색). 화면별 스타일보다 뒤에 와서 같은 이름의 예전 값을 덮는다. */
+.nds-theme :focus-visible { outline: 2px solid var(--nds-focus); outline-offset: 3px; }
+.nds-theme h1 { font-size: var(--nds-type-heading-size); line-height: var(--nds-type-heading-line); letter-spacing: -0.025em; font-weight: 600; }
+.nds-theme a:hover { color: var(--nds-accent); }
+.nds-theme .muted, .nds-theme .faint { color: var(--nds-muted); }
+.nds-theme .ok-text { color: var(--nds-success); }
+.nds-theme .warn-text { color: var(--nds-warning); }
+.nds-theme .danger-text { color: var(--nds-danger); }
+.nds-theme .accent-text { color: var(--nds-accent); }
+.nds-theme .dot { width: 8px; height: 8px; background: var(--nds-strong-border); }
+.nds-theme .dot.ok { background: var(--nds-success); }
+.nds-theme .dot.warn { background: var(--nds-warning); }
+.nds-theme .dot.danger { background: var(--nds-danger); }
+.nds-theme .dot.info { background: var(--nds-info); }
+.nds-theme .eyebrow { font-size: 12px; line-height: 1.6; font-weight: 600; letter-spacing: 0; color: var(--nds-muted); }
+
+/* Button: naria sm(36px) outline · primary · danger. 터치에서는 44px. */
+.nds-theme .btn, .nds-theme .btn.sm { gap: 8px; min-height: 36px; padding: 7px 11px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); font-size: 12px; line-height: 1.4; font-weight: 600; }
+.nds-theme .btn:hover:not(:disabled) { background: var(--nds-subtle); border-color: var(--nds-border); }
+.nds-theme .btn.primary { background: var(--nds-primary); border-color: var(--nds-primary); color: var(--nds-on-primary); }
+.nds-theme .btn.primary:hover:not(:disabled) { background: var(--nds-primary); filter: brightness(0.92); }
+.nds-theme .btn.danger { color: var(--nds-danger); border-color: color-mix(in srgb, var(--nds-danger) 35%, var(--nds-surface)); }
+.nds-theme .btn:disabled { opacity: 0.48; }
+.nds-theme .link-btn { color: var(--nds-accent); font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+@media (pointer: coarse) { .nds-theme .btn, .nds-theme .btn.sm { min-height: 44px; } }
+
+/* Badge */
+.nds-theme .badge { gap: 5px; padding: 3px 8px; border-radius: var(--nds-radius-small); background: var(--nds-subtle); color: var(--nds-muted); font-size: 11px; line-height: 1.5; font-weight: 600; }
+.nds-theme .badge.ok { background: var(--nds-success-soft); color: var(--nds-success); }
+.nds-theme .badge.warn { background: var(--nds-warning-soft); color: var(--nds-warning); }
+.nds-theme .badge.danger { background: var(--nds-danger-soft); color: var(--nds-danger); }
+.nds-theme .badge.info { background: var(--nds-info-soft); color: var(--nds-info); }
+
+/* Input · Select: naria Input(16px 글자, 경계 strong-border, control 곡률) */
+.nds-theme .input, .nds-theme .select { min-height: var(--nds-control-height); padding: 11px 13px; border: 1px solid var(--nds-strong-border); border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); font-size: 16px; line-height: 1.4; }
+.nds-theme .select { padding-right: 12px; }
+.nds-theme .input::placeholder { color: var(--nds-placeholder); opacity: 1; }
+
+/* 입력과 같은 줄의 버튼은 naria md(입력과 같은 높이) */
+.nds-theme .list-filters .btn, .nds-theme .list-filters .alert-button { min-height: var(--nds-control-height); padding: 9px var(--nds-control-padding); font-size: 14px; }
+
+/* Card: naria outline card · 머리 22px 22px 0(구분선 없음) · 본문 22px */
+.nds-theme .card { border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card); background: var(--nds-surface); box-shadow: none; }
+.nds-theme .card > header { gap: 16px; padding: 22px 22px 0; border-bottom: 0; }
+.nds-theme .card > header :is(h2, h3) { font-size: 17px; line-height: 1.4; letter-spacing: -0.02em; font-weight: 600; }
+.nds-theme .card > header p { margin-top: 5px; font-size: 13px; color: var(--nds-muted); }
+.nds-theme .card > .body { padding: 22px; }
+
+/* DataTable */
+.nds-theme .table { font-size: 13px; }
+.nds-theme .table th { background: var(--nds-subtle); color: var(--nds-muted); font-size: 12px; font-weight: 600; }
+.nds-theme .table th, .nds-theme .table td { padding: 13px 16px; border-bottom-color: var(--nds-border); }
+
+/* Tabs: naria 밑줄 탭 */
+.nds-theme .room-tabs { gap: 20px; padding: 0 16px; border-bottom: 1px solid var(--nds-border); background: var(--nds-surface); }
+.nds-theme .room-tabs button { flex: none; min-height: 46px; padding: 10px 4px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--nds-muted); font-size: 14px; font-weight: 600; }
+.nds-theme .room-tabs button[aria-pressed="true"] { border-bottom-color: var(--nds-accent); background: none; color: var(--nds-text); }
+
+/* 빠른 필터: naria Tag(선택 = 강조색 연한 바탕 + 강조색 경계) */
+.nds-theme .history-results button, .nds-theme .filter { min-height: 32px; padding: 3px 8px; border: 1px solid var(--nds-border); border-radius: 8px; background: var(--nds-surface); color: var(--nds-text); font-size: 12px; font-weight: 400; }
+.nds-theme .history-results button[aria-pressed="true"], .nds-theme .filter[aria-pressed="true"] { border-color: var(--nds-accent); background: var(--nds-accent-soft); color: var(--nds-accent); font-weight: 600; }
+
+/* 안내·오류: naria Alert */
+.nds-theme .notice, .nds-theme .error { padding: 12px 16px; border: 1px solid var(--nds-border); border-inline-start: 3px solid var(--tone); border-radius: 12px; background: var(--nds-surface); color: var(--nds-text); font-size: 13px; line-height: 1.5; }
+.nds-theme .notice { --tone: var(--nds-warning); }
+.nds-theme .error { --tone: var(--nds-danger); }
+.nds-theme .empty { padding: 32px 16px; color: var(--nds-muted); font-size: 13px; }
+
+/* 원문: naria CodeBlock 글꼴 */
+.nds-theme .raw-text, .nds-theme pre.json { font: 12px/1.7 var(--nds-mono); color: var(--nds-text); }
+
+/* 메뉴와 상단 바: naria SideNavigation 규격 */
+.nds-theme .app { grid-template-columns: 190px minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr); }
+.nds-theme .nav { gap: 4px; padding: 24px 12px 16px; background: var(--nds-surface); border-right: 1px solid var(--nds-border); }
+.nds-theme .brand { gap: 12px; padding: 0 8px 24px; font-size: 16px; }
+.nds-theme .brand small { font-size: 12px; color: var(--nds-muted); }
+.nds-theme .brand i { width: 32px; height: 32px; border-radius: var(--nds-radius-control); }
+.nds-theme .nav-caption { padding: 0 12px 8px; font-size: 12px; letter-spacing: 0; color: var(--nds-muted); }
+.nds-theme .nav > a:not(.brand) { gap: 9px; min-height: 44px; padding: 10px 12px; border-radius: 8px; color: var(--nds-muted); font-size: 13px; }
+.nds-theme .nav > a.active { background: var(--nds-accent-soft); color: var(--nds-accent); font-weight: 600; }
+.nds-theme .nav > a:not(.active):hover { background: var(--nds-subtle); }
+.nds-theme .count { padding: 0 6px; border-radius: var(--nds-radius-small); background: var(--nds-danger-soft); color: var(--nds-danger); font-size: 11px; font-weight: 600; }
+.nds-theme .foot { padding: 16px 12px 0; font-size: 12px; line-height: 1.6; color: var(--nds-muted); }
+.nds-theme .foot small { font-size: 12px; }
+.nds-theme .bar { padding: 0 24px; border-bottom: 1px solid var(--nds-border); background: var(--nds-surface); color: var(--nds-muted); font-size: 12px; }
+.nds-theme .bar-right { gap: 16px; }
+.nds-theme .bar-divider { margin: 0 8px; color: var(--nds-muted); }
+
+/* 알림 메뉴: 버튼 = naria outline sm, 펼침 = naria 떠 있는 표면 */
+.nds-theme .alert-button { gap: 8px; min-height: 36px; height: auto; padding: 7px 11px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); font-size: 12px; font-weight: 600; }
+.nds-theme .alert-button:hover { background: var(--nds-subtle); }
+.nds-theme .alert-button.active { border-color: color-mix(in srgb, var(--nds-danger) 35%, var(--nds-surface)); background: var(--nds-danger-soft); color: var(--nds-danger); }
+.nds-theme .alert-count { min-width: 20px; padding: 2px 6px; border-radius: var(--nds-radius-pill); background: var(--nds-subtle); color: var(--nds-muted); font-size: 11px; font-weight: 600; line-height: 1.5; }
+.nds-theme .alert-button.active .alert-count { background: var(--nds-danger); color: var(--nds-surface); }
+.nds-theme .alert-panel { top: calc(100% + 8px); border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card); background: var(--nds-surface); box-shadow: var(--nds-shadow-overlay); }
+.nds-theme .alert-panel > header { padding: 12px 16px; font-size: 13px; }
+.nds-theme .alert-item { gap: 4px; padding: 12px 16px; }
+.nds-theme .alert-item:hover, .nds-theme .alert-item:focus-visible { background: var(--nds-subtle); }
+.nds-theme .alert-all { padding: 12px 16px; color: var(--nds-accent); font-size: 12px; font-weight: 600; }
+
+/* Toast: naria Toast */
+.nds-theme .toasts { right: 24px; bottom: 24px; gap: 10px; }
+.nds-theme .toast { padding: 14px 12px 14px 16px; border: 1px solid var(--nds-border); border-radius: 13px; background: var(--nds-raised); color: var(--nds-text); font-size: 13px; box-shadow: var(--nds-shadow-overlay); }
+@media (max-width: 1100px) {
+  .nds-theme .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 52px minmax(0, 1fr); }
+  .nds-theme .nav { padding: 4px 12px; border-right: 0; border-bottom: 1px solid var(--nds-border); }
+  .nds-theme .nav > a:not(.brand) { padding: 10px 12px; }
+}
+@media (max-width: 600px) {
+  .nds-theme .toasts { right: 16px; bottom: 16px; }
+  .nds-theme .bar { padding: 0 16px; }
+  .nds-theme .list-filters .select { flex: 1 1 100%; max-width: none; }
+}
+@media (pointer: coarse) {
+  .nds-theme .history-results button, .nds-theme .filter, .nds-theme .alert-button { min-height: 44px; }
+}
+/* P21 naria 2차: 클래스 없이 브라우저 기본 모양으로 남던 컨트롤을 naria Field·Label·Input·Select·Textarea 규격으로 그린다. */
+.nds-theme .accountability-reading form { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 12px; }
+.nds-theme .accountability-reading form label { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--nds-text); }
+.nds-theme .accountability-reading form textarea,
+.nds-theme .source-row select { appearance: none; width: 100%; min-width: 0; min-height: var(--nds-control-height); padding: 11px 13px; border: 1px solid var(--nds-strong-border); border-radius: var(--nds-radius-control); background: var(--nds-surface); color: var(--nds-text); font: inherit; font-size: 16px; font-weight: 400; line-height: 1.4; }
+.nds-theme .accountability-reading form textarea { min-height: 110px; resize: vertical; }
+.nds-theme .source-row select { appearance: auto; width: auto; max-width: 100%; padding-right: 12px; }
+.nds-theme .accountability-reading form textarea:focus, .nds-theme .source-row select:focus { border-color: var(--nds-focus); }

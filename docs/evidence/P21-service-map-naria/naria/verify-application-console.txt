@@ -1,0 +1,8 @@
+summary: {'naria': 5}
+
+--- verified against naria component CSS ---
+naria styles.css:2             padding: 9px var(--nds-control-padding)   [button]  styles.css:173
+naria styles.css:2             padding: 11px 13px   [input,textarea,select]  styles.css:313
+naria styles.css:3             letter-spacing: -0.015em   [.top strong]  18 tracking -0.015em = naria subheading (.nds-text--subheading, --nds-type-subheading-tracking)
+naria styles.css:8             font-size: 13px   [details[data-raw]>summary]  styles.css:304
+naria styles.css:10            font-size: 13px   [#readiness-body]  styles.css:304

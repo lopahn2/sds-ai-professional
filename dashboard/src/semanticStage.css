@@ -1,0 +1,15 @@
+.semantic-stage-title {display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+.semantic-stage-title h2 {min-width:0}
+.semantic-question {color:var(--muted);font-size:.88rem;margin:8px 0}
+.semantic-stage select {min-width:0;max-width:100%}
+.semantic-stage small,.semantic-stage code,.semantic-stage p,.semantic-stage th {overflow-wrap:anywhere}
+.semantic-test-matrix {width:100%;border-collapse:collapse;font-size:14px}
+.semantic-test-matrix caption {text-align:left;font-weight:600;padding:8px 0}
+.semantic-test-matrix th,.semantic-test-matrix td {vertical-align:top;text-align:left;border-bottom:1px solid var(--line);padding:6px}
+.semantic-test-matrix th[scope="row"] {width:60%}
+.semantic-test-matrix small {display:block;color:var(--muted);font-weight:400}
+.question-changes {list-style:none;padding:0;margin:6px 0}
+.question-changes li {display:grid;gap:2px;padding:8px 0;border-bottom:1px solid var(--line)}
+.question-changes .link-btn {justify-self:start}
+.semantic-call h4 small {font-weight:400}
+.current-version-check {border-top:1px solid var(--line);margin-top:12px}

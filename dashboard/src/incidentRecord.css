@@ -1,6 +1,6 @@
 .record-label, .record-times, .record-notice { color: var(--text-2); }
 .record-label { font-weight: 600; margin-right: 8px; }
-.record-result { display: grid; gap: 5px; border-top: 1px solid var(--line); padding-top: 8px; }
+.record-result { display: grid; gap: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
 .record-result p { margin: 0; }
 .record-result strong { margin-right: 6px; }
 .record-times { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; }

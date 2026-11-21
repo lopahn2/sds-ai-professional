@@ -2,52 +2,78 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { loadOpenIncidents } from './liveSnapshot';
 import { subscribeIncidents, type SourceLike } from './liveStream';
 import { request, type Incident } from './api';
-import { diffAlerts, alertText, type AlertEvent } from './feed';
+import { diffAlerts, alertText } from './feed';
+import { loadWaiting, caseHref } from './serviceAtlasModel';
+import { applicationStateKo } from './unified';
 
 export type Accounts = { mode: string; active?: string | null; accounts: { name: string; state: string; blocked_for_s?: number }[]; note?: string };
-type Toast = AlertEvent & { key: number };
-type Ctx = { open: Incident[]; openState: 'loading' | 'ready' | 'error'; accounts: Accounts | null; refresh: () => void; toasts: Toast[]; dismiss: (k: number) => void; notifyState: NotificationPermission | 'unsupported'; askNotify: () => void };
+type ReadState = 'loading' | 'ready' | 'error';
+type Waiting = Awaited<ReturnType<typeof loadWaiting>>;
+type Notice = { href: string; label: string; key: number; at: number };
+type Ctx = { open: Incident[]; openState: ReadState; automatic: Waiting; automaticState: ReadState; waiting: Waiting; waitingState: ReadState; accounts: Accounts | null; refresh: () => void; notices: Notice[]; unread: number; read: () => void };
 const C = createContext<Ctx | null>(null);
 export const useLive = () => { const v = useContext(C); if (!v) throw new Error('LiveProvider missing'); return v; };
 
-/** Single live data source for the whole console: SSE-driven refresh plus a slow poll as a safety net. */
-export function LiveProvider({ children, onOpenIncident }: { children: ReactNode; onOpenIncident: (id: number) => void }) {
-  const [open, setOpen] = useState<Incident[]>([]);
-  const [openState, setOpenState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const loadingOpen = useRef(false);
-  const [accounts, setAccounts] = useState<Accounts | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const prev = useRef<Incident[] | null>(null);
-  const key = useRef(0);
-  const [notifyState, setNotifyState] = useState<NotificationPermission | 'unsupported'>(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission);
-
-  const pushAlerts = useCallback((events: AlertEvent[]) => {
-    for (const a of events) {
-      const k = ++key.current;
-      setToasts(t => [...t.slice(-3), { ...a, key: k }]);
-      window.setTimeout(() => setToasts(t => t.filter(x => x.key !== k)), 12000);
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && a.kind !== 'resolved' && a.kind !== 'closed') {
-        try { const n = new Notification(alertText(a), { body: (a as { title_ko?: string | null }).title_ko || a.title, tag: `incident-${a.id}` }); n.onclick = () => { window.focus(); onOpenIncident(a.id); }; } catch { /* some browsers forbid it */ }
-      }
-    }
-  }, [onOpenIncident]);
-
+export function LiveProvider({children}: {children: ReactNode}) {
+  const [open,setOpen] = useState<Incident[]>([]), [openState,setOpenState] = useState<ReadState>('loading');
+  const [waiting,setWaiting] = useState<Waiting>([]), [waitingState,setWaitingState] = useState<ReadState>('loading');
+  const [automatic,setAutomatic] = useState<Waiting>([]), [automaticState,setAutomaticState] = useState<ReadState>('loading');
+  const [accounts,setAccounts] = useState<Accounts|null>(null);
+  const [notices,setNotices] = useState<Notice[]>([]), [readThrough,setReadThrough] = useState(0);
+  const serial = useRef(0), prev = useRef<Incident[]|null>(null), prevWaiting = useRef<Waiting|null>(null);
+  const busy = useRef({ roots:false, history:false, application:false, automatic:false });
+  const add = useCallback((href: string, label: string) => {
+    const notice = {href,label,key:++serial.current,at:Date.now()};
+    // Root and linked Application snapshots can report the same observed transition seconds apart.
+    setNotices(previous => previous.some(n => n.href===href && n.label===label && notice.at-n.at<10000)
+      ? previous : [notice,...previous].slice(0,40));
+  }, []);
+  const read = useCallback(() => setReadThrough(serial.current), []);
   const refresh = useCallback(() => {
-    request<{ items: Incident[] }>('/incidents?limit=200').then(d => { pushAlerts(diffAlerts(prev.current, d.items)); prev.current = d.items; }).catch(() => undefined);
-    if (!loadingOpen.current) {
-      loadingOpen.current = true;
-      loadOpenIncidents(path => request(path)).then(items => { setOpen(items); setOpenState('ready'); }).catch(() => setOpenState('error')).finally(() => { loadingOpen.current = false; });
+    if (!busy.current.history) {
+      busy.current.history = true;
+      request<{items:Incident[]}>('/incidents?limit=200').then(({items}) => {
+        for (const event of diffAlerts(prev.current,items)) add(`/incidents/${event.id}`,alertText(event));
+        const previous = new Map(prev.current?.map(i => [i.id,i]));
+        for (const item of items) {
+          const before = previous.get(item.id);
+          if (!before) continue;
+          const codeState = (i: Incident) => (i as Incident & {code_action?: {state?: string}}).code_action?.state;
+          const state = codeState(item);
+          if (state && state !== codeState(before) && ['qa_failed','awaiting_user_test','awaiting_prd_approval'].includes(state))
+            add(`/incidents/${item.id}`, `${applicationStateKo(state)} · ${item.workload}`);
+          else if (!state && before.status !== item.status && item.status === 'action_pending')
+            add(`/incidents/${item.id}`, `운영 승인 대기 · ${item.workload}`);
+        }
+        prev.current=items;
+      }).catch(() => undefined).finally(() => {busy.current.history=false;});
+    }
+    if (!busy.current.roots) {
+      busy.current.roots = true;
+      loadOpenIncidents(path => request(path)).then(items => {setOpen(items);setOpenState('ready');}).catch(() => setOpenState('error')).finally(() => {busy.current.roots=false;});
+    }
+    if (!busy.current.automatic) {
+      busy.current.automatic = true;
+      loadWaiting(path => request(path), 'automatic').then(items => {
+        setAutomatic(items);setAutomaticState('ready');
+      }).catch(() => setAutomaticState('error')).finally(() => {busy.current.automatic=false;});
+    }
+    if (!busy.current.application) {
+      busy.current.application = true;
+      loadWaiting(path => request(path)).then(rows => {
+        if (prevWaiting.current) {
+          const before = new Map(prevWaiting.current.map(row=>[row.id,row.state]));
+          for (const row of rows) if (before.get(row.id) !== row.state) add(caseHref(row), `${applicationStateKo(row.state)} · ${row.service}`);
+        }
+        prevWaiting.current=rows; setWaiting(rows); setWaitingState('ready');
+      }).catch(() => setWaitingState('error')).finally(() => {busy.current.application=false;});
     }
     request<Accounts>('/llm/accounts').then(setAccounts).catch(() => undefined);
-  }, [pushAlerts]);
-
-  useEffect(() => { refresh(); const t = window.setInterval(refresh, 5000); return () => window.clearInterval(t); }, [refresh]);
+  }, [add]);
+  useEffect(() => {refresh(); const timer=window.setInterval(refresh,5000);return () => window.clearInterval(timer);}, [refresh]);
   useEffect(() => subscribeIncidents(refresh, {
     createSource: url => new EventSource(url) as unknown as SourceLike,
     setTimeout: (fn, ms) => window.setTimeout(fn, ms), clearTimeout: h => window.clearTimeout(h as number),
-  }), [refresh]);
-
-  const askNotify = useCallback(() => { if (typeof Notification !== 'undefined') Notification.requestPermission().then(setNotifyState); }, []);
-  const dismiss = useCallback((k: number) => setToasts(t => t.filter(x => x.key !== k)), []);
-  return <C.Provider value={{ open, openState, accounts, refresh, toasts, dismiss, notifyState, askNotify }}>{children}</C.Provider>;
+  }),[refresh]);
+  return <C.Provider value={{open,openState,automatic,automaticState,waiting,waitingState,accounts,refresh,notices,unread:notices.filter(n=>n.key>readThrough).length,read}}>{children}</C.Provider>;
 }

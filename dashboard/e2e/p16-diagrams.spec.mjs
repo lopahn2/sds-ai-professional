@@ -45,7 +45,7 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
   o.topology.observed_edges = [ingress, ...targets.slice(0, -1)].map((source, i) => ({ ...seed, from: source.id, to: targets[i].id, flows: 1, dropped: 0, errors: 0, state: 'ok' }));
   let payload = o;
   await page.route('**/api/overview', route => route.fulfill({ json: payload }));
-  await page.goto('/'); await page.locator('.resource-button').first().waitFor();
+  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click(); await page.locator('.resource-button').first().waitFor();
   const allInside = () => page.locator('.resource-button').evaluateAll(es => {
     const f = document.querySelector('.topology-canvas .react-flow').getBoundingClientRect();
     return es.every(e => { const r = e.getBoundingClientRect(); return r.left >= f.left - 1 && r.right <= f.right + 1 && r.top >= f.top - 1 && r.bottom <= f.bottom + 1; });
@@ -77,7 +77,7 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
 
 test('정교화한 서비스 지도는 원천 상태·선택·명도 위계와 확대 제어를 보존한다', async ({ page }, info) => {
   const es = errors(page);
-  await page.goto('/');
+  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();
   const nodes = page.locator('.topology-canvas .resource-button');
   await expect(nodes.first()).toBeVisible();
   await expect(page.locator('.resource-glyph svg')).toHaveCount(await nodes.count());
@@ -105,6 +105,7 @@ test('정교화한 AI 흐름은 모든 단계·역할·선택·밝은 근거 영
   expect(response.ok()).toBe(true);
   const n = await response.json(); const es = errors(page);
   await page.goto(`/incidents/${row.id}`); await tab(page, '흐름');
+  await page.getByRole('button',{name:'전체 흐름',exact:true}).click();
   const nodes = page.locator('.flow-step button');
   await expect(nodes).toHaveCount(n.flow.nodes.length);
   await expect(page.locator('.flow-canvas')).toHaveCSS('background-color', 'rgb(17, 24, 28)');
@@ -112,12 +113,14 @@ test('정교화한 AI 흐름은 모든 단계·역할·선택·밝은 근거 영
   await readableTokens(page, '.flow-canvas');
   await layout(page); await capture(page, info, 'flow');
   await nodes.first().focus(); await page.keyboard.press('Enter');
-  await expect(page.locator(`[id="step-${n.flow.nodes[0].id}"]`)).toBeVisible();
+  await expect(page.getByRole('region',{name:'선택 단계 입력과 결과'})).toBeVisible();
+  await expect(nodes.first()).toBeFocused();
   await tab(page, '흐름');
   await expect(nodes.first()).toHaveAttribute('aria-pressed', 'true');
   await layout(page); await capture(page, info, 'flow-selection');
   await tab(page, '대화');
-  await expect(page.getByRole('textbox', { name: '운영자 메시지' })).toBeVisible();
+  await expect(page.getByRole('region',{name:'분석 · 운영자 대화'})).toBeVisible();
+  if(['resolved','failed','handed_off'].includes(row.status)&&n.view_mode!=='snapshot')await expect(page.getByRole('button',{name:'후속 작업 요청',exact:true})).toBeVisible();
   await layout(page);
   expect(es).toEqual([]);
 });
@@ -126,7 +129,10 @@ test('움직임 감소 설정은 두 다이어그램의 장식 애니메이션�
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const row = await incident(request);
   for (const [url, selector] of [['/', '.resource-button'], [`/incidents/${row.id}`, '.flow-step']]) {
-    await page.goto(url); await page.locator(selector).first().waitFor();
+    await page.goto(url);
+    if (url === '/') await page.getByRole('button',{name:'인프라·수집 진단'}).click();
+    else await page.getByRole('button',{name:'전체 흐름',exact:true}).click();
+    await page.locator(selector).first().waitFor();
     const motion = await page.locator(selector).evaluateAll(es => es.map(e => ({ animation: getComputedStyle(e).animationName, transition: getComputedStyle(e).transitionDuration })));
     expect(motion.every(x => x.animation === 'none' && x.transition === '0s')).toBe(true);
   }

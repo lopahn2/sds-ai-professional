@@ -1,0 +1,161 @@
+summary: {'naria': 158}
+
+--- verified against naria component CSS ---
+naria diagramTheme.css:43      font-size: 11px   [.topology-canvas .incident-pin]  styles.css:391
+naria diagramTheme.css:44      font-size: 11px   [.topology-canvas .incident-pin i]  styles.css:391
+naria incidentHistoryList.css:8 font-size: 13px   [.history-results > span]  styles.css:304
+naria incidentUx.css:2         font-size: 13px   [.disclosure]  styles.css:304
+naria incidentUx.css:7         font-size: 13px   [.incident-room .chat-intro]  styles.css:304
+naria incidentUx.css:14        font-size: 13px   [.execution-stage]  styles.css:304
+naria naria.css:92             font-size: 13px   [.nds-theme .queue-all]  styles.css:304
+naria naria.css:103            font-size: 13px   [.nds-theme .ops-stats dl > div]  styles.css:304
+naria naria.css:114            font-size: 13px   [.nds-theme .attention-strip a]  styles.css:304
+naria naria.css:117            font-size: 13px   [.nds-theme .history-results button]  styles.css:304
+naria naria.css:151            letter-spacing: -0.025em   [.nds-theme h1]  24 tracking -0.025em = naria heading (.nds-text--heading, --nds-type-heading-tracking)
+naria naria.css:166            padding: 7px 11px   [.nds-theme .btn, .nds-theme .btn.sm]  styles.css:229
+naria naria.css:176            gap: 5px   [.nds-theme .badge]  styles.css:1225
+naria naria.css:176            padding: 3px 8px   [.nds-theme .badge]  styles.css:1225
+naria naria.css:176            font-size: 11px   [.nds-theme .badge]  styles.css:391
+naria naria.css:183            padding: 11px 13px   [.nds-theme .input, .nds-theme .select]  styles.css:313
+naria naria.css:188            padding: 9px var(--nds-control-padding)   [e .list-filters .btn, .nds-theme .list-filters .alert-button]  styles.css:173
+naria naria.css:192            padding: 22px 22px 0   [.nds-theme .card > header]  styles.css:1044
+naria naria.css:193            font-size: 17px   [.nds-theme .card > header :is(h2, h3)]  styles.css:1050
+naria naria.css:193            letter-spacing: -0.02em   [.nds-theme .card > header :is(h2, h3)]  17 tracking -0.02em = naria .nds-card h3
+naria naria.css:194            margin-top: 5px   [.nds-theme .card > header p]  styles.css:699
+naria naria.css:194            font-size: 13px   [.nds-theme .card > header p]  styles.css:304
+naria naria.css:195            padding: 22px   [.nds-theme .card > .body]  styles.css:1059
+naria naria.css:198            font-size: 13px   [.nds-theme .table]  styles.css:304
+naria naria.css:200            padding: 13px 16px   [.nds-theme .table th, .nds-theme .table td]  styles.css:1719
+naria naria.css:204            padding: 10px 4px   [.nds-theme .room-tabs button]  styles.css:765
+naria naria.css:208            padding: 3px 8px   [.nds-theme .history-results button, .nds-theme .filter]  styles.css:1225
+naria naria.css:208            border-radius: 8px   [.nds-theme .history-results button, .nds-theme .filter]  styles.css:648
+naria naria.css:212            border-radius: 12px   [.nds-theme .notice, .nds-theme .error]  styles.css:699
+naria naria.css:212            font-size: 13px   [.nds-theme .notice, .nds-theme .error]  styles.css:304
+naria naria.css:215            font-size: 13px   [.nds-theme .empty]  styles.css:304
+naria naria.css:227            gap: 9px   [.nds-theme .nav > a:not(.brand)]  styles.css:975
+naria naria.css:227            padding: 10px 12px   [.nds-theme .nav > a:not(.brand)]  styles.css:975
+naria naria.css:227            border-radius: 8px   [.nds-theme .nav > a:not(.brand)]  styles.css:648
+naria naria.css:227            font-size: 13px   [.nds-theme .nav > a:not(.brand)]  styles.css:304
+naria naria.css:230            font-size: 11px   [.nds-theme .count]  styles.css:391
+naria naria.css:238            padding: 7px 11px   [.nds-theme .alert-button]  styles.css:229
+naria naria.css:241            font-size: 11px   [.nds-theme .alert-count]  styles.css:391
+naria naria.css:244            font-size: 13px   [.nds-theme .alert-panel > header]  styles.css:304
+naria naria.css:250            gap: 10px   [.nds-theme .toasts]  styles.css:421
+naria naria.css:251            padding: 14px 12px 14px 16px   [.nds-theme .toast]  styles.css:1528
+naria naria.css:251            border-radius: 13px   [.nds-theme .toast]  styles.css:1528
+naria naria.css:251            font-size: 13px   [.nds-theme .toast]  styles.css:304
+naria naria.css:255            padding: 10px 12px   [.nds-theme .nav > a:not(.brand)]  styles.css:975
+naria naria.css:267            font-size: 13px   [.nds-theme .accountability-reading form label]  styles.css:304
+naria naria.css:269            padding: 11px 13px   [ability-reading form textarea, .nds-theme .source-row select]  styles.css:313
+naria operatorRoom.css:63      font-size: 13px   [.room-phases strong]  styles.css:304
+naria operatorRoom.css:82      font-size: 13px   [.incident-room .step-facts]  styles.css:304
+naria operatorRoom.css:88      font-size: 13px   [.incident-room .step-live p]  styles.css:304
+naria operatorRoom.css:91      border-radius: 12px   [.incident-room .room-wide]  styles.css:699
+naria operatorRoom.css:144     padding: 3px 8px   [.question-tags button]  styles.css:1225
+naria operatorRoom.css:144     border-radius: 8px   [.question-tags button]  styles.css:648
+naria releaseEvidence.css:10   font-size: 13px   [.evidence-views button]  styles.css:304
+naria releaseEvidence.css:14   font-size: 13px   [.evidence-intro]  styles.css:304
+naria releaseEvidence.css:16   font-size: 13px   [.evidence-reading p, .evidence-past]  styles.css:304
+naria releaseEvidence.css:22   font-size: 13px   [.evidence-facts]  styles.css:304
+naria room.css:14              font-size: 13px   [.nds-theme .incident-room .headline-next]  styles.css:304
+naria room.css:22              font: 11px/1 var(--nds-mono)   [.nds-theme .incident-room .pane-index]  styles.css:391
+naria room.css:33              font-size: 13px   [.nds-theme .incident-room .disclosure > summary]  styles.css:304
+naria room.css:34              font-size: 13px   [.nds-theme .incident-room .chat-intro p]  styles.css:304
+naria room.css:35              font-size: 13px   [.nds-theme .incident-room .chat-event]  styles.css:304
+naria room.css:36              font-size: 13px   [.nds-theme .incident-room .chat-event summary]  styles.css:304
+naria room.css:71              font-size: 13px   [.nds-theme .incident-room .step-body h4]  styles.css:304
+naria room.css:85              font-size: 13px   [.nds-theme .incident-room .evidence-rows .link-btn]  styles.css:304
+naria room.css:92              font-size: 13px   [head > b, .nds-theme .incident-room .execution-head > strong]  styles.css:304
+naria room.css:94              font-size: 13px   [.nds-theme .incident-room .execution-records]  styles.css:304
+naria room.css:109             font-size: 13px   [.nds-theme .incident-room .steer-state]  styles.css:304
+naria room.css:114             font-size: 13px   [tep-chat-target, .nds-theme .incident-room .step-chat-closed]  styles.css:304
+naria room.css:133             font-size: 13px   [.nds-theme .incident-room .close-effects]  styles.css:304
+naria room.css:134             font-size: 13px   [.nds-theme .incident-room .close-reason]  styles.css:304
+naria room.css:146             font-size: 13px   [.nds-theme .incident-room .command-card h4]  styles.css:304
+naria room.css:152             font-size: 13px   [.nds-theme .incident-room .dry-run]  styles.css:304
+naria room.css:155             font-size: 13px   [.nds-theme .incident-room .side-effects .kv]  styles.css:304
+naria room.css:156             font-size: 13px   [.nds-theme .incident-room .side-effects .notice]  styles.css:304
+naria room.css:159             font-size: 13px   [.nds-theme .incident-room .command-results p]  styles.css:304
+naria room.css:164             padding: 10px var(--nds-control-padding)   [.nds-theme .incident-room .composer textarea]  styles.css:2435
+naria room.css:167             font-size: 13px   [.nds-theme .incident-room .composer-notice]  styles.css:304
+naria room.css:168             font-size: 13px   [.nds-theme .incident-room .control-status]  styles.css:304
+naria room.css:178             font-size: 13px   [.nds-theme .incident-room .detail-scroll h4]  styles.css:304
+naria room.css:214             font-size: 13px   [.nds-theme .incident-room .headline-usage]  styles.css:304
+naria room.css:221             font-size: 13px   [.nds-theme .incident-room .role-models > li]  styles.css:304
+naria room.css:230             font-size: 13px   [.nds-theme .incident-room .model-candidates]  styles.css:304
+naria room.css:238             font-size: 13px   [.nds-theme .incident-room .group-progress]  styles.css:304
+naria room.css:271             font-size: 13px   [.nds-theme .incident-room .verify-head > span:not(.badge)]  styles.css:304
+naria serviceAtlas.css:9       letter-spacing: -0.015em   [.atlas-map-head h2]  18 tracking -0.015em = naria subheading (.nds-text--subheading, --nds-type-subheading-tracking)
+naria serviceAtlas.css:16      border-radius: 12px   [.atlas-source-message, .atlas-blank]  styles.css:699
+naria serviceAtlas.css:16      font-size: 13px   [.atlas-source-message, .atlas-blank]  styles.css:304
+naria serviceAtlas.css:39      gap: 10px   [.atlas-node-head]  styles.css:421
+naria serviceAtlas.css:40      border-radius: 8px   [.atlas-node-icon]  styles.css:648
+naria serviceAtlas.css:53      font: 600 11px/1.5 var(--nds-mono)   [.atlas-env-name]  styles.css:391
+naria serviceAtlas.css:78      letter-spacing: -0.015em   [.atlas-interventions h2]  18 tracking -0.015em = naria subheading (.nds-text--subheading, --nds-type-subheading-tracking)
+naria serviceAtlas.css:82      border-radius: 12px   [.atlas-kpis]  styles.css:699
+naria serviceAtlas.css:86      letter-spacing: -0.025em   [.atlas-kpis dd]  24 tracking -0.025em = naria heading (.nds-text--heading, --nds-type-heading-tracking)
+naria serviceAtlas.css:101     font-size: 13px   [.atlas-case-title]  styles.css:304
+naria serviceAtlas.css:104     font-size: 13px   [.atlas-more]  styles.css:304
+naria serviceAtlas.css:107     font-size: 13px   [.atlas-history a]  styles.css:304
+naria serviceAtlas.css:111     font-size: 13px   [.atlas-empty]  styles.css:304
+naria serviceAtlas.css:121     padding: 13px 0   [.atlas-facts > div]  styles.css:1774
+naria serviceAtlas.css:122     font-size: 13px   [.atlas-facts dt]  styles.css:304
+naria serviceAtlas.css:128     font-size: 13px   [.atlas-interventions .atlas-diagnostics .source-chip b]  styles.css:304
+naria serviceAtlas.css:135     font-size: 13px   [.atlas-interventions .atlas-diagnostics .ops-stats dl > div]  styles.css:304
+naria serviceAtlas.css:142     padding: 10px 4px   [.atlas-interventions .atlas-diagnostics .side-tabs button]  styles.css:765
+naria serviceAtlas.css:146     font-size: 13px   [g-event b, .atlas-interventions .atlas-diagnostics .ns-row b]  styles.css:304
+naria serviceAtlas.css:155     font-size: 13px   [.bell-updates a]  styles.css:304
+naria styles.css:3             font-size: 13px   [h4]  styles.css:304
+naria styles.css:3             font-size: 13px   [.nav>a:not(.brand)]  styles.css:304
+naria styles.css:3             font-size: 11px   [.count]  styles.css:391
+naria styles.css:3             font-size: 13px   [.page-head p]  styles.css:304
+naria styles.css:3             font-size: 13px   [.btn]  styles.css:304
+naria styles.css:3             font-size: 13px   [.input,.select]  styles.css:304
+naria styles.css:3             font-size: 11px   [.badge]  styles.css:391
+naria styles.css:3             font-size: 11px   [.alert-count]  styles.css:391
+naria styles.css:3             border-radius: 8px   [.alert-panel]  styles.css:648
+naria styles.css:3             font-size: 13px   [.alert-panel>header]  styles.css:304
+naria styles.css:3             font-size: 13px   [.alert-item-top strong]  styles.css:304
+naria styles.css:5             font-size: 11px   [.incident-pin]  styles.css:391
+naria styles.css:5             font-size: 13px   [.ops-side-head]  styles.css:304
+naria styles.css:5             padding: 10px 4px   [.side-tabs button]  styles.css:765
+naria styles.css:6             font-size: 13px   [.decision-card]  styles.css:304
+naria styles.css:10            font-size: 13px   [.headline-facts b]  styles.css:304
+naria styles.css:10            font-size: 13px   [.pane-heading h2]  styles.css:304
+naria styles.css:10            font: 11px var(--mono)   [.pane-index]  styles.css:391
+naria styles.css:10            font-size: 11px   [.raw-meta .badge]  styles.css:391
+naria styles.css:10            font-size: 13px   [.ko-reading p]  styles.css:304
+naria styles.css:10            padding: 3px 8px   [.cited-by button]  styles.css:1225
+naria styles.css:10            border-radius: 8px   [.cited-by button]  styles.css:648
+naria styles.css:10            padding: 10px var(--nds-control-padding)   [.composer textarea]  styles.css:2435
+naria styles.css:12            font-size: 13px   [.confirm-gate strong]  styles.css:304
+naria styles.css:17            font-size: 11px   [.nav .count]  styles.css:391
+naria styles.css:17            font-size: 11px   [.bar-account]  styles.css:391
+naria styles.css:17            padding: 10px 4px   [.room-tabs button]  styles.css:765
+naria styles.css:19            font-size: 13px   [.nav>a:not(.brand)]  styles.css:304
+naria styles.css:35            font-size: 11px   [.step-kind]  styles.css:391
+naria styles.css:48            font-size: 11px   [.evidence-row-head .badge]  styles.css:391
+naria styles.css:90            font-size: 13px   [.execution-output]  styles.css:304
+naria styles.css:93            font-size: 13px   [.snapshot-notice]  styles.css:304
+naria styles.css:94            font-size: 13px   [.model-prices]  styles.css:304
+naria unified.css:1            border-radius: 12px   [.code-action-card]  styles.css:699
+naria FlowGraph.tsx:41  colour #707d83 in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:41  colour #825600 in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:41  colour #086d72 in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:41  colour #32547c in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:41  colour #176a46 in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:63  colour #ffffff in naria palette (tokens.css / styles.css / modern palette)
+naria FlowGraph.tsx:95  colour #d8dfe1 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #80d9cc in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #89dcb0 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #ff9da6 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #f3ca68 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #b6c0c4 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:43  colour #707d83 in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:49  colour #b9c8da in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:49  colour #11181c in naria palette (tokens.css / styles.css / modern palette)
+naria TopologyMap.tsx:53  colour #303b40 in naria palette (tokens.css / styles.css / modern palette)
+naria mapModel.ts:214  colour #176a46 in naria palette (tokens.css / styles.css / modern palette)
+naria mapModel.ts:214  colour #825600 in naria palette (tokens.css / styles.css / modern palette)
+naria mapModel.ts:214  colour #b02d3b in naria palette (tokens.css / styles.css / modern palette)
+naria mapModel.ts:214  colour #707d83 in naria palette (tokens.css / styles.css / modern palette)

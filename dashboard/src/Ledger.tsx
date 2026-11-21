@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { UnexplainedLedger } from './UnexplainedLedger';
 import { dateTime, request } from './api';
 import { latestOnly } from './latestOnly';
 import { ledgerQuery } from './historyQuery';
@@ -15,6 +16,14 @@ const OUTCOME: Record<string, string> = { held_for_operator: '운영자에게 �
 const PAGE = 100;
 
 export function Ledger() {
+  const [params]=useSearchParams();
+  const missing=params.get('view')==='unexplained';
+  return <div className="page"><h1>검토 기록</h1><nav className="history-results" aria-label="검토 기록 종류">
+    <Link to="/ledger" aria-current={!missing?'page':undefined}>조치 검토</Link>
+    <Link to="/ledger?view=unexplained" aria-current={missing?'page':undefined}>미소명 사건</Link></nav>
+    {missing?<UnexplainedLedger/>:<ActionLedger/>}</div>;
+}
+function ActionLedger() {
   const [data, setData] = useState<Ledger | null>(null); const [reason, setReason] = useState(''); const [environment, setEnvironment] = useState('');
   const [offset, setOffset] = useState(0); const [error, setError] = useState<string | null>(null);
   const gate = useMemo(() => latestOnly(), []);
@@ -25,7 +34,7 @@ export function Ledger() {
   useEffect(() => { void load(); const t = window.setInterval(() => void load(), 10000); return () => window.clearInterval(t); }, [load]);
   const total = data?.total ?? 0;
   return <div className="page">
-    <div className="page-head"><div><h1>검토 기록</h1><p>사람의 검토가 필요하다고 판단된 순간과 그 이유, 결과를 모읍니다. 나중에 검토 기준을 정하는 자료이며 시스템 동작은 바꾸지 않습니다.</p></div>
+    <div className="page-head"><div><p>사람의 검토가 필요하다고 판단된 순간과 그 이유, 결과를 모읍니다. 나중에 검토 기준을 정하는 자료이며 시스템 동작은 바꾸지 않습니다.</p></div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <select className="select" aria-label="환경 필터" value={environment} onChange={e => { setEnvironment(e.target.value); setOffset(0); }}><option value="">전체 환경</option>{historyEnvironmentOptions().map(env => <option key={env.value} value={env.value}>{env.label}</option>)}</select>
         <select className="select" aria-label="사유 필터" value={reason} onChange={e => { setReason(e.target.value); setOffset(0); }}><option value="">모든 사유</option>{Object.entries(REASON).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>

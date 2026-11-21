@@ -1,7 +1,7 @@
 import type { FlowNode } from './api.ts';
 import type { RunEvent } from './feed.ts';
 
-export type StreamState = 'connecting' | 'live' | 'reconnecting' | 'polling' | 'snapshot';
+export type StreamState = 'connecting' | 'live' | 'reconnecting' | 'polling' | 'snapshot' | 'record';
 export type AttemptView = { id: string; text: string; phase: string; mode: string; records: RunEvent[] };
 export type ExecutionView = { records: RunEvent[]; attempts: AttemptView[]; final: RunEvent | null };
 const KINDS = new Set(['agent_started', 'agent_progress', 'agent_finished']);

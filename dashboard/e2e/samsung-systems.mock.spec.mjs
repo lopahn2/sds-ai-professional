@@ -8,7 +8,7 @@ const captureRoot = `${process.env.LIVEPROBE_EVIDENCE_ROOT ?? 'e2e/artifacts'}/m
 test.skip(!mock, '삼성 합성 inventory의 모의 화면 시험입니다.');
 async function load(page, overview = sample) {
   await page.route('**/api/overview', route => route.fulfill({ json: overview }));
-  await page.goto('/');
+  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();
   await expect(page.getByRole('combobox', { name: '지도 환경' })).toHaveValue('prd');
 }
 // 2026-11-13 dev/prd 전환: 표본은 전환 전처럼 stg 환경·자원·계약을 담고 있다. 화면은 활성 dev·prd만 그린다
@@ -32,7 +32,9 @@ test('세 독립 시스템·내부 서비스·공통 Kafka와 발행·소비·�
     await expect(page.locator('.namespace-title').filter({ hasText: '공통 연계 인프라' })).toHaveCount(1);
     await expect(page.locator('.react-flow__edge.declared_event')).toHaveCount(3);
     await expect(page.locator('.react-flow__edge.declared_snapshot_api')).toHaveCount(2);
-    await expect(page.getByLabel('공식 연계 계약')).toContainText('실제 소비 접속: 소비자 → 브로커');
+    const contracts=page.locator('.contract-list');
+    if(!await contracts.getAttribute('open') && !await contracts.locator('.disclosure-body').isVisible()) await contracts.getByText('연결·계약 설명',{exact:true}).click();
+    await expect(contracts).toContainText('실제 접속 소비자→브로커');
     await layout(page);
   }
   await capture(page, info, 'samsung-selected', captureRoot);

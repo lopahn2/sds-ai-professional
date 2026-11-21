@@ -1,15 +1,15 @@
 import { test, expect } from '@playwright/test';
 
 // Isolated browser contract tests; deployment is exercised separately with real persistence.
-const role = (model = 'gpt-6.1-sol', effort = 'medium') => ({ model, effort });
+const role = (model = 'gpt-6.2-sol', effort = 'medium') => ({ model, effort });
 const groups = {
   SIMPLE: { primary_mode: 'router', roles: { signal_analyst: role('gpt-6-luna', 'low'), result_verifier: role() } },
-  NORMAL: { primary_mode: 'router', roles: { coordinator: role(), k8s_analyst: role('gpt-6-astra', 'high'), log_summarizer: role('gpt-6-luna', 'low'), group_verifier: role() } },
-  COMPLEX: { primary_mode: 'router', roles: { k8s_log_analyst: role(), cause_reasoner: role('gpt-6-astra', 'high'), challenger: role('gpt-6-astra', 'high'), recovery_planner: role(), group_verifier: role() } },
-  HIGH_RISK: { primary_mode: 'router', roles: { evidence_curator: role(), safety_verifier: role('gpt-6-astra', 'xhigh') } },
+  NORMAL: { primary_mode: 'router', roles: { coordinator: role(), k8s_analyst: role('gpt-6.2-astra', 'high'), log_summarizer: role('gpt-6-luna', 'low'), group_verifier: role() } },
+  COMPLEX: { primary_mode: 'router', roles: { k8s_log_analyst: role(), cause_reasoner: role('gpt-6.2-astra', 'high'), challenger: role('gpt-6.2-astra', 'high'), recovery_planner: role(), group_verifier: role() } },
+  HIGH_RISK: { primary_mode: 'router', roles: { evidence_curator: role(), safety_verifier: role('gpt-6.2-astra', 'xhigh') } },
 };
-const assist = { code_fixer: role('gpt-6.1-sol', 'high') };
-const initial = { assist, revision: 0, source: 'config', provider: 'codex_cli', editable: true, router: role('gpt-6-luna', 'low'), groups, defaults: { assist, router: role('gpt-6-luna', 'low'), groups }, catalog: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra'].map(model => ({ model, efforts: ['low', 'medium', 'high', 'xhigh'] })), limits: { model_ladder: ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra'], max_cost_usd: { NORMAL: 1.3, COMPLEX: 2.3 } } };
+const assist = { code_fixer: role('gpt-6.2-sol', 'high') };
+const initial = { assist, revision: 0, source: 'config', provider: 'codex_cli', editable: true, router: role('gpt-6-luna', 'low'), groups, defaults: { assist, router: role('gpt-6-luna', 'low'), groups }, catalog: ['gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra'].map(model => ({ model, efforts: ['low', 'medium', 'high', 'xhigh'] })), limits: { model_ladder: ['gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra'], max_cost_usd: { NORMAL: 1.3, COMPLEX: 2.3 } } };
 
 test('group settings preserve draft across groups and save explicit payload', async ({ page }) => {
   let state = structuredClone(initial); let writes = [];
@@ -77,10 +77,10 @@ test('load failure retries and switching primary mode enables a bounded model ch
   await expect(page.getByLabel('신호 분석 모델', { exact: true })).toBeDisabled();
   await page.getByLabel('주 모델 선택 방식', { exact: true }).selectOption('fixed');
   await expect(page.getByLabel('신호 분석 모델', { exact: true })).toBeEnabled();
-  await page.getByLabel('신호 분석 모델', { exact: true }).selectOption('gpt-6.1-sol');
+  await page.getByLabel('신호 분석 모델', { exact: true }).selectOption('gpt-6.2-sol');
   await page.getByRole('button', { name: '고위험 그룹', exact: true }).click();
   await page.getByLabel('주 모델 선택 방식', { exact: true }).selectOption('fixed');
-  await expect(page.getByLabel('근거 정리 모델', { exact: true })).toHaveValue('gpt-6-astra');
+  await expect(page.getByLabel('근거 정리 모델', { exact: true })).toHaveValue('gpt-6.2-astra');
   await expect(page.getByLabel('안전 검증 모델', { exact: true }).locator('option')).toHaveCount(1);
   await expect(page.getByLabel('안전 검증 추론 강도', { exact: true }).locator('option')).toHaveCount(2);
   await page.getByRole('button', { name: '기본값 불러오기', exact: true }).click();

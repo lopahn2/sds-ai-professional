@@ -8,6 +8,7 @@ import { ExecutionStream } from './ExecutionStream';
 import { stepExecution, type StreamState } from './execution';
 import type { RunEvent } from './feed';
 import { Disclosure } from './Disclosure';
+import { RoomDialog } from './RoomDialog';
 
 function Raw({ label, text }: { label: string; text: string | null | undefined }) {
   if (!text) return null;
@@ -17,7 +18,7 @@ function RawRow({ r }: { r: RawItem }) {
   return <div className="raw-item"><div className="raw-ref"><code>{r.id}</code><time>{clock(r.at)}</time></div><pre className="raw-text">{r.raw}</pre></div>;
 }
 /** Verbatim records and technical metadata for one step. Opens only from 상세보기; Esc/닫기 closes and returns focus. */
-export function DetailPanel({ target, data, handoff, onClose, events = [], streamState = 'connecting', streamError = false, receivedAt = null, snapshot = false }: { target: DetailTarget; data: Narrative; handoff: HandoffView | null; onClose: () => void; events?: RunEvent[]; streamState?: StreamState; streamError?: boolean; receivedAt?: string | null; snapshot?: boolean }) {
+export function DetailPanel({ target, data, handoff, onClose, events = [], streamState = 'connecting', wide = false, streamError = false, receivedAt = null, snapshot = false }: { target: DetailTarget; data: Narrative; handoff: HandoffView | null; onClose: () => void; events?: RunEvent[]; streamState?: StreamState; streamError?: boolean; receivedAt?: string | null; wide?: boolean; snapshot?: boolean }) {
   const close = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
   // 고정 시트일 때만 배경을 inert로 만든다. 기존 속성은 소유하지 않으므로 종료/폭 변경 시 그대로 복원한다.
@@ -58,9 +59,10 @@ export function DetailPanel({ target, data, handoff, onClose, events = [], strea
   const n: FlowNode | undefined = data.flow.nodes.find(x => x.id === resolveStepId(target.nodeId, data.flow.nodes));
   useEffect(() => { close.current?.focus({ preventScroll: true }); }, [target]);
   useEffect(() => {
+    if (wide) return;
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
     document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key);
-  }, [onClose]);
+  }, [onClose, wide]);
   const c = n?.card ?? null;
   let title = n ? flowTitle(n) : '단계'; let body: React.ReactNode;
   if (!n) body = <p className="muted">이 단계는 최신 기록에 없습니다.</p>;
@@ -127,6 +129,7 @@ export function DetailPanel({ target, data, handoff, onClose, events = [], strea
       {!shown && <p className="muted">{snapshot ? '저장된 시점에 확정 결론 원문이 없었습니다.' : n.status === 'planned' || n.status === 'running' ? '확정 결론 원문은 단계가 완료된 뒤 표시됩니다.' : '이 단계에 연결된 원문 기록이 없습니다.'}</p>}
     </>;
   }
+  if (wide) return <RoomDialog title={`${title} · 단계 원문`} onClose={onClose}>{body}</RoomDialog>;
   return <aside ref={panel} className="detail-panel" role="complementary" aria-label="단계 상세" data-node-id={target.nodeId}>
     <header className="detail-head"><div><span className="eyebrow">원문 보기</span><h3>{title}</h3></div><button ref={close} type="button" className="btn sm" onClick={onClose}>닫기</button></header>
     <div className="detail-scroll">{body}</div>

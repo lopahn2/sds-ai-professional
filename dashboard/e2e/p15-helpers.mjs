@@ -8,7 +8,16 @@ export const mock = process.env.LIVEPROBE_MOCK === '1';
 // 각 개선 단계가 이전 배포의 캡처·검사 증거를 덮어쓰지 않도록 분리한다.
 const artifactRoot = process.env.LIVEPROBE_EVIDENCE_ROOT ?? 'e2e/artifacts';
 export async function resetMock(request) { if (mock) await request.post('/api/mock/reset', { headers: { 'X-LiveProbe-Client':'dashboard' } }); }
-export async function tab(page, name) { await page.locator('.incident-room').waitFor(); const nav=page.getByRole('navigation',{name:'관제실 화면 전환'}); if(await nav.isVisible()) await nav.getByRole('button',{name,exact:true}).click(); }
+export async function tab(page, name) {
+  const room=page.locator('.incident-room'), history=['대화','전체 대화·이력'].includes(name);
+  await room.waitFor();
+  const current=history?'tab-chat':'tab-flow';
+  if (await room.evaluate((e, cls)=>e.classList.contains(cls),current)) return;
+  const nav=room.getByRole('navigation',{name:'관제실 화면 전환'});
+  if (await nav.isVisible()) await nav.getByRole('button',{name:history?'전체 대화·이력':'현재 단계',exact:true}).click();
+  else await room.locator('.conversation-pane .pane-heading').getByRole('button',{name:history?'전체 대화·이력':'단계 관제로',exact:true}).click();
+  await expect(room).toHaveClass(new RegExp(current));
+}
 /** P18 W6: 근거는 별도 탭이 아니라 02 대화의 단계 카드 안에 있다. 좁은 화면에서는 대화 탭으로 전환한다. */
 export async function evidenceTab(page) { await tab(page,'대화'); }
 /** 데스크톱 무스크롤 검사: 페이지(.main) 자체가 세로로 스크롤되지 않는다. */

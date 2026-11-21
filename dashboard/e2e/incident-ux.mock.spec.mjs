@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { layout } from './p15-helpers.mjs';
+import { layout, tab } from './p15-helpers.mjs';
 const fixture = id => JSON.parse(readFileSync(new URL(`./fixtures/narrative-${id}.json`, import.meta.url)));
 const RAW = 'RAW_UX_SENTINEL <img src=x onerror="window.__unsafe=true"> HTTPStatusError http://internal';
 async function keyboardOpen(summary) { await summary.focus(); await summary.press('Enter'); }
@@ -19,7 +19,8 @@ async function room(page, id=990, legacy=false) {
 test('handoff action first, raw absent from DOM/AX until keyboard open; polling and incident reset',async({page},info)=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await room(page);
-  await expect(page.locator('.chat-feed').locator(':scope > *').first()).toHaveClass(/handoff-card/);
+  await expect(page.getByRole('button',{name:'인계 카드로 이동'})).toBeVisible();
+  await page.getByRole('button',{name:'인계 카드로 이동'}).click();
   await expect(page.getByRole('button',{name:'인계 인수',exact:true})).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain('RAW_UX_SENTINEL');
   expect(await page.locator('body').ariaSnapshot()).not.toContain('RAW_UX_SENTINEL');
@@ -29,20 +30,25 @@ test('handoff action first, raw absent from DOM/AX until keyboard open; polling 
   await expect(page.locator('.handoff-raw pre').first()).toContainText('RAW_UX_SENTINEL');
   expect(await page.locator('body').ariaSnapshot()).toContain('RAW_UX_SENTINEL');
   expect(await page.evaluate(()=>window.__unsafe)).toBeUndefined();
-  const draft=page.getByRole('textbox',{name:'운영자 메시지'});await draft.fill('입력 초안 보존');await draft.focus();
+  await page.getByRole('button',{name:'후속 작업 요청',exact:true}).click();
+  const draft=page.getByRole('textbox',{name:'후속 작업 요청 내용'});await draft.fill('입력 초안 보존');await draft.focus();
   await page.waitForResponse(r=>r.url().endsWith('/api/incidents/990/narrative'));
   await expect(page.locator('.handoff-raw')).toHaveAttribute('open','');await expect(draft).toHaveValue('입력 초안 보존');await expect(draft).toBeFocused();
   await keyboardOpen(summary);await expect(page.locator('.handoff-raw pre')).toHaveCount(0);expect(await page.locator('body').textContent()).not.toContain('RAW_UX_SENTINEL');
   await layout(page);await page.screenshot({path:info.outputPath('handoff.png'),fullPage:true});
-  await room(page,976,true);await expect(page.locator('details[open]')).toHaveCount(0);await expect(draft).toHaveValue('');
+  await room(page,976,true);await expect(page.locator('details[open]')).toHaveCount(0);await expect(draft).toHaveCount(0);
+  const next=page.getByRole('button',{name:'후속 작업 요청',exact:true});
+  if(await next.isVisible()){await next.click();await expect(draft).toHaveValue('');}
   expect(errors).toEqual([]);
 });
 test('legacy stage failures never use raw label or conclusion; explicit panel remains escaped and closable',async({page})=>{
   await room(page,990,true);
+  await tab(page,'전체 대화·이력');
   await keyboardOpen(page.getByText(/^지난 분석 단계 .*개 보기$/));
   expect(await page.locator('.step-card').allTextContents()).not.toContain(RAW);
   await page.locator('.step-card').first().getByRole('button',{name:'원문 보기',exact:true}).click();
   const panel=page.getByRole('complementary',{name:'단계 상세'});
+  if(!(await panel.innerText()).includes('RAW_UX_SENTINEL')) await keyboardOpen(panel.getByText('단계 응답 전체 원문 보기',{exact:true}));
   await expect(panel).toContainText('RAW_UX_SENTINEL');
   expect(await panel.locator('img').count()).toBe(0);
   await page.keyboard.press('Escape');await expect(panel).toHaveCount(0);
@@ -56,6 +62,7 @@ test('approval and command safety details survive, technical payloads remain opt
   await page.route('**/api/incidents/1976/commands',r=>r.fulfill({json:{items:[c]}}));
   const posts=[];page.on('request',r=>{if(r.method()==='POST')posts.push(r.url());});
   await page.goto('/incidents/1976');
+  await page.getByRole('button',{name:'승인 카드로 이동'}).click();
   await expect(page.getByRole('button',{name:'승인',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'진행',exact:true})).toBeEnabled();
   await expect(page.getByRole('region',{name:'예상 부작용'})).toContainText('중단 가능성 있음');

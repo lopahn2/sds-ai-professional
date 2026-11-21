@@ -22,31 +22,23 @@ test('디자인 시스템 토큰과 서체가 화면 전체에 적용된다', as
   const vars = await theme.evaluate(e => { const s = getComputedStyle(e); return [s.getPropertyValue('--text').trim(), s.getPropertyValue('--nds-text').trim()]; });
   expect(vars[0]).toBe(vars[1]);
   // 메뉴 아이콘은 문자가 아니라 SVG다.
-  await expect(page.locator('.app>.nav .nav-icon svg')).toHaveCount(5);
+  await expect(page.locator('.app>.nav .nav-icon svg')).toHaveCount(4);
 });
 
-test('운영 관제 상단은 지금 대응할 일을 보여 주고 없는 집계는 미관측이다', async ({ page }) => {
+test('홈에서 지도·운영자 개입·자동 처리·이관 이력을 구분한다', async ({ page }) => {
   await page.goto('/');
-  const queue = page.getByRole('region', { name: '지금 대응할 일' });
-  await expect(queue).toBeVisible();
-  await expect(queue.getByRole('status')).toContainText('운영자 결정이 필요한 장애는 없습니다');
-  const counts = queue.locator('.incident-counts');
-  await expect(counts).toContainText('승인 대기0');
-  await expect(counts).toContainText('미인수 이관미관측');
-  const first = queue.locator('.queue-item').first();
-  await expect(first).toContainText('AI 분석 중');
-  // 상단 띠가 지도를 밀어내지 않는다: 페이지 가로 넘침이 없다.
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await first.click();
-  await expect(page).toHaveURL(/\/incidents\/\d+$/);
+  const rail = page.getByRole('complementary',{name:'운영자 작업'});
+  await expect(page.getByRole('heading',{name:'서비스 지도'})).toBeVisible();
+  await expect(rail.locator('.atlas-auto-title')).toContainText('자동 처리 중');
+  await expect(rail.getByRole('link',{name:/전체 기간 미인수/})).toHaveAttribute('href','/incidents?status=handed_off');
+  const first=rail.locator('.atlas-cases a').filter({hasText:'AI 분석 중'}).first();
+  await first.click();await expect(page).toHaveURL(/\/incidents\/\d+$/);
 });
 
 test('승인 대기 장애는 대기열·알림·목록에서 분석 중 장애보다 먼저 온다', async ({ page, request }) => {
   const { i } = await pending(request);
   await page.goto('/');
-  const queue = page.getByRole('region', { name: '지금 대응할 일' });
-  await expect(queue.getByRole('status')).toContainText('운영자 결정이 필요한 장애가 1건', { timeout: 12000 });
-  const first = queue.locator('.queue-item').first();
+  const first = page.locator('.atlas-interventions .atlas-cases a').first();
   await expect(first).toContainText('승인·거절 필요');
   await expect(first).toHaveAttribute('href', `/incidents/${i.id}`);
   const bell = page.locator('.alert-button');
@@ -93,9 +85,10 @@ test('결정이 필요 없는 진행 중 장애에는 지금 할 일 띠가 없�
 
 // ---- P20 3차: 관제실이 구성·근거·검증을 설명한다 (과제계획서 대조 1~9번) ----
 async function openHistory(page, id) {
-  await page.goto(`/incidents/${id}`); await tab(page, '대화');
+  await page.goto(`/incidents/${id}`);
+  await page.getByRole('button', {name:'전체 대화·이력', exact:true}).filter({visible:true}).first().click();
   const history = page.getByText(/지난 분석 단계 \d+개 보기/);
-  if (await history.count()) await history.click();
+  await history.click();
 }
 const expand = async card => { await card.getByRole('button', { name: '펼치기' }).click(); };
 

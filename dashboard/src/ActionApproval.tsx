@@ -38,6 +38,7 @@ export function HandoffCard({ incident: i, view, onChange }: { incident: Inciden
   const h = (i.handoff ?? {}) as { claimed_by?: string; recommended_steps?: unknown };
   const legacy = Array.isArray(h.recommended_steps) ? h.recommended_steps.filter((s): s is string => typeof s === 'string') : [];
   const raw = view.next_steps_raw.length ? view.next_steps_raw : legacy;
+  const summary=summaryKo(view.summary_ko,'',1800);
   async function claim() {
     setBusy(true); setError('');
     try { await request(`/incidents/${i.id}/handoff/claim`, { method: 'POST' }); onChange(); }
@@ -47,12 +48,16 @@ export function HandoffCard({ incident: i, view, onChange }: { incident: Inciden
   return <article className="decision-card handoff-card" aria-label="운영자 인계">
     <header><b>운영자 인계</b><span className={`badge ${h.claimed_by ? 'ok' : 'warn'}`} role="status">{h.claimed_by ? '인수됨' : '인수 전'}</span></header>
     {h.claimed_by ? <p className="muted">인수: {h.claimed_by}</p> : <button className="btn primary" type="button" disabled={busy} onClick={() => void claim()}>인계 인수</button>}
-    <p className="handoff-lead">{summaryKo(view.summary_ko, '자동 대응을 멈췄습니다. 담당자 확인이 필요합니다.')}</p>
-    {view.next_steps_ko.length > 0 && <ol className="next-steps">{view.next_steps_ko.slice(0, 2).map((s, n) => <li key={n}>{summaryKo(s, '후속 조치 확인 필요')}</li>)}</ol>}
+    <p className="handoff-lead">{summary || '자동 대응을 멈췄습니다. 담당자 확인이 필요합니다.'}</p>
+    {view.decisions.length>0 && <dl className="kv decision-table" aria-label="인계 결정사항">
+      {view.decisions.map(d=><div className="decision-row" key={d.key} data-key={d.key}>
+        <dt>{summaryKo(d.label_ko,'결정')}</dt><dd>{summaryKo(d.value_ko,'판단 미관측',1200)}</dd></div>)}
+    </dl>}
+    {view.next_steps_ko.length > 0 && <><h4>다음 조치</h4><ol className="next-steps">
+      {view.next_steps_ko.map((s,n)=><li key={n}>{summaryKo(s,'후속 조치 확인 필요',1200)}</li>)}</ol></>}
     <p className="muted">인수는 담당 기록이며 클러스터 변경을 허가하지 않습니다.</p>
-    <Disclosure label="인계 판단 보기">{() => <dl className="kv decision-table" aria-label="인계 결정사항">{view.decisions.map(d => <div className="decision-row" key={d.key} data-key={d.key}><dt>{summaryKo(d.label_ko, '결정')}</dt><dd>{summaryKo(d.value_ko, '판단 확인 중')}</dd></div>)}</dl>}</Disclosure>
-    {(i.status_reason || raw.length > 0 || view.summary_raw || view.summary_ko) && <Disclosure className="handoff-raw" label="인계 원문 보기">{() => <>
-      {view.summary_ko && <><h4>전체 한글 해석</h4><pre className="raw-text">{view.summary_ko}</pre></>}
+    {(i.status_reason || raw.length > 0 || view.summary_raw || (view.summary_ko && !summary)) && <Disclosure className="handoff-raw" label="인계 원문 보기">{() => <>
+      {view.summary_ko && !summary && <><h4>저장된 해석 원문</h4><pre className="raw-text">{view.summary_ko}</pre></>}
       {view.summary_raw && <><h4>인계 요약 원문</h4><pre className="raw-text">{view.summary_raw}</pre></>}
       {i.status_reason && <><h4>인계 사유 원문</h4><pre className="raw-text">{i.status_reason}</pre></>}
       {raw.length > 0 && <><h4>권장 조치(원문)</h4><ul>{raw.map((s, n) => <li key={n} className="mono">{s}</li>)}</ul></>}

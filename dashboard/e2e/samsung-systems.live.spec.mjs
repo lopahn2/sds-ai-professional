@@ -8,7 +8,7 @@ test('실배포에서 세 시스템 경계와 관측된 Kafka·계약을 확인�
   expect(o.topology.contract_edges).toHaveLength(15);
   expect(o.topology.nodes.some(n => n.namespace === 'liveprobe-messaging' && n.name === 'kafka')).toBe(true);
   expect(o.topology.contract_edges.every(e => e.observed === false && e.deployment_state === 'deployed' && !('req_rate' in e) && !('flows' in e))).toBe(true);
-  const es = errors(page); await page.goto('/');
+  const es = errors(page); await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();
   // 2026-11-13 dev/prd 전환: 활성 환경은 dev·prd뿐이다. 퇴역 stg는 지도 환경 선택지에 없어야 한다.
   await expect(page.getByRole('combobox', { name: '지도 환경' }).locator('option')).toHaveText(['dev', 'prd', '전체 환경']);
   for (const env of ['dev', 'prd']) {

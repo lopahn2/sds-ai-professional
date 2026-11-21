@@ -5,6 +5,11 @@ import type { RunEvent } from './feed';
 import { acceptsInstructions, closable, conversationEvents, currentIncident, handoffFallback, isFinished, messageEvents, narrativePollMs, normalizeNarrative, orderSteps, controlEventKo, pendingActions, resolveStepId, stepDomId, stepTargetRole, stepThread } from './narrative';
 import { commandControls, commandPollMs } from './commands';
 import { INTENT_KO, STAGE_FROM_STATUS, placeKo, roleKo } from './labels';
+import { useAppActivity } from './ApplicationWorkTrace';
+import {activeAppStep,applicationFlow,attachApplicationFlow} from './applicationFlow';
+import {SemanticStagePanel} from './SemanticStagePanel';
+import {semanticFlow, semanticForSource} from './semanticFlow';
+import { StageRail } from './StageRail';
 import { usePolling } from './usePolling';
 import { historyResult, impactKo, whenKo } from './history';
 import './incidentRecord.css';
@@ -13,6 +18,9 @@ import { ChangeRequestCard } from './ChangeRequestCard';
 import { changePollMs, type ChangeRequest } from './changes';
 import { ActionApprovalCard, CloseCard, ClosedCard, HandoffCard } from './ActionApproval';
 import { FlowGraph } from './FlowGraph';
+import { StageMotion } from './StageMotion';
+import { DiagramIcon } from './DiagramIcon';
+import { operatorFlow, phaseOf, phaseStatus, roomPhases, serviceSignalImpact } from './roomWorkflow';
 import { StepCard, type DetailTarget, type LocalSent } from './StepCards';
 import { UsageLine } from './Explain';
 import { DetailPanel } from './DetailPanel';
@@ -22,6 +30,8 @@ import { ErrorBox, LevelBadge, Spinner, StatusBadge } from './ui';
 import { Disclosure } from './Disclosure';
 import { incidentSymptom, nextActionKo, summaryKo } from './presentation';
 import { CodeActionCard } from './CodeActionCard';
+import './operatorRoom.css';
+import { focusStep } from './stepPanel.ts';
 import { continuationActive, type CodeActionSummary } from './unified';
 
 type Tab = 'flow' | 'chat';
@@ -58,10 +68,10 @@ function InterpretRequest({ id, state, pending, onDone }: { id: string; state: s
 function Room({ id }: { id: string }) {
   const previousSearch = useLocation().state?.incidentListSearch;
   const listPath = typeof previousSearch === 'string' && previousSearch.startsWith('?') ? '/incidents' + previousSearch : '/incidents';
-  const codeAction = usePolling<CodeActionSummary>(`/incidents/${id}/code-action`, 5000);
+  const codeAction = usePolling<CodeActionSummary & {mega_stage?: string}>(`/incidents/${id}/code-action`, 5000);
   const continuation = continuationActive(codeAction.data);
-  // Missing continuation status cannot authorize an independent cluster write. Linked incidents keep the old core controls historical.
-  const coreLocked = !codeAction.data || codeAction.error || continuation || codeAction.data.linked;
+  const appActivity=useAppActivity(codeAction.data?.linked ? codeAction.data.application_id || '' : '');
+
   const narrative = usePolling<Narrative>(`/incidents/${id}/narrative`, d => narrativePollMs(d?.incident.status ?? 'open'));
   const commands = usePolling<{ items: Command[] }>(`/incidents/${id}/commands`, d => commandPollMs(d?.items ?? []));
   const changes = usePolling<{items:ChangeRequest[]}>(`/changes?incident_id=${id}`, d => changePollMs(d?.items ?? []));
@@ -69,7 +79,17 @@ function Room({ id }: { id: string }) {
   const detail = usePolling<IncidentDetail>(`/incidents/${id}`, d => pendingActions(d?.actions).length ? 2000 : 10000);
   const data = useMemo(() => narrative.data ? normalizeNarrative(narrative.data) : null, [narrative.data]);
   const incident = data ? currentIncident(data.incident, detail.data?.incident) : null;
-  const [tab, setTab] = useState<Tab>('chat'); const [selected, setSelected] = useState<string | null>(null);
+  // Older Kubernetes servers have no code-action route. Only unlock when both core reads agree on the incident and show no continuation.
+  const legacyCore = codeAction.errorStatus === 404 && !codeAction.data && !narrative.error && !detail.error
+    && String(detail.data?.incident.id) === id && String(data?.incident.id) === id
+    && !data?.flow.nodes.some(n => n.type === 'code_action');
+  const coreLocked = !legacyCore && (!codeAction.data || codeAction.error || continuation || codeAction.data.linked);
+  const [tab, setTab] = useState<Tab>('flow'); const [selected, setSelected] = useState<string | null>(null);
+  const [allFlow, setAllFlow] = useState(false);
+  const [wideDetail,setWideDetail] = useState(false);
+  const [mobileDetail,setMobileDetail] = useState(false);
+  const graphHeader = useRef<HTMLButtonElement>(null);
+  const focusAfterSelect=useRef<'flow'|'stage'|null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pastCommandsOpen, setPastCommandsOpen] = useState(false);
   const followedCommands = useRef(new Set<number>());
@@ -80,18 +100,25 @@ function Room({ id }: { id: string }) {
     }
   }, [commands.data]);
 
-  const [openCards, setOpenCards] = useState<Set<string>>(() => new Set()); const [flash, setFlash] = useState<string | null>(null); const [jumpRev, setJumpRev] = useState(0);
+  const [openCards, setOpenCards] = useState<Set<string>>(() => new Set()); const [flash, setFlash] = useState<string | null>(null); const [jumpRev] = useState(0);
   const [panel, setPanel] = useState<DetailTarget | null>(null);
   const [eventRevision, setEventRevision] = useState(0);
   const [text, setText] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [sent, setSent] = useState('');
+  const [followUpOpen, setFollowUpOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({}); const [local, setLocal] = useState<Record<string, LocalSent[]>>({});
   const feed = useRef<HTMLDivElement>(null); const scrollNext = useRef(false);
+  useLayoutEffect(()=>{
+    const target=focusAfterSelect.current;
+    focusAfterSelect.current=null;
+    if(target==='flow')graphHeader.current?.focus({preventScroll:true});
+    if(target==='stage')feed.current?.querySelector<HTMLElement>('.step-panel')?.focus({preventScroll:true});
+  },[mobileDetail,selected,tab]);
   const panelScroll = useRef<number | null>(null);
   const responseScroll = useRef<{ nodeId: string; messageId: number | null; until: number } | null>(null);
   const jump = useRef<string | null>(null); const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined); const opener = useRef<HTMLElement | null>(null);
   const execution = useRunEvents(id, incident ? isFinished(incident.status) : false, eventRevision, narrative.refresh);
   const { events, control, error: eventError } = execution;
-  const snapshot = data?.view_mode === 'snapshot' || execution.state === 'snapshot';
+  const snapshot = data?.view_mode === 'snapshot' || (data?.view_mode !== 'live' && !isFinished(incident?.status ?? '') && execution.state === 'snapshot');
   // Only an operator's own conversation send moves to the latest entry; live updates never steal the reading position.
   useEffect(() => { if (scrollNext.current && feed.current) { feed.current.scrollTop = feed.current.scrollHeight; scrollNext.current = false; } }, [events, commands.data]);
   // Flow node → exact step card: scroll inside the conversation only (page and flow canvas stay put), flash, focus.
@@ -134,7 +161,12 @@ function Room({ id }: { id: string }) {
     return () => cancelAnimationFrame(raf);
   }, [local, events, data, panel]);
   const reload = useCallback(() => { narrative.refresh(); commands.refresh(); detail.refresh(); codeAction.refresh(); setEventRevision(r => r + 1); }, [narrative.refresh, commands.refresh, detail.refresh, codeAction.refresh]);
-  const choose = useCallback((nid: string | null) => { if (!nid) return; const key = data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setHistoryOpen(true); if (key.startsWith('command:')) setPastCommandsOpen(true); setOpenCards(s => s.has(key) ? s : new Set(s).add(key)); setTab('chat'); jump.current = key; setJumpRev(r => r + 1); }, [data]);
+  const choose = useCallback((nid: string | null) => {
+    setMobileDetail(true);
+    if (window.matchMedia('(max-width: 900px)').matches) {
+      focusAfterSelect.current='stage';
+    }
+    const key = nid && data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setTab('flow'); jump.current = null; }, [data]);
   const toggle = useCallback((nid: string) => setOpenCards(s => { const next = new Set(s); const aliases = data?.flow.nodes.find(n => n.id === nid)?.aliases ?? []; const keys = [nid, ...aliases]; if (keys.some(k => next.has(k))) keys.forEach(k => next.delete(k)); else next.add(nid); return next; }), [data]);
   const openDetail = useCallback((t: DetailTarget, el: HTMLElement) => { responseScroll.current = null; opener.current = el; if (feed.current) { const top = feed.current.scrollTop; feed.current.scrollTo({ top, behavior: 'instant' }); panelScroll.current = top; } setPanel(t); }, []);
   useLayoutEffect(() => { if (panelScroll.current != null && feed.current) feed.current.scrollTop = panelScroll.current; }, [panel]);
@@ -180,6 +212,17 @@ function Room({ id }: { id: string }) {
   }
   if (!data) return <div className="page"><Link to={listPath}>← 장애 목록</Link>{narrative.error ? <><ErrorBox>장애 상황을 불러오지 못했습니다.</ErrorBox><button className="btn" onClick={reload}>다시 불러오기</button></> : <div className="empty" role="status"><Spinner /> 장애 관제실을 준비 중입니다.</div>}</div>;
   const i = incident!, done = isFinished(i.status);
+  const intake = codeAction.data;
+  if (intake?.state === 'intake_rejected' && (i.family_hint === 'application' || i.handoff?.origin === 'application')) {
+    return <div className="incident-room"><section className="headline" aria-label="장애 상황 요약">
+      <div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span>
+        <StatusBadge value="failed" /><h1>장애 관제실</h1><span>{placeKo(i.environment,i.system,null,i.namespace)}</span></div>
+      <h2>{i.workload} · {intake.state_ko}</h2>
+      <p>등록된 재현 절차를 찾을 수 없어 실행기 작업을 시작하기 전에 접수를 종료했습니다.</p>
+      <p className="record-times">접수 {whenKo(i.created_at)} · 종료 {whenKo(i.closed_at)}</p>
+      <p>{intake.next_ko}</p><Link className="btn sm" to="/incidents?kind=application">애플리케이션 장애 목록</Link>
+    </section></div>;
+  }
   const sameStatus = i.status === data.incident.status;
   const stage = STAGE_FROM_STATUS[i.status];
   const next = nextActionKo(i);
@@ -201,7 +244,29 @@ function Room({ id }: { id: string }) {
     else pastCommands.push(command);
   }
   const commandCard = (c: Command) => <div className="step-anchor" id={stepDomId(`command:${c.id}`)} tabIndex={-1} key={c.id}><CommandCard command={c} onChange={reload} readOnly={snapshot || coreLocked} /></div>;
-  const steps = orderSteps(data.flow.nodes);
+  const coreFlow = operatorFlow(data.flow);
+  const code = codeAction.data;
+  const codeNode = code?.linked ? data.flow.nodes.find(n => n.type === 'code_action') : null;
+  const appSummary=code?.linked && code.application_id ? {id:code.application_id,state:code.state,reason:code.problem_ko,service:i.workload,system:i.system,environment:i.environment,next_ko:code.next_ko}:null;
+  const appFlow=applicationFlow(appActivity.view, appSummary);
+  const rawFlow = attachApplicationFlow(coreFlow, codeNode, appFlow);
+  const mainFlow = semanticFlow(rawFlow, {
+    incidentStatus: i.kubernetes_status || i.status,
+    recoveryObserved: i.recovery_kind === 'observed' || !!data.accountability?.recovery_observed_at,
+    actions: detail.data?.actions,
+  });
+  const steps = orderSteps(coreFlow.nodes);
+  const pendingNode = recordView ? null : coreFlow.nodes.find(n => n.card?.kind === 'action' && n.card.status === 'pending_approval');
+  const rawFocus = activeAppStep(appFlow.nodes) ?? pendingNode ?? codeNode ?? focusStep(coreFlow.nodes, null, recordView);
+  const current = rawFocus && semanticForSource(mainFlow.nodes, rawFocus.id);
+  const defaultStage = current ?? mainFlow.nodes.at(-1) ?? null;
+  const focused = (selected && semanticForSource(mainFlow.nodes, selected)) || defaultStage;
+  const phase = focused?.semantic.phase ?? null;
+  const archivedFlow = snapshot || (recordView && !continuation);
+  const selectedGate = focused?.semantic.kind === 'approval' && code?.state === 'awaiting_prd_approval';
+  const gatedActions = (focused?.semantic.kind === 'approval' || focused?.semantic.kind === 'action')
+    ? approvals.filter(a => focused.semantic.members.some(n => n.card?.kind === 'action' && n.card.action_id === a.id)) : [];
+  const streamState = snapshot ? 'snapshot' : recordView ? 'record' : execution.state === 'snapshot' ? 'polling' : execution.state;
   // Message ids rendered inside step cards: this browser's targeted sends and steering nodes (`steer:<message id>`).
   const ownedBy = new Map<string, string>();
   const aliasesFor = (n: FlowNode) => (n.aliases ?? []).filter(key => resolveStepId(key, steps) === n.id);
@@ -235,13 +300,16 @@ function Room({ id }: { id: string }) {
       const aliases = aliasesFor(n);
       const key = aliases[0] ?? n.id;
       return { key: `step-${key}`, t: timed ? Date.parse(n.at!) : ix, el: <StepCard key={key} n={n} data={data} open={[n.id, ...aliases].some(key => openCards.has(key))} flash={flash === n.id} onToggle={() => toggle(n.id)} onDetail={openDetail} handoff={handoffView}
-      snapshot={snapshot} execution={stepExecution(n, events)} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} thread={threadFor(n)} local={localFor(n)} targetRole={stepTargetRole(n, data.flow.nodes)} closed={!open} finished={done} draft={draftFor(n)} onDraft={v => setDrafts(d => ({ ...d, [n.id]: v }))} onSend={body => sendStep(n, body)} name={name} onJump={choose} /> };
+      snapshot={snapshot} execution={stepExecution(n, events)} streamState={streamState} streamError={execution.error} receivedAt={execution.receivedAt} thread={threadFor(n)} local={localFor(n)} targetRole={stepTargetRole(n, data.flow.nodes)} closed={!open} finished={done} draft={draftFor(n)} onDraft={v => setDrafts(d => ({ ...d, [n.id]: v }))} onSend={body => sendStep(n, body)} name={name} onJump={choose} /> };
     }),
     ...talk.map(e => ({ key: `event-${e.seq}`, t: timed ? Date.parse(e.at) : steps.length + e.seq, el: <EventEntry e={e} key={`event-${e.seq}`} /> })),
   ].sort((a, b) => a.t - b.t);
   // 운영자 결정이 없으면 멈춰 있는 상태에서는 결정 카드까지 한 번에 데려간다(좁은 화면에서는 대화 탭으로 전환).
   const decisionNeeded = !snapshot && !coreLocked && (approvals.length > 0 || (i.status === 'handed_off' && !i.handoff?.claimed_by));
   const jumpToDecision = () => {
+    const decision = mainFlow.nodes.find(n => n.semantic.kind === (approvals.length ? 'approval' : 'handoff'))
+      ?? (pendingNode && semanticForSource(mainFlow.nodes, pendingNode.id));
+    if (decision) { choose(decision.id); return; }
     setTab('chat');
     window.requestAnimationFrame(() => {
       const card = feed.current?.querySelector<HTMLElement>('.action-card, .handoff-card');
@@ -253,7 +321,7 @@ function Room({ id }: { id: string }) {
   return <div className={`incident-room tab-${tab}${snapshot ? ' snapshot-view' : ''}`}>
     <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={listPath}>← 장애 관제</Link><span className="mono">#{i.id}</span><LevelBadge value={i.severity_level} /><>{codeAction.data?.linked ? <span className="badge info">{codeAction.data.state_ko}</span> : <StatusBadge value={i.status} recorded={snapshot} recoveryKind={i.recovery_kind} />}</><h1>장애 관제실</h1><span className="headline-place">{placeKo(i.environment, i.system, null, i.namespace)}</span><span className="headline-facts">{!recordView && <span>{age(i.created_at)} 경과</span>}{i.origin && <span className={`badge ${i.origin === 'evaluation' ? 'info' : ''}`}>{i.origin === 'evaluation' ? '평가 실행' : '출처 미확인'}</span>}</span></div>
       <h2>{i.workload} · {incidentSymptom(i)}</h2>
-      <p className="headline-impact">{recordView && <span className="record-label">당시 영향</span>}{impactKo(data.headline.impact, recordView)}</p>
+      <p className="headline-impact">{recordView && <span className="record-label">당시 영향</span>}{serviceSignalImpact(data) ?? impactKo(data.headline.impact, recordView)}</p>
       {result && !codeAction.data?.linked && <section className="record-result" aria-label="처리 결과">
         <p><strong>처리 결과</strong> {result.label}{result.detail && <> · {result.detail}</>}</p>
         <p className="record-times"><span>감지 {result.detected}</span><span>{result.timeLabel} {result.at}</span>{result.duration && <span>{result.duration}</span>}</p>
@@ -261,16 +329,42 @@ function Room({ id }: { id: string }) {
       {codeAction.data?.linked && <p className="core-history-note"><span>Kubernetes 단계 · 이전 처리 기록</span><StatusBadge value={i.kubernetes_status ?? data.incident.kubernetes_status ?? data.incident.status} recorded /><span>현재 진행은 코드 조치에서 확인하세요.</span></p>}
       {codeAction.data?.linked && <p className="faint">Kubernetes 분석 사용량</p>}<UsageLine incident={i} nodes={data.flow.nodes} />
       {snapshot ? <div className="record-notice" role="note"><strong>저장 당시 · {stage?.label}</strong> {result ? '' : `· 감지 ${whenKo(i.created_at)} `}· 읽기 전용 표본</div>
-        : codeAction.data?.linked ? <div className="headline-next"><span className="stage-label">{codeAction.data.state_ko}</span><p><b>다음</b> {codeAction.data.next_ko}</p></div> : (!result || i.status === 'handed_off') && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
+        : decisionNeeded && <div className={`headline-next ${decisionNeeded ? 'needs-decision' : ''}`}><span className="stage-label"><i className={`dot ${done ? 'warn' : 'info'}`} />{stage?.label}</span><p><b>{decisionNeeded ? '지금 할 일' : '다음'}</b> {next}</p>{decisionNeeded && <button type="button" className="btn sm primary" onClick={jumpToDecision}>{approvals.length ? '승인 카드로 이동' : '인계 카드로 이동'}</button>}</div>}
     </section>
     {(narrative.error || commands.error || detail.error || eventError) && <div className="room-error"><ErrorBox>{narrative.error ? '상황 정보' : commands.error ? '지시 목록' : detail.error ? '조치 승인 정보' : '실행 기록'} 갱신에 실패했습니다. 마지막으로 받은 내용을 표시합니다.</ErrorBox><button className="btn sm" onClick={reload}>다시 불러오기</button></div>}
-    <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '흐름'], ['chat', '대화']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => setTab(key)}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>
-    <div className={`room-columns ${panel ? 'with-detail' : ''}`}>
-      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><span className="pane-index">01</span><h2>AI 분석 흐름</h2></div><span className="badge info">{snapshot ? '저장 흐름' : continuation ? '코드 조치 진행 중' : done ? '실행 기록' : '실시간'}</span></header>
-        <FlowGraph snapshot={snapshot} flow={data.flow} selected={selected ? resolveStepId(selected, steps) ?? selected : null} onSelect={choose} /></section>
-      <section className="room-pane chat-pane conversation-pane" aria-label="분석 · 운영자 대화"><header className="pane-heading"><div><span className="pane-index">02</span><h2>분석 · 운영자 대화</h2></div><span className="faint">단계 {steps.length}개 · {snapshot ? '저장 기록' : i.status === 'closed' ? '종료 기록' : done ? '후속 작업' : '분석 지시'}</span></header>
-        <div className="chat-feed" ref={feed} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>
-          <CodeActionCard nodeId={data.flow.nodes.find(n => n.type === 'code_action')?.id} flash={flash === data.flow.nodes.find(n => n.type === 'code_action')?.id} id={id} summary={codeAction.data} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={codeAction.refresh} readOnly={snapshot} />
+
+    <nav className="room-phases" aria-label="사건 처리 단계">{roomPhases.map(p => {
+      const nodes = mainFlow.nodes.filter(n => phaseOf(n, code?.state, code?.mega_stage) === p.id);
+      const active = !snapshot && (!done || continuation) && !!current && current.semantic.phase === p.id;
+      const first = nodes.find(n => n.id===current?.id) ?? focusStep(nodes, null, recordView);
+      return <button type="button" key={p.id} disabled={!first} aria-pressed={phase === p.id}
+        className={active ? 'phase-current' : ''} onClick={() => { if (first) { setAllFlow(false); choose(first.id); } }}>
+        <DiagramIcon kind={p.icon} /><span><strong>{p.label}</strong><small>{active ? '현재 단계' : phaseStatus(nodes, recordView)}</small></span>
+      </button>;
+    })}</nav>
+    <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '현재 단계'], ['chat', '전체 대화·이력']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => {setTab(key); if (key==='flow') setMobileDetail(true);}}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>
+    <StageMotion node={tab === 'flow' && (!code?.linked || appActivity.view) ? focused : null}>
+    <div className={`room-columns ${mobileDetail ? 'show-stage-detail' : ''} ${wideDetail && tab==='flow' ? 'wide-stage-detail' : ''} ${panel && tab === 'chat' ? 'with-detail' : ''}`}>
+      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><h2>AI 분석 흐름</h2><span className="flow-scope">{allFlow ? '전체 사건' : roomPhases.find(p => p.id === phase)?.label}</span></div><button ref={graphHeader} type="button" className="btn sm" aria-pressed={allFlow} onClick={() => setAllFlow(v => !v)}>{allFlow ? '단계 흐름' : '전체 흐름'}</button></header>
+        {allFlow
+          ? <FlowGraph frameKey="all" flow={mainFlow} selected={focused?.id ?? null} onSelect={choose}
+              snapshot={snapshot} archived={archivedFlow} previousCore={!!code?.linked} />
+          : <StageRail flow={mainFlow} selected={focused?.id ?? null} onSelect={choose}
+              snapshot={snapshot} archived={archivedFlow} previousCore={!!code?.linked} />}
+      </section>
+      <section className="room-pane chat-pane conversation-pane" aria-label={tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}><header className="pane-heading"><div>{tab==='flow' && <button type="button" className="link-btn back-flow" onClick={()=>{focusAfterSelect.current='flow';setMobileDetail(false);}}>← 흐름으로 돌아가기</button>}<h2>{tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}</h2></div>{tab==='flow' && <button type="button" className="btn sm widen-stage" aria-pressed={wideDetail} onClick={()=>{if(focused)setSelected(focused.id);setWideDetail(v=>!v);}}>{wideDetail?'기본 너비로':'단계 넓게 보기'}</button>}<button type="button" className="btn sm" onClick={() => setTab(tab === 'flow' ? 'chat' : 'flow')}>{tab === 'flow' ? '전체 대화·이력' : '단계 관제로'}</button></header>
+        <div className="chat-feed" ref={feed} onFocusCapture={e=>{if(tab==="flow" && !selected && focused && e.target.closest(".step-panel"))setSelected(focused.id);}} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>
+          {tab === 'flow' && <>
+            <SemanticStagePanel key={focused?.id} node={focused}
+              core={{data, events, historical:recordView, state:streamState, error:execution.error, receivedAt:execution.receivedAt, readOnly:snapshot}}
+              application={appSummary ? {summary:appSummary, activity:appActivity} : undefined}
+              onChange={reload}/>
+            {selectedGate && <CodeActionCard id={id} summary={code} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={reload} readOnly={snapshot} decisionOnly/>}
+            {gatedActions.map(a => <ActionApprovalCard action={a} key={a.id} onChange={reload}/>)}
+            {focused?.semantic.kind === 'handoff' && !snapshot && !coreLocked && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload}/>}
+          </>}
+          {tab === 'chat' && <>
+          {legacyCore ? <p className="notice">이 Kubernetes 서버는 통합 코드 조치를 지원하지 않습니다. <Link to="/application">애플리케이션 장애 메뉴</Link></p> : <CodeActionCard nodeId={data.flow.nodes.find(n => n.type === 'code_action')?.id} flash={flash === data.flow.nodes.find(n => n.type === 'code_action')?.id} id={id} summary={codeAction.data} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={codeAction.refresh} readOnly={snapshot} />}
           {i.status === 'closed' && !codeAction.data?.linked && <ClosedCard incident={i} />}
           {approvals.map(a => <ActionApprovalCard action={a} key={`action-${a.id}`} onChange={reload} />)}
           {!snapshot && !coreLocked && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload} />}
@@ -283,13 +377,23 @@ function Room({ id }: { id: string }) {
 
           {(changes.data?.items ?? []).map(c => <ChangeRequestCard change={c} key={c.id} onChange={changes.refresh} readOnly={snapshot || coreLocked} />)}
           {!snapshot && !coreLocked && closable(i.status) && detail.data && <CloseCard incident={i} blocked={closeBlocked} onChange={reload} />}
+          </>}
 
         </div>
-        {open && <div className="composer">{!done && <div className="ctrl"><span className="control-status">{control === 'paused' ? '일시정지됨' : control === 'stopping' ? '중단 중' : '자동 분석 중'}</span><button className="btn sm" disabled={busy || control === 'stopping'} onClick={() => void ctl(control === 'paused' ? 'resume' : 'pause')}>{control === 'paused' ? '재개' : '일시정지'}</button><button className="btn sm danger" disabled={busy || control === 'stopping'} onClick={() => void ctl('stop')}>중단</button></div>}<ErrorBox>{error}</ErrorBox>{sent && <p className="composer-notice" role="status">{sent}</p>}<form onSubmit={send}><textarea aria-label="운영자 메시지" rows={2} value={text} maxLength={done ? 8000 : 2000} placeholder={done ? 'AI에게 작업을 지시하세요 (실행 전 부작용을 확인합니다)' : 'AI 분석에 지시하세요 (다음 단계부터 반영)'} onChange={e => setText(e.target.value)} /><button className="btn primary" type="submit" disabled={busy || !text.trim()}>{busy ? '전송 중' : '보내기'}</button></form><small>비밀값은 대화에 쓰지 말고 전용 입력란을 사용하세요.</small></div>}
+        {open && done && !followUpOpen && <div className="room-followup"><button type="button" className="btn sm" onClick={() => setFollowUpOpen(true)}>후속 작업 요청</button></div>}
+        {open && (!done || followUpOpen) && <div className="composer">
+          {done ? <div className="ctrl"><span>후속 작업 계획 요청</span><button className="btn sm" type="button" onClick={() => setFollowUpOpen(false)}>닫기</button></div> :
+            <div className="ctrl"><span className="control-status">{control === 'paused' ? '일시정지됨' : control === 'stopping' ? '중단 중' : '자동 분석 중'}</span><button className="btn sm" disabled={busy || control === 'stopping'} onClick={() => void ctl(control === 'paused' ? 'resume' : 'pause')}>{control === 'paused' ? '재개' : '일시정지'}</button><button className="btn sm danger" disabled={busy || control === 'stopping'} onClick={() => void ctl('stop')}>중단</button></div>}
+          <ErrorBox>{error}</ErrorBox>{sent && <p className="composer-notice" role="status">{sent}</p>}
+          <form onSubmit={send}><textarea aria-label={done ? '후속 작업 요청 내용' : '운영자 메시지'} rows={1} value={text} maxLength={done ? 8000 : 2000}
+            placeholder={done ? '분석 종료 후 별도로 검토할 작업을 적으세요' : 'AI 분석에 지시하세요 (다음 단계부터 반영)'} onChange={e => setText(e.target.value)} />
+            <button className="btn primary" type="submit" disabled={busy || !text.trim()}>{busy ? '전송 중' : done ? '계획 요청' : '보내기'}</button></form>
+          <small>{done ? '변경 계획과 부작용을 검토한 뒤 실행을 결정합니다.' : '비밀값은 대화에 쓰지 말고 전용 입력란을 사용하세요.'}</small>
+        </div>}
       </section>
       {/* 좁은 화면에서는 상세가 대화 위에 뜨는 시트이므로 뒤 화면을 가림막으로 덮어 잘린 카드가 그대로 보이지 않게 한다. */}
-      {panel && <div className="detail-backdrop" aria-hidden="true" onClick={closeDetail} />}
-      {panel && <DetailPanel target={panel} data={data} handoff={handoffView} onClose={closeDetail} snapshot={snapshot} events={events} streamState={snapshot ? 'snapshot' : execution.state} streamError={execution.error} receivedAt={execution.receivedAt} />}
-    </div>
+      {panel && tab === 'chat' && <div className="detail-backdrop" aria-hidden="true" onClick={closeDetail} />}
+      {panel && <DetailPanel wide={tab === 'flow'} target={panel} data={data} handoff={handoffView} onClose={closeDetail} snapshot={snapshot} events={events} streamState={streamState} streamError={execution.error} receivedAt={execution.receivedAt} />}
+    </div></StageMotion>
   </div>;
 }

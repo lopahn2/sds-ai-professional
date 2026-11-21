@@ -11,11 +11,13 @@ import './naria.css';
 import './room.css';
 import './unified.css';
 const ApplicationPage = lazy(() => import('./ApplicationPage').then(m => ({ default: m.ApplicationPage })));
+const NativeIncidentRoom = lazy(() => import('./ApplicationPage').then(m => ({default:m.NativeIncidentRoom})));
 export default function App() {
   return <BrowserRouter><Suspense fallback={<div className="empty" role="status">화면을 불러오는 중입니다.</div>}><Routes><Route element={<Shell />}>
     <Route index element={<OverviewPage />} />
     <Route path="application" element={<ApplicationPage />} />
     <Route path="incidents" element={<Incidents />} />
+    <Route path="incidents/application/:id" element={<NativeIncidentRoom/>} />
     <Route path="incidents/:id" element={<IncidentRoom />} />
     <Route path="map" element={<Navigate to="/" replace />} />
     <Route path="ledger" element={<Ledger />} />

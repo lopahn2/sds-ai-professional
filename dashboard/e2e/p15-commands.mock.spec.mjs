@@ -3,7 +3,11 @@ import { capture, layout, mock, resetMock, tab } from './p15-helpers.mjs';
 test.skip(!mock,'로컬 모의 API에서만 변경 경로를 실행합니다.');
 test.beforeEach(async({request})=>resetMock(request));
 async function room(page, request, running=false){const {items}=await(await request.get('/api/incidents?limit=200')).json();const i=items.find(i=>running?i.status==='analyzing':i.status==='handed_off')??items[0];await page.goto(`/incidents/${i.id}`);await expect(page.getByRole('heading',{name:'장애 관제실',exact:true})).toBeVisible();await tab(page,'대화');return i;}
-async function send(page,text){await page.getByRole('textbox',{name:'운영자 메시지'}).fill(text);await page.getByRole('button',{name:'보내기',exact:true}).click();const c=page.locator('.command-card').last();await expect(c).toBeVisible();await expect(c.getByText('정말 진행하시겠습니까?',{exact:true})).toBeVisible({timeout:10000});return c;}
+async function send(page,text){
+ const form=page.locator('.composer form');
+ const followUp=page.getByRole('button',{name:'후속 작업 요청',exact:true});
+ if(await followUp.isVisible())await followUp.click();
+ await form.getByRole('textbox').fill(text);await form.getByRole('button',{name:/^(보내기|계획 요청)$/}).click();const c=page.locator('.command-card').last();await expect(c).toBeVisible();await expect(c.getByText('정말 진행하시겠습니까?',{exact:true})).toBeVisible({timeout:10000});return c;}
 test('메시지에서 지시 계획·사전 검사·부작용 확인 후 실행과 원복',async({page,request},info)=>{
  await room(page,request);const c=await send(page,'주문 서비스 파드를 2개로 늘려 주세요.');await expect(c).toContainText('사전 검사 결과');const rawDiff = c.locator('.dry-run pre');await expect(rawDiff).toHaveCount(0);await c.getByText('검사·변경 차이 원문 보기',{exact:true}).first().click();await expect(rawDiff.first()).toContainText('/spec/replicas');await expect(c.getByLabel('예상 부작용')).toContainText('원복 가능');await c.getByRole('button',{name:'진행',exact:true}).scrollIntoViewIfNeeded();await layout(page);await capture(page,info,'command-confirm');
  const confirmed=page.waitForRequest(r=>/\/commands\/\d+\/confirm$/.test(r.url()));await c.getByRole('button',{name:'진행',exact:true}).focus();await page.keyboard.press('Enter');const sent=await confirmed;expect(sent.headers()['x-liveprobe-client']).toBe('dashboard');expect(sent.postDataJSON().plan_sha256).toMatch(/^[a-f0-9]{64}$/);await expect(c.locator('header [role="status"]')).toHaveText('실행 완료',{timeout:10000});await expect(c).toContainText('검증 결과');await layout(page);await capture(page,info,'command-succeeded');

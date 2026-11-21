@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { request } from './api';
 import { useLive } from './live';
 import { ModelSettings } from './ModelSettings';
+import { ObservationSources } from './ObservationSources';
 
 type Mode = 'auto' | 'approval' | 'suggest_only';
 const MODES: [Mode, string, string][] = [['auto', '자동 실행', '허용된 저위험 조치를 자동 실행합니다.'], ['approval', '승인 후 실행', '조치를 실행하기 전 운영자 승인을 요청합니다.'], ['suggest_only', '제안만', '조치를 실행하지 않고 제안만 기록합니다.']];
@@ -9,7 +10,7 @@ const MODES: [Mode, string, string][] = [['auto', '자동 실행', '허용된 �
 export function Settings() {
   const [mode, setMode] = useState<Mode>('approval'); const [error, setError] = useState<string | null>(null); const [msg, setMsg] = useState(''); const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false);
   const [profile, setProfile] = useState<{ active: string; requested?: string; downgraded_reason?: string | null } | null>(null);
-  const { accounts, notifyState, askNotify } = useLive();
+  const { accounts } = useLive();
   useEffect(() => {
     request<{ automation_mode: Mode }>('/settings').then(s => setMode(s.automation_mode)).catch(e => setError(e.message)).finally(() => setLoading(false));
     request<typeof profile>('/policy/profile').then(setProfile).catch(() => undefined);
@@ -32,8 +33,7 @@ export function Settings() {
     <div className="card" style={{ marginBottom: 24 }}><header>Codex 계정</header><div className="body">{!accounts ? '확인 중…' : <>
       {accounts.accounts.map(a => <p key={a.name}><b>{a.name === 'primary' ? '주 계정' : '예비 계정'}</b> <span className={`badge ${a.state === 'available' ? 'ok' : 'warn'}`}>{a.state === 'available' ? '사용 가능' : a.state === 'limited' ? `한도 · 약 ${Math.ceil((a.blocked_for_s ?? 0) / 60)}분 후` : a.state}</span></p>)}
       {accounts.mode !== 'pool' && <p className="notice" style={{ marginTop: 8 }}>예비 계정이 설정되지 않았습니다. 한도에 닿으면 상태를 저장하고 대기합니다. API 키나 다른 모델로 전환하지 않습니다.</p>}</>}</div></div>
+    <ObservationSources />
     <ModelSettings />
-    <div className="card"><header>브라우저 알림</header><div className="body">
-      {notifyState === 'unsupported' ? <span className="muted">이 브라우저는 알림을 지원하지 않습니다. 화면 안 알림은 계속 표시됩니다.</span> : notifyState === 'granted' ? <span className="badge ok">켜짐</span> : notifyState === 'denied' ? <span className="muted">브라우저 설정에서 차단되어 있습니다. 화면 안 알림은 계속 표시됩니다.</span> : <button className="btn" onClick={askNotify}>알림 허용 요청</button>}</div></div>
   </div>;
 }

@@ -6,11 +6,11 @@ export type TopoNode = {
   lifecycle?: 'current' | 'retired';
   status: 'ready' | 'degraded' | 'down' | 'completed' | 'unknown' | 'observed_only' | string;
   pods?: number; ready?: number; completed?: number; node?: string | null;
-  cluster_ip?: string | null; ports?: number[]; endpoints_ready?: number;
+  cluster_ip?: string | null; ports?: number[]; endpoints_ready?: number | null;
   role?: 'entry' | 'service' | 'data' | 'system' | 'job' | 'node' | 'external' | string;
   data_store?: string; folded_into?: string; no_endpoints?: string[]; broken_routes?: string[];
   services?: { name: string; ports: number[]; endpoints_ready: number | null }[];
-  hosts?: string[]; routes?: { host: string | null; path: string; service: string; port: number | string | null; workload: string | null; backend_ready: boolean; backend_found: boolean }[];
+  hosts?: string[]; routes?: { host: string | null; path: string; service: string; port: number | string | null; workload: string | null; backend_ready: boolean | null; backend_found: boolean }[];
   ingress_class?: string | null;
   warnings?: { incident_id: number; level: string | null; status: string; title: string }[];
   network_warnings?: { peer: string; dropped: number; errors: number }[];
@@ -24,7 +24,7 @@ export type ContractEdge = {
 };
 export type ObservedEdge = {
   from: string; to: string; flows: number; ok: number; dropped: number; errors: number;
-  state: 'ok' | 'degraded' | 'blocked' | string; last_seen: number | null; ports: Record<string, number>;  // null: Envoy-only edge
+  state: 'ok' | 'degraded' | 'blocked' | string; metric_at?:number|null; last_seen: number | null; ports: Record<string, number>;  // null: Envoy-only edge
   req_rate?: number | null; err_rate?: number | null;
   drop_reasons: Record<string, number>; via_service: Record<string, number>; via_controller?: string;
 };
@@ -211,7 +211,7 @@ export function buildMapModel(topo: Topology, opts: BuildOpts = {}): MapModel {
     hidden: { system: hiddenSystem.length, jobs: hiddenJobs.length, unconnected: showUnc ? 0 : unconnected.length } };
 }
 
-export const EDGE_COLOR: Record<string, string> = { ok: '#3e8635', degraded: '#d97706', blocked: '#dc2626', structure: '#a3a3a3' };
+export const EDGE_COLOR: Record<string, string> = { ok: '#176a46', degraded: '#825600', blocked: '#b02d3b', structure: '#707d83' }; // naria light success / warning / danger / strong-border
 export function edgeWidth(flows: number): number { return Math.min(4, 1 + Math.log10(Math.max(1, flows)) * 0.9); }
 
 export type ClusterSummary = { nodesReady: number; nodesTotal: number; openIncidents: number; alerts: number; observedFlows: number; freshness: 'live' | 'delayed' | 'never' };

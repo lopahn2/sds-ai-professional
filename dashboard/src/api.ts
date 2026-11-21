@@ -2,7 +2,7 @@ import type { Topology } from './mapModel';
 import type { CostStatus, IncidentOrigin } from './cost';
 export { costKo, money, ORIGIN_KO, type CostStatus, type IncidentOrigin } from './cost';
 
-export type Status = 'open' | 'analyzing' | 'action_pending' | 'acting' | 'resolved' | 'handed_off' | 'failed' | 'closed';
+export type Status = 'recovery_review' | 'open' | 'analyzing' | 'action_pending' | 'acting' | 'resolved' | 'handed_off' | 'failed' | 'closed';
 export type Level = 'SIMPLE' | 'NORMAL' | 'COMPLEX' | 'HIGH_RISK';
 export type Citation = { chunk_id: number; doc: string; source: string; chunk_ix: number; score: number; content: string; source_uri?: string | null; locator?: string | null };
 export type Incident = { id: number; title: string; title_ko?: string | null; namespace: string; system?: string | null; environment?: string | null; workload: string; status: Status; kubernetes_status?: Status | null; severity_level: Level | null; signal_count: number; created_at: string; updated_at: string; closed_at: string | null; total_cost_usd: number | null; agent_run_count: number; summary?: string | null; status_reason?: string | null; signal_reasons?: string[]; handoff?: Record<string, unknown> | null; family_hint?: string | null; stage?: Stage | null;
@@ -17,11 +17,14 @@ export type Stage = { key: string; label: string };
 export type RawItem = {
   id: string; ref: string; kind: 'event' | 'log' | 'status' | 'metric' | 'config' | 'node' | 'agent' | string;
   source: string; at: string | null; raw: string; severity: 'info' | 'warn' | 'error' | string;
-  ko: string | null; ko_source: 'rules' | 'llm' | null; cited_by: string[];
+  reading_state?: string; ko: string | null; ko_source: 'rules' | 'llm' | null; cited_by: string[];
 };
 export type FlowNodeType = 'signal' | 'evidence' | 'router' | 'group' | 'agent' | 'verify' | 'action' | 'outcome' | 'steer' | 'command' | 'interpret';
 export type FlowNodeStatus = 'planned' | 'running' | 'done' | 'failed' | 'skipped' | 'escalated';
+export type Dispatch = { version: 'dispatch/v1'; role_ko: string; task_ko: string; evidence_refs: string[]; rag_refs: string[]; operator_message_ids: number[]; prompt_sha256: string; prompt_chars: number };
 export type FlowNode = {
+  dispatch?: Dispatch;
+  source_activity?: {at:number; phase:string; file:string|null; attempt:number; job_id:string; seq:number}[];
   id: string; type: FlowNodeType | string; label: string; role: string | null; role_ko: string; job_ko: string;
   status: FlowNodeStatus | string; model: string | null; effort: string | null; tokens: { in: number | null; out: number | null } | null;
   cost_usd: number | null; duration_ms: number | null; inputs: string[]; conclusion_ko: string | null; conclusion_raw: string | null;
@@ -54,19 +57,21 @@ export type GroupCard = { kind: 'group'; routing_id: number; level: string; grou
 export type AgentCard = { kind: 'agent'; agent_run_id: number | null; summary_raw: string | null; summary_ko: string | null;
   candidates: { cause_raw: string; cause_ko?: string | null; confidence: number | null; verifier: string | null; evidence_refs?: string[] }[];
   /** P20 explainability fields; absent on older servers (shown as 미기록, never invented). */
-  confidence?: number | null; quotes?: AgentQuote[]; counter_evidence?: CounterEvidence[]; candidate_verdicts?: CandidateVerdict[];
+  proposed_action?:{type_ko:string;target:string;impact_ko:string|null;success_condition_ko:string|null;rollback_condition_ko:string|null};
+  recommended_steps_ko?: (string|null)[]; confidence?: number | null; quotes?: AgentQuote[]; counter_evidence?: CounterEvidence[]; candidate_verdicts?: CandidateVerdict[];
   citations?: CardCitation[]; acceptance?: { rejected: boolean; reason_raw: string; reason_ko: string } | null;
   verdict: string | null; verdict_ko: string | null; next_action: string | null; next_action_ko: string | null;
   counter_evidence_count: number; error: string | null; error_ko?: string | null; accepts_steering: boolean; steer_target_role: string };
 export type ActionCard = { kind: 'action'; action_id: number; type: string; type_ko: string; target: string; status: string; status_ko: string; changes: string[] };
 export type HandoffDecision = { key: 'outcome' | 'cause' | 'auto_action' | 'operator' | string; label_ko: string; value_ko: string };
 export type HandoffView = { summary_ko: string | null; summary_raw: string | null; summary_source?: 'interpret' | 'rules' | string; decisions: HandoffDecision[]; next_steps_ko: string[]; next_steps_raw: string[]; interpreting: boolean };
-export type OutcomeCard = { kind: 'outcome'; status: string; status_ko: string; handoff: HandoffView | null };
+export type OutcomeCard = { kind: 'outcome'; status: string; status_ko: string; handoff: HandoffView | null; handoff_recorded_at?:string|null; handoff_claimed?:boolean; closed_from?:string|null };
 export type FlowCard = SignalCard | EvidenceCard | RoutingCard | GroupCard | AgentCard | ActionCard | OutcomeCard;
 /** POST /incidents/{id}/messages response (target fields are P18 W6 and may be absent on older servers). */
 export type MessageResponse = { message_id: number; intent?: string; target_level?: string | null; ack_ko?: string | null; applies?: string; target_role?: string | null; target_node?: string | null; hold?: boolean };
 export type FlowEdge = { id: string; source: string; target: string; kind: 'flow' | 'escalate' | 'reroute' | 'steer' | 'verify' | string; label: string | null };
 export type Narrative = {
+  accountability?: import('./accountability').Accountability;
   /** View metadata only: stored incident and execution statuses are preserved. */
   view_mode?: 'live' | 'snapshot';
   incident: Incident;
@@ -99,13 +104,15 @@ export type ClusterNode = { name: string; ready: boolean | null; cpu_cores: numb
 export type EnvironmentStat = { name: string; order: number; workloads: number | null; pods_ready: number | null; pods_total: number | null; open_incidents: number | null; missing?: true };
 export type NamespaceStat = { name: string; pods_running: number | null; pods_pending: number | null; pods_failed: number | null; restarts_1h: number | null; cpu_cores: number | null; mem_bytes: number | null; workloads: number | null; workloads_unhealthy: number | null };
 export type WorkloadIncident = { id: number; level: Level | string | null; status: string; stage: Stage | null; system?: string | null; environment?: string | null };
-export type Workload = { id: string; namespace: string; system?: string | null; environment?: string | null; name: string; kind: string; ready: number | null; desired: number | null; restarts_1h: number | null; cpu: number | null; mem: number | null; req_rate: number | null; err_rate: number | null; p95_ms: number | null; incident: WorkloadIncident | null };
+export type Workload = { metric_at?:number|null; id: string; namespace: string; system?: string | null; environment?: string | null; name: string; kind: string; ready: number | null; desired: number | null; restarts_1h: number | null; cpu: number | null; mem: number | null; req_rate: number | null; err_rate: number | null; p95_ms: number | null; incident: WorkloadIncident | null };
 export type ClusterEvent = { at: string | null; namespace: string | null; object: string; reason: string; type: string; message: string; count: number | null };
 export type OpenIncident = { id: number; title: string; namespace: string; system?: string | null; environment?: string | null; workload: string; severity_level: Level | string | null; status: string; stage: Stage | null; created_at: string };
 /** 정돈-05: one bucket definition shared with the header and incident list (server: app/incident_counts.py). */
 export type IncidentCounts = { automatic: number; awaiting_approval: number; unclaimed_handoff: number; in_progress: number; closed_history: number;
   map_handoff_window_hours: number; by_environment: Record<string, { automatic: number; awaiting_approval: number; unclaimed_handoff: number; in_progress: number }> };
 export type Overview = {
+  inventory_observed_at?:string|null;
+  preview_notice?:{source_ko:string;observed_at:string;message_ko:string};
   generated_at: string | null;
   cluster: { nodes: ClusterNode[]; namespaces: NamespaceStat[]; environments?: EnvironmentStat[] };
   workloads: Workload[];
@@ -116,8 +123,14 @@ export type Overview = {
 };
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
+/** Non-secret CSRF challenge issued by the loopback gateway on document navigation. */
+export function localOperatorCsrf(): string | null {
+  if (typeof document === 'undefined') return null;
+  return document.cookie.match(/(?:^|;\s*)lp_operator_csrf=([a-f0-9]{64}\.[a-f0-9]{64})(?:;|$)/)?.[1] ?? null;
+}
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, { ...options, credentials: 'same-origin', headers: { 'X-LiveProbe-Client': 'dashboard', ...(options?.body ? { 'Content-Type': 'application/json' } : {}), ...options?.headers } });
+  const csrf = options?.method && !['GET', 'HEAD'].includes(options.method.toUpperCase()) ? localOperatorCsrf() : null;
+  const response = await fetch(`/api${path}`, { ...options, credentials: 'same-origin', headers: { 'X-LiveProbe-Client': 'dashboard', ...(options?.body ? { 'Content-Type': 'application/json' } : {}), ...options?.headers, ...(csrf ? { 'X-LiveProbe-Operator-CSRF': csrf } : {}) } });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new ApiError(response.status, typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`);

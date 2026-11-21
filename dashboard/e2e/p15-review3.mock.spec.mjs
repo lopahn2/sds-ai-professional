@@ -20,7 +20,7 @@ test('같은 필터의 오래된 실패가 최신 목록 성공 뒤 오류 경�
 test('혼합 연결의 숨긴 문구는 자원 상세에서 요청률과 전체 흐름·차단·오류를 모두 보존한다',async({page,request})=>{
  const o=await(await request.get('/api/overview')).json();
  delete o.cluster.environments; o.workloads=[];o.incidents.open=[];o.topology={generated_at:10000,nodes:['a','b'].map((id,j)=>({id,name:id,namespace:j?'other':'shop',kind:'Deployment',status:'ready'})),structure_edges:[],observed_edges:[{from:'a',to:'b',flows:26,ok:12,dropped:13,errors:1,req_rate:10,err_rate:0.1,last_seen:10000,state:'degraded',ports:{},drop_reasons:{},via_service:{}}],freshness:{state:'connected',stale:false,stale_after_s:60},network_alerts:[]};
- await page.route('**/api/overview',r=>r.fulfill({json:o}));await page.goto('/');await page.getByRole('combobox',{name:'지도 자원 선택'}).selectOption('a');
+ await page.route('**/api/overview',r=>r.fulfill({json:o}));await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();await page.getByRole('combobox',{name:'지도 자원 선택'}).selectOption('a');
  const d=page.getByRole('complementary',{name:'자원 상세'});await expect(d).toBeVisible();await expect(page.locator('.react-flow__edge-text')).toHaveCount(0);
  for(const value of ['10/초','오류 10%','흐름 26','차단 13','오류 1'])await expect(d).toContainText(value);await layout(page);
 });
@@ -35,9 +35,9 @@ test('해석 조회 실패 중에도 최신 상세가 인계되면 인수 카드
  await page.goto(`/incidents/${i.id}`);await tab(page,'대화');const card=page.getByRole('article',{name:`조치 승인 요청 ${a.id}`});await expect(card).toBeVisible();
  changed=true;page.once('dialog',dialog=>void dialog.accept());await card.getByRole('button',{name:'승인',exact:true}).click();
  await expect(page.locator('.room-error')).toContainText('상황 정보');await expect(card).toHaveCount(0);
- await expect(page.getByRole('article',{name:'운영자 인계'})).toBeVisible();await expect(page.getByRole('textbox',{name:'운영자 메시지'})).toHaveAttribute('maxlength','8000');
+ await expect(page.getByRole('article',{name:'운영자 인계'})).toBeVisible();await page.getByRole('button',{name:'후속 작업 요청',exact:true}).click();await expect(page.getByRole('textbox',{name:'후속 작업 요청 내용'})).toHaveAttribute('maxlength','8000');
  await expect(page.getByRole('button',{name:'일시정지',exact:true})).toHaveCount(0);await layout(page);
  await page.route(`**/api/incidents/${i.id}/messages`,r=>{sent.push('messages');return r.fulfill({json:{}});});
  await page.route(`**/api/incidents/${i.id}/commands`,r=>{if(r.request().method()==='POST'){sent.push('commands');return r.fulfill({status:201,json:{}});}return r.fallback();});
- await page.getByRole('textbox',{name:'운영자 메시지'}).fill('후속 상태를 확인하세요');await page.getByRole('button',{name:'보내기',exact:true}).click();await expect.poll(()=>sent).toEqual(['commands']);
+ await page.getByRole('textbox',{name:'후속 작업 요청 내용'}).fill('후속 상태를 확인하세요');await page.getByRole('button',{name:'계획 요청',exact:true}).click();await expect.poll(()=>sent).toEqual(['commands']);
 });

@@ -6,7 +6,8 @@ import { EVENT_REASON_KO, incidentStatusKo } from './labels.ts';
 const TECHNICAL = /(?:https?:\/\/|\b(?:kubectl|curl|wget|Traceback|Exception|Error:|sha256|resourceVersion)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b|[a-f\d]{32,}|[{}]|<\/?[a-z]|\b\w*(?:Error|Exception)\b|HTTP\/\d|\bat \S+\([^)]*:\d+|\n\s*(?:at |File |[{$]))/i;
 export function summaryKo(value: unknown, fallback: string, max = 240): string {
   if (typeof value !== 'string') return fallback;
-  const text = value.trim();
+  // Older Application summaries appended their deduplication key to an otherwise readable symptom.
+  const text = value.replace(/(?:^|[\s·])사건\s*서명\s*[:：]?\s*[a-f0-9]{16,64}\.?\s*$/i, '').trim();
   return text && text.length <= max && /[가-힣]/.test(text) && !TECHNICAL.test(text) ? text : fallback;
 }
 export function incidentSymptom(i: Pick<Incident, 'signal_reasons' | 'title_ko'> & {workload?: string}): string {

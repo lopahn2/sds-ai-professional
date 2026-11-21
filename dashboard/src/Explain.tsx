@@ -89,11 +89,11 @@ export function AgentBasis({ card }: { card: AgentCard }) {
 const SOURCE_KIND_KO: Record<string, string> = { runbook: '런북', public_doc: '공개 문서', past_incident: '과거 사건', reference: '판단 참고자료' };
 
 /** #7 독립 검증 결과: 무엇을 검증했고 수락·반려했는지. */
-export function VerifyResult({ card }: { card: AgentCard }) {
+export function VerifyResult({ card, showNext=true }: { card: AgentCard; showNext?:boolean }) {
   const verdicts = card.candidate_verdicts ?? [];
   if (!card.verdict && !verdicts.length) return null;
   return <div className={`verify-result ${verdictTone(card.verdict)}`} aria-label="독립 검증 결과">
-    <p className="verify-head"><b>검증 판정</b><span className={`badge ${verdictTone(card.verdict)}`}>{card.verdict_ko || '판정 미기록'}</span>{card.next_action_ko && <span>다음 행동 · {card.next_action_ko}</span>}</p>
+    <p className="verify-head"><b>검증 판정</b><span className={`badge ${verdictTone(card.verdict)}`}>{card.verdict_ko || '판정 미기록'}</span>{showNext && card.next_action_ko && <span>다음 행동 · {card.next_action_ko}</span>}</p>
     {verdicts.length > 0 && <ol className="verdict-list">{verdicts.map((v, i) => { const cand = v.index == null ? null : card.candidates[v.index]; return <li key={i}>
       <p><b>{candidateLabel(v.index)}</b><span className={`badge ${verdictTone(v.verdict)}`}>{v.verdict_ko || '판정 미기록'}</span></p>
       {cand && <p className="muted">검증 대상 · {summaryKo(cand.cause_ko, '한글 해석 미기록')}</p>}

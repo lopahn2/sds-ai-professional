@@ -27,7 +27,7 @@ export const levelTone = (level: string | null | undefined): Tone =>
   level === 'HIGH_RISK' || level === 'COMPLEX' ? 'danger' : level === 'NORMAL' || level === 'SIMPLE' ? 'warn' : 'muted';
 
 export const INCIDENT_STATUS_KO: Record<string, string> = {
-  open: '접수', analyzing: '분석 중', action_pending: '승인 대기', acting: '조치 중', resolved: '자동 복구 완료', handed_off: '운영자 인계', failed: '처리 실패', closed: '운영자 종료',
+  recovery_review: '복구 관측 · 소명 대기', open: '접수', analyzing: '분석 중', action_pending: '승인 대기', acting: '조치 중', resolved: '자동 복구 완료', handed_off: '운영자 인계', failed: '처리 실패', closed: '운영자 종료',
 };
 export const incidentStatusKo = (s: string, recoveryKind?: string | null) => s === 'resolved' && recoveryKind === 'observed' ? '정상 상태 확인' : INCIDENT_STATUS_KO[s] ?? '상태 미확인';
 export const incidentStatusTone = (s: string): Tone =>
