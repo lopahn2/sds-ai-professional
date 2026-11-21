@@ -130,7 +130,10 @@ test('움직임 감소 설정은 두 다이어그램의 장식 애니메이션�
   const row = await incident(request);
   for (const [url, selector] of [['/', '.resource-button'], [`/incidents/${row.id}`, '.flow-step']]) {
     await page.goto(url);
-    if (url === '/') await page.getByRole('button',{name:'인프라·수집 진단'}).click();
+    if (url === '/') {
+      await page.getByRole('navigation',{name:'수집원 상태'}).getByRole('button').first().click();
+      await page.locator('summary').filter({hasText:'인프라 연결 지도'}).click();
+    }
     else await page.getByRole('button',{name:'전체 흐름',exact:true}).click();
     await page.locator(selector).first().waitFor();
     const motion = await page.locator(selector).evaluateAll(es => es.map(e => ({ animation: getComputedStyle(e).animationName, transition: getComputedStyle(e).transitionDuration })));

@@ -145,3 +145,63 @@
   color: var(--diagram-meta);
 }
 .flow-empty .flow-empty-icon svg { width: 24px; height: 24px; }
+
+.flow-canvas[data-mode="stage"] .react-flow__pane { touch-action: pan-y pinch-zoom; cursor: default; }
+.flow-canvas[data-mode="stage"] .react-flow__node { cursor: pointer; }
+.flow-canvas[data-mode="stage"]::before,
+.flow-canvas[data-mode="stage"]::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  width: var(--stage-fade);
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(var(--fade-angle), var(--diagram-bg), transparent);
+}
+.flow-canvas[data-mode="stage"]::before { left: 0; --fade-angle: 90deg; }
+.flow-canvas[data-mode="stage"]::after { right: 0; --fade-angle: 270deg; }
+.flow-canvas[data-before]::before, .flow-canvas[data-after]::after { opacity: .96; }
+.flow-canvas[data-compact] .flow-step > button { grid-template-columns: 16px minmax(0, 1fr); gap: 2px 4px; padding-inline: 8px; }
+.flow-canvas[data-compact] .flow-role-icon, .flow-canvas[data-compact] .flow-role-icon svg { width: 16px; height: 16px; }
+.flow-canvas[data-compact] .flow-step-top { gap: 3px; }
+.flow-canvas[data-compact] .flow-step strong { font-size: 13px; }
+.nds-theme .flow-canvas[data-compact] .flow-state { padding-inline: 3px; }
+
+/* The work ring belongs to an observed actor and stays on that actor when the
+   operator selects another card. A static badge also identifies it at rest. */
+.flow-canvas .flow-step[data-working]::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  border: 2px solid var(--diagram-reroute);
+  border-radius: inherit;
+}
+.flow-canvas .flow-step[data-working] .flow-state i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .flow-canvas .flow-step[data-working]::after { animation: flow-work-pulse 1.65s ease-out infinite; }
+  .flow-canvas[data-mode="stage"]::before, .flow-canvas[data-mode="stage"]::after { transition: opacity 140ms ease-out; }
+}
+@keyframes flow-work-pulse {
+  from { opacity: .95; box-shadow: 0 0 0 0 color-mix(in srgb, var(--diagram-reroute) 55%, transparent); }
+  75%, to { opacity: .7; box-shadow: 0 0 0 10px transparent; }
+}
+@media (max-width: 900px) {
+  .nds-theme .incident-room.tab-flow .room-columns:has(.flow-canvas[data-mode="stage"]) .flow-pane:has(.flow-canvas[data-mode="stage"]) {
+    display: flex;
+    flex: none;
+    min-height: 0;
+    height: auto;
+  }
+  .nds-theme .incident-room.tab-flow .room-columns:has(.flow-canvas[data-mode="stage"]) .room-pane.conversation-pane { display: flex; }
+  .nds-theme .incident-room.tab-flow .room-columns:has(.flow-canvas[data-mode="stage"]) .back-flow { display: none; }
+  .nds-theme .incident-room.tab-flow .room-columns:has(.flow-canvas[data-mode="stage"]) .pane-heading { min-height: 30px; padding-block: 2px; }
+  .incident-room .flow-canvas[data-mode="stage"] { height: clamp(100px, var(--stage-height, 160px), 238px); flex: none; }
+}

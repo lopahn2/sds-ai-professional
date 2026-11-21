@@ -5,11 +5,10 @@ import { NativeReleaseReview } from './NativeReleaseReview';
 import {NativeOriginal} from './ApplicationStage';
 import {applicationFlow,activeAppStep,appFinished} from './applicationFlow';
 import {useAppActivity} from './ApplicationWorkTrace';
-import {FlowGraph} from './FlowGraph';
 import { StageMotion } from './StageMotion';
 import {SemanticStagePanel} from './SemanticStagePanel';
 import {semanticFlow, semanticForSource} from './semanticFlow';
-import {StageRail} from './StageRail';
+import {StageFlowView} from './StageFlowView';
 import {roomPhases,phaseStatus} from './roomWorkflow';
 import {DiagramIcon} from './DiagramIcon';
 import './operatorRoom.css';
@@ -51,7 +50,7 @@ function OriginalIncident({ id }: { id: string }) {
   const step = (selected && semanticForSource(flow.nodes, selected)) || active || flow.nodes.at(-1) || null;
   const done = appFinished(activity.view?.state || item?.state);
   const choose=(key:string|null)=>{
-    if(window.matchMedia('(max-width:900px)').matches)moveFocus.current='stage';
+    if(window.matchMedia('(max-width:900px)').matches && !document.activeElement?.closest('.flow-canvas[data-mode="stage"]'))moveFocus.current='stage';
     setSelected(key);setDetail(true);
   };
   const showGate = step?.semantic.kind === 'approval' && item?.state === 'awaiting_prd_approval';
@@ -69,10 +68,10 @@ function OriginalIncident({ id }: { id: string }) {
     })}</nav>
     <StageMotion node={activity.view ? step : null}>
     <div className={'room-columns '+(detail?'show-stage-detail ':'')+(wide?'wide-stage-detail':'')}>
-      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><h2>AI 분석 흐름</h2><button type="button" className="btn sm" ref={graphButton} aria-pressed={all} onClick={()=>setAll(v=>!v)}>{all?'단계 흐름':'전체 흐름'}</button></header>
-        {all
-          ? <FlowGraph flow={flow} selected={step?.id ?? null} onSelect={choose} archived={done} frameKey="all"/>
-          : <StageRail flow={flow} selected={step?.id ?? null} onSelect={choose} archived={done}/>}
+      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><h2>AI 분석 흐름</h2><button type="button" className="btn sm" ref={graphButton} aria-pressed={all} onClick={()=>{setAll(v=>!v);setDetail(false);}}>{all?'단계 흐름':'전체 흐름'}</button></header>
+        <StageFlowView all={all} flow={flow} selected={step?.id ?? null} onSelect={choose} archived={done}
+          sources={{application: activity.error ? null : activity.view}}
+          pending={!activity.view} delayed={activity.error}/>
       </section>
       <section className="room-pane conversation-pane chat-pane" aria-label="단계 관제"><header className="pane-heading"><div><button type="button" className="link-btn back-flow" onClick={()=>{moveFocus.current='flow';setDetail(false);}}>← 흐름으로 돌아가기</button><h2>단계 관제</h2></div>
         <button type="button" className="btn sm widen-stage" aria-pressed={wide} onClick={()=>{if(step)setSelected(step.id);setWide(v=>!v);}}>{wide?'기본 너비로':'단계 넓게 보기'}</button></header>

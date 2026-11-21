@@ -9,7 +9,7 @@ import { useAppActivity } from './ApplicationWorkTrace';
 import {activeAppStep,applicationFlow,attachApplicationFlow} from './applicationFlow';
 import {SemanticStagePanel} from './SemanticStagePanel';
 import {semanticFlow, semanticForSource} from './semanticFlow';
-import { StageRail } from './StageRail';
+import { StageFlowView } from './StageFlowView';
 import { usePolling } from './usePolling';
 import { historyResult, impactKo, whenKo } from './history';
 import './incidentRecord.css';
@@ -17,7 +17,6 @@ import { CommandCard } from './CommandCard';
 import { ChangeRequestCard } from './ChangeRequestCard';
 import { changePollMs, type ChangeRequest } from './changes';
 import { ActionApprovalCard, CloseCard, ClosedCard, HandoffCard } from './ActionApproval';
-import { FlowGraph } from './FlowGraph';
 import { StageMotion } from './StageMotion';
 import { DiagramIcon } from './DiagramIcon';
 import { operatorFlow, phaseOf, phaseStatus, roomPhases, serviceSignalImpact } from './roomWorkflow';
@@ -163,7 +162,7 @@ function Room({ id }: { id: string }) {
   const reload = useCallback(() => { narrative.refresh(); commands.refresh(); detail.refresh(); codeAction.refresh(); setEventRevision(r => r + 1); }, [narrative.refresh, commands.refresh, detail.refresh, codeAction.refresh]);
   const choose = useCallback((nid: string | null) => {
     setMobileDetail(true);
-    if (window.matchMedia('(max-width: 900px)').matches) {
+    if (window.matchMedia('(max-width: 900px)').matches && !document.activeElement?.closest('.flow-canvas[data-mode="stage"]')) {
       focusAfterSelect.current='stage';
     }
     const key = nid && data ? resolveStepId(nid, data.flow.nodes) ?? nid : nid; responseScroll.current = null; setSelected(key); setTab('flow'); jump.current = null; }, [data]);
@@ -345,12 +344,14 @@ function Room({ id }: { id: string }) {
     <nav className="room-tabs" aria-label="관제실 화면 전환">{([['flow', '현재 단계'], ['chat', '전체 대화·이력']] as const).map(([key, label]) => <button key={key} aria-pressed={tab === key} onClick={() => {setTab(key); if (key==='flow') setMobileDetail(true);}}>{label}{key === 'chat' && pending && <i className="dot warn" />}</button>)}</nav>
     <StageMotion node={tab === 'flow' && (!code?.linked || appActivity.view) ? focused : null}>
     <div className={`room-columns ${mobileDetail ? 'show-stage-detail' : ''} ${wideDetail && tab==='flow' ? 'wide-stage-detail' : ''} ${panel && tab === 'chat' ? 'with-detail' : ''}`}>
-      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><h2>AI 분석 흐름</h2><span className="flow-scope">{allFlow ? '전체 사건' : roomPhases.find(p => p.id === phase)?.label}</span></div><button ref={graphHeader} type="button" className="btn sm" aria-pressed={allFlow} onClick={() => setAllFlow(v => !v)}>{allFlow ? '단계 흐름' : '전체 흐름'}</button></header>
-        {allFlow
-          ? <FlowGraph frameKey="all" flow={mainFlow} selected={focused?.id ?? null} onSelect={choose}
-              snapshot={snapshot} archived={archivedFlow} previousCore={!!code?.linked} />
-          : <StageRail flow={mainFlow} selected={focused?.id ?? null} onSelect={choose}
-              snapshot={snapshot} archived={archivedFlow} previousCore={!!code?.linked} />}
+      <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><div><h2>AI 분석 흐름</h2><span className="flow-scope">{allFlow ? '전체 사건' : roomPhases.find(p => p.id === phase)?.label}</span></div><button ref={graphHeader} type="button" className="btn sm" aria-pressed={allFlow} onClick={() => { setAllFlow(v => !v); setMobileDetail(false); }}>{allFlow ? '단계 흐름' : '전체 흐름'}</button></header>
+        <StageFlowView all={allFlow} flow={mainFlow} selected={focused?.id ?? null} onSelect={choose}
+          snapshot={snapshot} archived={archivedFlow} previousCore={!!code?.linked}
+          control={code?.linked ? undefined : control}
+          delayed={code?.linked ? appActivity.error : narrative.error || eventError}
+          pending={!!code?.linked && !appActivity.view}
+          sources={{coreLive: !recordView && control === 'running' && !narrative.error && !eventError,
+            events, application: code?.linked && !snapshot && !appActivity.error ? appActivity.view : null}}/>
       </section>
       <section className="room-pane chat-pane conversation-pane" aria-label={tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}><header className="pane-heading"><div>{tab==='flow' && <button type="button" className="link-btn back-flow" onClick={()=>{focusAfterSelect.current='flow';setMobileDetail(false);}}>← 흐름으로 돌아가기</button>}<h2>{tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}</h2></div>{tab==='flow' && <button type="button" className="btn sm widen-stage" aria-pressed={wideDetail} onClick={()=>{if(focused)setSelected(focused.id);setWideDetail(v=>!v);}}>{wideDetail?'기본 너비로':'단계 넓게 보기'}</button>}<button type="button" className="btn sm" onClick={() => setTab(tab === 'flow' ? 'chat' : 'flow')}>{tab === 'flow' ? '전체 대화·이력' : '단계 관제로'}</button></header>
         <div className="chat-feed" ref={feed} onFocusCapture={e=>{if(tab==="flow" && !selected && focused && e.target.closest(".step-panel"))setSelected(focused.id);}} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>

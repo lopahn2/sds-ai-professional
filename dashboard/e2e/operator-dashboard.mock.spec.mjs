@@ -16,7 +16,7 @@ test('선택한 카드를 유지하고 흐름도에서 현재 작업으로 돌�
   const initialId = await panel.getAttribute('data-selected-step');
   const back = page.getByRole('button',{name:'흐름으로 돌아가기',exact:false});
   if (await back.isVisible()) await back.click();
-  const node = page.locator('.stage-rail-viewport button[data-stage-id][aria-pressed="false"]').first();
+  const node = page.locator('.flow-canvas[data-mode=stage] button[data-stage-id][aria-pressed="false"]').first();
   const id = await node.getAttribute('data-stage-id');
   await node.focus();
   await node.press('Enter');

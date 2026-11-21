@@ -6,6 +6,9 @@ import {applicationFlow,isAppStep} from '../src/applicationFlow.ts';
 import {semanticFlow,semanticForSource} from '../src/semanticFlow.ts';
 import {phaseOf} from '../src/roomWorkflow.ts';
 import {flowTitle} from '../src/narrative.ts';
+import {activeStageActors, waitingRunnerStages} from '../src/stageWork.ts';
+import type {AppActivity, RunnerContact} from '../src/ApplicationWorkTrace.tsx';
+import type {RunEvent} from '../src/feed.ts';
 
 const source=(id:string,type:string,status='done',extra:Partial<FlowNode>={}):FlowNode=>({
   id,type,status,label:id,role:null,role_ko:id,job_ko:'',model:null,effort:null,tokens:null,cost_usd:null,duration_ms:null,
@@ -20,6 +23,63 @@ function buildApplication(sequence:[string,WorkEvent['data']?][],states:string[]
   return applicationFlow({id:'inventory',state:states.at(-1)!,stages:states.map(state=>({state,occurred_at:100})),
     cursor:events.length,has_more:false,events},{id:'inventory',created_at:100});
 }
+
+test('current work follows running Kubernetes roles, independent of selection and historical states',()=>{
+  const raw = {nodes:[
+    source('g','group','running'),source('model','agent','running',{role:'cause_reasoner',call_id:'first'}),
+    source('critic','agent','running',{role:'critic',call_id:'second'}),
+    source('verify','verify','running',{role:'verifier',call_id:'third'}),
+    source('wait','agent','planned',{role:'other'}),action(2,'pending_approval')
+  ],edges:[]};
+  const {nodes}=semanticFlow(raw);
+  const current=activeStageActors(nodes,{coreLive:true});
+  assert.deepEqual([...current.keys()],['stage:investigation','stage:verification']);
+  assert.equal(current.get('stage:investigation')?.length,2);
+  assert.deepEqual([...activeStageActors(nodes,{coreLive:false})],[]);
+  const ended = [{kind:'agent_finished',detail:{call_id:'third'}} as RunEvent];
+  assert.equal(activeStageActors(nodes,{coreLive:true, events:ended}).has('stage:verification'),false);
+});
+
+test('Application working roles require an observed call in the current stage and retire after completion or retry',()=>{
+  const states = ['detected','analyzing'];
+  const sequence:[string,WorkEvent['data']?][] = states.map(s=>[s]);
+  const check = () => {
+    const raw=buildApplication(sequence,states);
+    const application = {state:states.at(-1)!,events:sequence.map(([event,data],id)=>({event,data:data??{},id,at:id}))} as AppActivity;
+    return activeStageActors(semanticFlow(raw).nodes,{application});
+  };
+  assert.equal(check().size,0);
+  sequence.push(['role_started',{role:'analyst',call_id:'a'}], ['role_started',{role:'verifier',call_id:'v'}]);
+  assert.deepEqual([...check().keys()],['stage:investigation','stage:verification']);
+  sequence.push(['role_completed',{role:'verifier',call_id:'v'}],['analysis_retry',{role:'analyst'}]);
+  assert.equal(check().size,0);
+  sequence.push(['role_started',{role:'analyst',call_id:'retry'}]);
+  assert.equal(check().size,1);
+  states.push('awaiting_prd_approval'); sequence.push(['awaiting_prd_approval']);
+  assert.equal(check().size,0);
+});
+
+test('executor work requires a current lease and is attributed only to its owning card',()=>{
+  const states=['detected','test_build_queued'];
+  const sequence:[string,WorkEvent['data']?][]=[
+    ['detected'],['test_build_queued'],['job_queued',{kind:'test_build',job_id:'j'}],
+    ['runner_progress',{kind:'test_build',job_id:'j',phase:'edit_file',file:'Inventory.java'}],
+  ];
+  const work=(state:RunnerContact['state'],kind='test_build') => {
+    const nodes=semanticFlow(buildApplication(sequence,states)).nodes;
+    const application={state:states.at(-1),events:[],active_jobs:[{job_id:'j',kind,state}]} as AppActivity;
+    if (state === 'waiting') assert.equal(waitingRunnerStages(nodes,application),'시험·빌드 · 실행기 인수 대기');
+    if (state === 'contact_lost') assert.equal(waitingRunnerStages(nodes,application),'시험·빌드 · 실행기 연락 끊김');
+    return [...activeStageActors(nodes,{application}).keys()];
+  };
+  assert.deepEqual(work('leased'),['stage:test_build']);
+  assert.deepEqual(work('contact_lost'),[]);
+  assert.deepEqual(work('waiting'),[]);
+  states.push('completed');sequence.push(['completed']);
+  assert.deepEqual(work('leased'),[]);
+  sequence.splice(2,2,['job_queued',{kind:'current_version_check',job_id:'j'}]);
+  assert.deepEqual(work('reclaimed','current_version_check'),['stage:recovery']);
+});
 
 test('inventory v2 separates seven stored calls into decisions, edits, tests and one human gate',()=>{
   const states=['detected','collecting','source_pinning','analysis_queued','analyzing','patch_proposed','test_build_queued',
