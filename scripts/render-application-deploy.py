@@ -93,8 +93,8 @@ def render(image):
         'APPLICATION_CATALOG_FILE': '/etc/application/system-catalog.json',
         'APPLICATION_CODEX_HOME': CODEX_HOME,
         'APPLICATION_WORKER_ENABLED': 'true', 'APPLICATION_DATABASE_ISOLATED': 'true',
-        'APPLICATION_MODEL': 'gpt-6.1-sol',
-        'APPLICATION_CLASSIFIER_MODEL': 'gpt-6-luna', 'APPLICATION_CRITIC_MODEL': 'gpt-6-astra'}
+        'APPLICATION_MODEL': 'gpt-6.2-sol',
+        'APPLICATION_CLASSIFIER_MODEL': 'gpt-6-luna', 'APPLICATION_CRITIC_MODEL': 'gpt-6.2-astra'}
     docs['30-api.yaml'] = resource('Deployment', API, spec={
         'replicas': 1, 'strategy': {'type': 'Recreate'}, 'selector': {'matchLabels': {'app': API}},
         'template': {'metadata': {'labels': api_labels, 'annotations': {'liveprobe.io/application-config-sha256': config_hash}}, 'spec': {

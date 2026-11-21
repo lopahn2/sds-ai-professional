@@ -21,7 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parent
 GRAFANA = ROOT.parents[1] / "retired" / "grafana" / "grafana.yaml"
 ALLOY_IMAGE = "grafana/alloy:v1.19.2"
 LOKI_IMAGE = "grafana/loki:3.7.8"
-BOUNDED_LABELS = {"namespace", "app", "pod", "container"}
+BOUNDED_LABELS = {"namespace", "app", "system", "pod", "container"}
 FORBIDDEN_LABEL_SOURCES = ("__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_id",
                            "__meta_kubernetes_pod_container_image", "__meta_kubernetes_pod_node_name",
                            "__meta_kubernetes_pod_ip")
@@ -67,12 +67,14 @@ def provisioned_datasources():
 
 
 class AlloyLogSourceTest(unittest.TestCase):
-    def test_explicit_namespace_and_label_selectors(self):
+    def test_cluster_pod_discovery_preserves_service_and_namespace(self):
         cfg = alloy_config()
-        self.assertEqual(re.findall(r"names\s*=\s*\[([^\]]*)\]", cfg), ['"liveprobe-target"'])
-        self.assertRegex(cfg, r'source_labels = \["__meta_kubernetes_pod_label_app"\]\s*\n\s*action\s*= "keep"\s*\n\s*regex\s*= "order\|inventory"')
-        for other in ("liveprobe-system", "liveprobe-observability\"]", "kube-system", "loadgen"):
-            self.assertNotIn(other, cfg.split("loki.write")[0])
+        self.assertRegex(cfg, r'discovery\.kubernetes "pods"\s*\{\s*role\s*=\s*"pod"\s*\}')
+        self.assertIn("targets = discovery.kubernetes.pods.targets", cfg)
+        self.assertNotRegex(cfg, r'action\s*=\s*"(keep|drop)"')
+        for source, label in (("__meta_kubernetes_namespace", "namespace"),
+                              ("__meta_kubernetes_pod_label_app", "app")):
+            self.assertRegex(cfg, rf'source_labels\s*=\s*\["{source}"\]\s*target_label\s*=\s*"{label}"')
 
     def test_bounded_labels_only(self):
         cfg = alloy_config()

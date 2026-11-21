@@ -30,6 +30,13 @@ def _offline_guard(event, args):
         raise AssertionError("오프라인 시험에서 외부 실행·연결은 금지됩니다.")
     if event == "open" and isinstance(args[0], (str, bytes)):
         name = str(args[0])
+        # Codex worktrees can live under ~/.codex. Permit the checked-out application
+        # and its installed Python libraries, while retaining the credential-directory check.
+        if "/.codex/" in name and name.startswith(str(ROOT) + "/"):
+            resolved = Path(name).resolve()
+            if any(resolved.is_relative_to(ROOT / "liveprobe" / directory)
+                   for directory in ("app", ".venv/lib")):
+                name = "/" + str(resolved.relative_to(ROOT))
         if any(token in name for token in ("conftest.py", "/.kube/", "/.codex/", "/.claude/", "/var/run/secrets/")):
             raise AssertionError("금지된 파일 접근입니다.")
 
@@ -49,12 +56,14 @@ class MemoryStore:
                                               handoff={}),
                           12: SimpleNamespace(id=12, status="open", status_reason=None, closed_at=None,
                                               handoff={})}
-        self.runs = {71: SimpleNamespace(id=71, incident_id=11, status="running", phase="analysis", reason=None)}
+        self.runs = {71: SimpleNamespace(id=71, incident_id=11, status="resume_pending", phase="analysis",
+                                         reason=None, snapshot={})}
         self.audits = []
         self.events = []
         self.fail_reads = 0
         self.fail_commits = 0
         self.commit_then_raise = 0
+        self.faults_armed = False
         self.reads = 0
         self.commits = 0
         self.fail_seen = threading.Event()
@@ -78,7 +87,7 @@ class MemoryStore:
                     return SimpleNamespace(state="stopping")
                 if model is Incident:
                     store.reads += 1
-                    if store.fail_reads:
+                    if store.faults_armed and store.fail_reads:
                         store.fail_reads -= 1
                         store.fail_seen.set()
                         raise OperationalError(None, None, RuntimeError("오프라인 DB 장애"))
@@ -120,7 +129,7 @@ class MemoryStore:
                 pass
 
         yield Session()
-        if self.fail_commits:
+        if self.faults_armed and self.fail_commits:
             self.fail_commits -= 1
             self.fail_seen.set()
             raise OperationalError(None, None, RuntimeError("오프라인 commit 장애"))
@@ -129,7 +138,7 @@ class MemoryStore:
         self.events.extend(row for row in added if isinstance(row, IncidentEvent))
         self.commits += 1
         self.trace.append("commit")
-        if self.commit_then_raise:
+        if self.faults_armed and self.commit_then_raise:
             self.commit_then_raise -= 1
             raise OperationalError(None, None, RuntimeError("오프라인 확정 응답 유실"))
 
@@ -168,25 +177,32 @@ class WorkerRecoveryTests(unittest.TestCase):
             thread.join(2)
         self.assertFalse(any(t.is_alive() for t in self.threads), "시험 작업자 종료 실패")
 
-    def launch(self, error=None, *, stop_after_next=True):
-        # 실제 process()의 설정 스냅샷 읽기에서 장애를 주입한다. 처리 함수를 바꾸지 않는다.
+    def launch(self, error=None, *, stop_after_next=True, before_claim=False):
+        # 실제 읽기 체크포인트를 인수한 뒤 소스 지문 조회에서 실패시킨다.
+        # before_claim은 실행을 취득하기 전의 설정 스냅샷 실패를 재현한다.
         # 다음 사건은 이미 terminal인 대조군으로, 외부 근거·모델 경로에 진입하지 않는다.
         self.store.incidents[12].status = "closed"
+        def inject_failure():
+            self.store.faults_armed = True
+            raise error
+
         def on_snapshot():
             # 저장소 대역에서 실제 호출자의 사건 ID를 관측해 재실행도 검출한다.
             caller = sys._getframe(3)
             self.assertIs(caller.f_code, Engine.process.__code__)
             iid = caller.f_locals["iid"]
             self.calls.append(iid)
-            if iid == 11 and error is not None:
-                raise error
+            if iid == 11 and error is not None and before_claim:
+                inject_failure()
             if iid == 12:
                 self.next_seen.set()
                 if stop_after_next:
                     self.engine.stop()
         self.store.on_snapshot = on_snapshot
-        self.engine.schedule(11)
-        self.engine.schedule(12)
+        if error is not None and not before_claim:
+            self.enterContext(patch("app.runtime_resume.source_fingerprint", side_effect=inject_failure))
+        for iid in (11, 12):
+            self.engine.schedule(iid, placement=engine_module._QueuePlacement(("test", str(iid)), False))
         created = []
         real_thread = threading.Thread
         def record_worker(*args, **kwargs):
@@ -379,7 +395,7 @@ class WorkerRecoveryTests(unittest.TestCase):
             waits.append(seconds)
             self.assertEqual(self.calls, [11])
             self.assertEqual(self.store.incidents[11].status, "analyzing")
-            self.assertEqual(self.store.runs[71].status, "running")
+            self.assertEqual(self.store.runs[71].status, "resume_pending")
             self.assertEqual(self.store.audits, [])
             self.assertEqual(self.store.events, [])
             self.assertEqual(self.published, [])
@@ -401,7 +417,7 @@ class WorkerRecoveryTests(unittest.TestCase):
         def before_retry(seconds):
             observed.append(seconds)
             self.assertEqual(self.calls, [11])
-            self.assertEqual(self.store.runs[71].status, "running")
+            self.assertEqual(self.store.runs[71].status, "resume_pending")
             self.assertEqual(self.store.incidents[11].status, "analyzing")
             self.assertEqual(self.store.audits, [])
             self.assertEqual(self.published, [])
@@ -423,7 +439,7 @@ class WorkerRecoveryTests(unittest.TestCase):
     def test_stop_finalizer_never_terminates_another_running_attempt(self):
         self.store.runs[72] = SimpleNamespace(id=72, incident_id=11, status="running", phase="analysis", reason=None)
         stopped = runlog.RunStopped("오프라인 중단")
-        stopped.workflow_run_id = 71
+        stopped.workflow_run_id = 72  # An exception cannot grant ownership of another run.
         self.launch(stopped)
         self.assertTrue(self.next_seen.wait(2))
         self.assertEqual(self.store.runs[71].status, "failed")
@@ -432,6 +448,29 @@ class WorkerRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store.audits, [])
         self.assertEqual(self.published, [])
 
+    def test_failure_before_claim_waits_for_other_active_run(self):
+        self.store.runs[71].status = "running"
+        waiting, release = threading.Event(), threading.Event()
+
+        def wait_for_owner(_seconds):
+            waiting.set()
+            release.wait(3)
+            return self.engine._stop.is_set()
+
+        self.enterContext(patch.object(self.engine._stop, "wait", wait_for_owner))
+        self.launch(RuntimeError("인수 전 오류"), before_claim=True)
+        try:
+            self.assertTrue(waiting.wait(2))
+            self.assertEqual(self.store.runs[71].status, "running")
+            self.assertEqual(self.store.incidents[11].status, "analyzing")
+            self.assertTrue(self.engine.worker_health()["cleanup_pending"])
+            self.assertFalse(self.next_seen.is_set())
+            self.store.runs[71].status = "succeeded"
+        finally:
+            release.set()
+        self.assertTrue(self.next_seen.wait(2))
+        self.assertEqual(self.store.runs[71].status, "succeeded")
+        self.assertEqual(self.store.incidents[11].status, "failed")
 
     def test_stop_finalizer_never_turns_inflight_command_into_success(self):
         command = SimpleNamespace(id=91, incident_id=11, status="failed", result={"inflight": {"step": 1}},
@@ -490,15 +529,15 @@ class WorkerRecoveryTests(unittest.TestCase):
         self.assertEqual(self.published, [])
 
     def test_stop_after_dequeue_never_starts_another_process(self):
-        get = self.engine.q.get
+        get = self.engine._claim
         def stop_at_dequeue(*args, **kwargs):
             iid = get(*args, **kwargs)
             self.engine.stop()
             return iid
-        self.enterContext(patch.object(self.engine.q, "get", stop_at_dequeue))
+        self.enterContext(patch.object(self.engine, "_claim", stop_at_dequeue))
         self.store.on_snapshot = lambda: self.calls.append(11)
         self.store.incidents[11].status = "closed"
-        self.engine.schedule(11)
+        self.engine.schedule(11, placement=engine_module._QueuePlacement(("test", "11"), False))
         self.engine.start()
         thread = self.engine._worker_thread
         self.threads.append(thread)

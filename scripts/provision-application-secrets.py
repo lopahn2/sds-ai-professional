@@ -20,7 +20,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[1]
 NAMESPACE = 'liveprobe-system'
 SECRET_NAMES = ('liveprobe-application-db', 'liveprobe-application-db-url', 'liveprobe-application-identity')
-SUBJECTS = ('hwany-tester', 'hwany-approver', 'application-runner')
+RUNNER_SUBJECT = 'application-runner'
 
 
 class ProvisionRefused(Exception):
@@ -73,13 +73,11 @@ def open_token_directory(root):
         info = os.fstat(directory_fd)
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise ProvisionRefused()
-        for subject in SUBJECTS:
-            try:
-                os.stat(subject + '.token', dir_fd=directory_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            raise ProvisionRefused()
-        return directory_fd
+        try:
+            os.stat(RUNNER_SUBJECT + '.token', dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return directory_fd
+        raise ProvisionRefused()
     except BaseException:
         os.close(directory_fd)
         raise
@@ -97,28 +95,23 @@ def provision(*, repo_root, run, context):
     require_absent(run, command)  # all three must be absent before generating anything
     directory_fd = open_token_directory(repo_root)
     try:
-        tokens = {subject: secrets.token_urlsafe(48) for subject in SUBJECTS}
+        token = secrets.token_urlsafe(48)
         password = secrets.token_urlsafe(48)
         url = ('postgresql://liveprobe_application:' + quote(password, safe='') +
                '@liveprobe-application-db.liveprobe-system.svc.cluster.local:5432/liveprobe_application')
-        human = {'principals': [
-            {'subject': SUBJECTS[0], 'token': tokens[SUBJECTS[0]], 'scopes': ['incident:read', 'incident:create', 'tester']},
-            {'subject': SUBJECTS[1], 'token': tokens[SUBJECTS[1]], 'scopes': ['incident:read', 'prd-approver']}]}
+        # Legacy mounts still expect this key. The gateway authenticates human decisions.
+        human = {'principals': []}
         machine = {'principals': [
-            {'subject': SUBJECTS[2], 'token': tokens[SUBJECTS[2]], 'scopes': ['runner', 'incident:create', 'incident:read']}]}
-        # Raw bearer files only; human/machine identity JSON never goes to disk.
-        # Keep tokens on partial/unknown create failures for operator-led recovery.
-        for subject in SUBJECTS:
-            name = subject + '.token'
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(tokens[subject] + '\n')
-                stream.flush()
-                os.fsync(stream.fileno())
+            {'subject': RUNNER_SUBJECT, 'token': token, 'scopes': ['runner', 'incident:create', 'incident:read']}]}
+        name = RUNNER_SUBJECT + '.token'
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(token + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
         os.fsync(directory_fd)
-        for subject in SUBJECTS:
-            print(repo_root / '.e2e-tmp/application' / (subject + '.token'), flush=True)
+        print(repo_root / '.e2e-tmp/application' / name, flush=True)
         docs = [secret_document(SECRET_NAMES[0], {'password': password}),
                 secret_document(SECRET_NAMES[1], {'url': url}),
                 secret_document(SECRET_NAMES[2], {'human.json': json.dumps(human), 'machine.json': json.dumps(machine)})]

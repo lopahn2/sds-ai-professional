@@ -20,13 +20,13 @@ llm:
       model: gpt-6-luna
       effort: low
     result_verifier:
-      model: gpt-6.1-sol
+      model: gpt-6.2-sol
       effort: low
     evidence_curator:
-      model: gpt-6.1-sol
+      model: gpt-6.2-sol
       effort: medium
     safety_verifier:
-      model: gpt-6-astra
+      model: gpt-6.2-astra
       effort: xhigh
 change_auto_create: false
 # 2026-11-13: 활성 환경은 dev/prd 두 개다. 감시·수집·조치·승격은 이 목록만 대상으로 한다.

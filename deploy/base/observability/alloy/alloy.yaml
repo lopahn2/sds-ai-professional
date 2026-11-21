@@ -57,6 +57,10 @@ data:
         source_labels = ["__meta_kubernetes_pod_label_app"]
         target_label  = "app"
       }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_part_of"]
+        target_label  = "system"
+      }
     }
 
     loki.source.kubernetes "pods" {
@@ -69,7 +73,7 @@ data:
       forward_to = [loki.write.default.receiver]
 
       stage.label_keep {
-        values = ["namespace", "app", "pod", "container"]
+        values = ["namespace", "app", "system", "pod", "container"]
       }
     }
 

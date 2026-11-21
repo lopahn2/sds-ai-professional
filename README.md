@@ -135,6 +135,12 @@ spec:
 
 `liveprobe.your-domain.example`도 자신의 이름으로 바꿉니다. Ingress TLS 설정은 플랫폼 자동 치환에 포함되지 않으므로 overlay에서 직접 추가합니다.
 
+### 관측 위치와 태그
+
+기본 위치는 클러스터의 Kubernetes API와 `LIVEPROBE_LOKI_URL`, `LIVEPROBE_PROMETHEUS_URL`입니다. 같은 어댑터에 추가 위치가 필요하면 API Deployment에서 `LIVEPROBE_OBSERVATION_LOCATIONS`를 설정합니다. 예를 들어 `{"loki":{"team":"https://logs.example"},"prometheus":{"team":"https://metrics.example"}}`를 등록한 뒤 **설정 → 관측 소스**에서 위치를 선택해 저장합니다. 해당 API의 네트워크 정책도 선택한 수집기와의 통신을 허용해야 합니다.
+
+**수집 확인**은 Kubernetes 이벤트 조회와 워크로드 태그, Loki의 최근 5분 스트림, Prometheus의 현재 Pod 수집 대상을 확인합니다. 시스템은 Pod의 `app.kubernetes.io/part-of` 라벨(수집 시 `system`), 서비스는 `app`, 환경은 대상 `namespace`로 식별합니다. 태그 누락, 한 환경·서비스에 여러 시스템이 붙은 경우, 표본이 없는 경우를 구분해 표시합니다.
+
 ## 4. 이미지 빌드와 배포 주소
 
 저장소에 기록된 `liveprobe/...@sha256:...`는 개발 환경에서 관측한 이미지입니다. GitHub에서 소스를 받았다고 그 이미지까지 내려받을 수 있는 것은 아닙니다. **직접 빌드·배포하고 확인한 manifest digest로 교체**합니다.
@@ -431,27 +437,27 @@ python3 scripts/render-samsung-environments.py \
 
 ### 9.0 하나의 사건으로 연결하는 통합 모드
 
-[통합 사건 설계](docs/plans/liveprobe-unified-incident-plan-2026-11-16.md)에 따라 하나의 관제실에서 K8s 분석과 코드 수정·시험·dev 검증·prd 승인을 이어가는 **선택적 통합 모드**를 추가했습니다. 기존 사건 번호·Application DB·원문 이력을 유지합니다. 통합 모드는 기본 비활성이고 이 소스 변경을 실제 클러스터에 적용한 것은 아닙니다.
+[통합 사건 설계](docs/plans/liveprobe-unified-incident-plan-2026-11-16.md)에 따라 하나의 관제실에서 K8s 분석과 코드 수정·시험·dev 검증·prd 승인을 이어가는 **선택적 통합 모드**를 추가했습니다. 기존 사건 번호·Application DB·원문 이력을 유지합니다. 새 설치에서는 통합 모드를 명시적으로 켭니다. 로컬 운영 반영과 검증 범위는 [통합 관제 작업 기록](docs/plans/unified-operator-console-2026-11-20.md)에 있습니다.
 
 설치자는 다음을 별도로 준비해야 합니다.
 
 - core API에 `LIVEPROBE_UNIFIED_ENABLED=true`, 설치마다 고유하고 재시작 후에도 같은 `LIVEPROBE_INSTALLATION_ID`를 설정합니다. 같은 출처 `/api/application/v1`에 기존 pull API를 제공하며 호스트 실행기로 들어가는 통로는 만들지 않습니다.
-- 기존 `APPLICATION_*` 전용 DB·사람/기계 identity 파일·프로필·catalog·Codex 홈 설정을 core 프로세스가 사용할 수 있게 준비합니다. 기존 DB를 core DB로 바꾸거나 인증 파일을 합치지 않습니다. `0011`은 연결 표만 추가하며 기존 사건을 일괄 수정하지 않습니다.
+- core API에는 기존 Application DB 연결과 프로필·catalog를 설정하고, 루프백 운영자 게이트웨이의 조회·쓰기 키와 활성화할 실행기의 역할별 인증 파일을 각각 연결합니다. 기존 Application 모델 로그인 PVC는 별도 모델 작업자에 마운트합니다. 이 구성에서 API는 `APPLICATION_EXTERNAL_MODEL_WORKER=true`, `APPLICATION_WORKER_ENABLED=false`를 사용합니다. 두 DB와 기존 사건 번호를 유지하며 코어 마이그레이션 `0011`에서 연결 표를 추가합니다. [모델 작업자의 시작과 상태 확인](deploy/application/README.md#통합-api와-모델-작업자의-계정-분리)
 - **writer는 하나씩**: 통합 모드로 전환하기 전 기존 Application API의 분석 worker와 같은 일감을 받는 legacy runner를 drain하고 결과 불명 쓰기를 조정합니다. 두 독립 worker를 무조건 동시에 켜거나 기존 배포를 삭제해서 전환하지 않습니다.
-- 기계 identity는 다른 subject/token으로 `runner`+`runner:source`, `runner`+`runner:cluster`를 나눕니다. 두 scope를 한 계정에 주면 거부됩니다. 소스 실행기는 `--role source`, 배포 실행기는 `--role cluster`로 시작합니다. 전자는 Kubernetes 읽기 전용 proxy만 사용하며 저장소 쓰기 자격을 가질 수 있습니다. 후자는 등록 대상 배포 자격만 가지며 Git 쓰기 자격을 주지 않습니다. 기존 배포 선언은 이 계정 분리를 자동 설치하지 않습니다. 운영에서는 별도 OS 사용자 또는 자격이 격리된 실행 환경을 사용하고, 같은 사용자 홈·Git 자격·쓰기 가능한 실행기 설정을 공유하지 않습니다.
+- 기계 identity는 소스, 배포, 브라우저 QA에 서로 다른 subject와 자격을 발급합니다. 각 주체는 기본 `runner`와 전용 범위 하나(`runner:source`, `runner:cluster`, `runner:qa`)를 가집니다. QA의 Chromium 설치와 dev 업무 검증 설정은 [실행기 설치 안내](deploy/application/README.md#배포-결정과-보존-경계)를 따릅니다. 소스 실행기는 `--role source`, 배포 실행기는 `--role cluster`로 시작합니다. 전자는 Kubernetes 읽기 전용 proxy만 사용하며 저장소 쓰기 자격을 가질 수 있습니다. 후자는 등록 대상 배포 자격만 가지며 Git 쓰기 자격을 주지 않습니다. 기존 배포 선언은 이 계정 분리를 자동 설치하지 않습니다. 운영에서는 별도 OS 사용자 또는 자격이 격리된 실행 환경을 사용하고, 같은 사용자 홈·Git 자격·쓰기 가능한 실행기 설정을 공유하지 않습니다.
 - 서로 다른 실행기는 검증된 snapshots/artifacts/promotions 영수증을 제한된 파일 공유로 전달해야 합니다. 클러스터 계정에 소스 계정의 자격 디렉터리·Git 설정·Codex 인증을 공유하지 않습니다. 현재 파일 계약은 원격 산출물 전송 서비스를 제공하지 않으므로 실행 호스트/경로·소유권 검증이 필요합니다.
-- 사람은 기존 `incident:read`, `incident:create`, `tester`, `prd-approver` scope로 구분합니다. 로컬 운영자 접근만으로 시험·prd 승격 권한을 얻지 않습니다. 브라우저에 기계 토큰을 입력하지 않습니다.
+- 전용 루프백 관제 주소에서는 한 운영자가 조회·접수·dev 시험·prd 승인을 수행합니다. 서버는 각 변경의 게이트웨이 서명과 CSRF를 확인하고, 시험과 승인을 별도의 결정으로 기록합니다. 게이트웨이 서명 키와 조회 키는 서로 다르며 사람 화면에 노출되지 않습니다. [로컬 운영자 관제 설치](deploy/application/README.md#루프백-운영자-관제)
 - `APPLICATION_REPOSITORIES_FILE`은 설치자가 확인한 repositories.json 경로입니다. 현재 파일의 예시 조직·비공개 저장소 이름을 자신의 실제 등록 저장소로 바꿉니다. `APPLICATION_GITHUB_READ_TOKEN_FILE`은 private repo 병합 조회 전용 자격 파일입니다. 파일 내용은 소스·이미지·문서·URL에 넣지 않습니다. 소스 runner의 PR 작성 자격과 분리합니다.
 
 코드 조치의 재현·회귀 시험 후 소스 계정은 `python -m liveprobe.application_runner.publish_pr --help`에 나온 명시 명령으로 **시험한 영수증의 PR만** 게시할 수 있습니다. 원래 main commit과 시험 소스 지문을 증명하지 못하면 게시하지 않으며 자동 병합하지 않습니다. 응답 유실 후에는 조회로만 조정하고 push/PR 생성을 무조건 다시 보내지 않습니다. 현재는 큐의 자동 PR 게시 작업이 아니므로 source runner 운영 절차에서 이 명령을 수행해야 합니다.
 
-관제실에서 시험자 기록 → PR 번호의 사람 병합 확인 → 정확한 버전의 prd 승인을 수행합니다. 서버는 등록 GitHub 저장소의 사람 병합·현재 main·실제 소스 파일 지문을 다시 읽어 확인합니다. 병합 메타데이터를 입력하는 것만으로 승인되지 않습니다. 읽기 자격·저장소·출처·병합이 미구성이면 prd는 차단됩니다. dev/prd만 새 승격에 사용하고 stg는 과거 기록으로 남깁니다.
+새 통합 사건은 dev 업무 화면의 브라우저 QA 영수증을 사용합니다. 기존 `dev-prd/v2` 사건은 당시 시험자가 남긴 시험 기록을 사용합니다. 관제실에서 등록된 PR의 사람 병합을 확인한 뒤 prd 승인자는 시험한 버전과 변경 계획을 확인하고 승인합니다. 서버는 등록된 GitHub 저장소의 병합·현재 main·실제 소스 파일 지문을 대조합니다. 새 통합 사건은 prd 배포 후 원래 실패한 업무의 복구를 관측해야 종료됩니다. 새 승격 환경은 dev·prd이며 기존 stg 기록은 조회할 수 있습니다. [QA·승인·복구의 판정 기준](docs/plans/unified-operator-console-2026-11-20.md#운영자가-보는-사건-흐름과-api-계약)
 
 운영 전환은 설계 P5의 별도 인수 대상입니다. 비활성화해도 진행 중 조치를 미실행으로 바꾸지 않으며 연결·양쪽 DB·PVC를 남깁니다. 기존 코드 조치가 있으면 다른 K8s 변경을 차단하고 drain/reconcile 후 원복합니다. 아래 9.1–9.3은 기존 독립 배포의 설치 경로입니다.
 
 ### 9.1 독립 API·DB·인증
 
-Application은 K8s API 안에서 자동 활성화되지 않습니다. 별도 API `liveprobe-application-api`, DB `liveprobe-application-db`, 인증 PVC `liveprobe-application-codex`를 구성합니다. DB URL·사람 토큰·실행기 토큰을 K8s 관제와 공유하지 않습니다.
+Application은 K8s API 안에서 자동 활성화되지 않습니다. 별도 API `liveprobe-application-api`, DB `liveprobe-application-db`, 인증 PVC `liveprobe-application-codex`를 구성합니다. 이전 독립 배포의 전용 DB와 실행기 자격을 유지합니다. 통합 운영자는 9.0절의 루프백 관제 주소를 사용합니다.
 
 `liveprobe/Dockerfile.application`의 `FROM`을 [4장](#4-이미지-빌드와-배포-주소)에서 만든 **자신의 API runtime digest**로 바꾸어 Application 이미지를 빌드합니다. 비root 사용자 `65532:65532`, 읽기 전용 rootfs, 8080 포트 설정은 유지합니다. 빌드할 때는 인증 파일이 없는 별도 context를 사용합니다.
 
@@ -472,7 +478,8 @@ python3 scripts/render-application-deploy.py --image "$LP_APP_IMAGE" \
 |---|---|
 | `APPLICATION_DATABASE_URL_FILE` | 전용 DB URL 파일 |
 | `APPLICATION_DATABASE_ISOLATED` | `true` |
-| `APPLICATION_IDENTITY_FILE` / `APPLICATION_MACHINE_IDENTITY_FILE` | 서로 다른 사람/실행기 인증 JSON |
+| `APPLICATION_MACHINE_IDENTITY_FILE` | 실행기 전용 인증 JSON |
+| `APPLICATION_IDENTITY_FILE` | 기존 독립 배포의 사람 자격 호환 파일. 신규 설치는 빈 목록을 제공합니다. |
 | `APPLICATION_PROFILES_FILE` / `APPLICATION_CATALOG_FILE` | API와 호스트 실행기가 동일하게 사용하는 프로필·카탈로그 |
 | `APPLICATION_CODEX_HOME` | `/var/lib/liveprobe/application-codex` 전용 쓰기 가능한 인증 홈 |
 | `APPLICATION_WORKER_ENABLED` | `true` |
@@ -486,7 +493,7 @@ python3 scripts/provision-application-secrets.py --context "$LP_CONTEXT" --dry-r
 python3 scripts/provision-application-secrets.py --context "$LP_CONTEXT"
 ```
 
-기본 사람 식별자 `hwany-tester`, `hwany-approver`는 예제 이름이므로 새 설치자는 생성 전 스크립트의 `SUBJECTS`와 운영 정책을 확인하여 자신의 식별자로 바꿉니다. 실행기 주체는 `application-runner`입니다. 사람과 실행기의 권한·토큰은 서로 대체하지 않습니다. 생성된 `.e2e-tmp/application/*.token`은 저장소에 올리지 않습니다.
+운영자는 로컬 관제 주소에서 시험·병합 확인·승인을 각각 기록합니다. 최초 설치 도구는 실행기용 `application-runner` 토큰 한 개를 `.e2e-tmp/application/application-runner.token`에 보관합니다. 게이트웨이 키는 아래 연결 절차에서 준비합니다.
 
 환경에 맞춘 최종 매니페스트를 서버 dry-run 후 설치합니다. 아래 경로가 실제로 검토·수정한 배포 파일을 가리키는지 확인합니다.
 

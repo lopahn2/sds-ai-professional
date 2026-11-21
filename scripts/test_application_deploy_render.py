@@ -101,8 +101,8 @@ class RenderTests(unittest.TestCase):
                     'APPLICATION_CATALOG_FILE': '/etc/application/system-catalog.json',
                     'APPLICATION_CODEX_HOME': '/var/lib/liveprobe/application-codex',
                     'APPLICATION_DATABASE_ISOLATED': 'true', 'APPLICATION_WORKER_ENABLED': 'true',
-                    'APPLICATION_MODEL': 'gpt-6.1-sol',
-                    'APPLICATION_CLASSIFIER_MODEL': 'gpt-6-luna', 'APPLICATION_CRITIC_MODEL': 'gpt-6-astra'}
+                    'APPLICATION_MODEL': 'gpt-6.2-sol',
+                    'APPLICATION_CLASSIFIER_MODEL': 'gpt-6-luna', 'APPLICATION_CRITIC_MODEL': 'gpt-6.2-astra'}
         self.assertEqual(env, expected)
         volumes = {v['name']: v for v in pod['volumes']}
         # 2026-11-07 위임 결정(권장안, decision-log): 기존 관제 공유 인증 PVC를 쓰지 않고 새 서비스 전용 인증 저장소를 둔다.
@@ -133,8 +133,21 @@ class RenderTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             settings = settings_class.from_env()
         self.assertEqual(settings.model_for('classifier'), 'gpt-6-luna')
-        self.assertEqual(settings.model_for('critic'), 'gpt-6-astra')
-        self.assertEqual(settings.model_for('analyst'), 'gpt-6.1-sol')
+        self.assertEqual(settings.model_for('critic'), 'gpt-6.2-astra')
+        self.assertEqual(settings.model_for('analyst'), 'gpt-6.2-sol')
+
+    def test_previous_lineup_env_runs_on_current_ids(self):
+        import runpy
+        from unittest.mock import patch
+        settings_class = runpy.run_path(str(ROOT / 'liveprobe/app/application/settings.py'))['ApplicationSettings']
+        old = {'APPLICATION_MODEL': 'gpt-6.1-sol', 'APPLICATION_CLASSIFIER_MODEL': 'gpt-6-luna',
+               'APPLICATION_CRITIC_MODEL': 'gpt-6-astra'}
+        with patch.dict(os.environ, old, clear=True):
+            settings = settings_class.from_env()
+        self.assertEqual([settings.model_for(r) for r in ('classifier', 'analyst', 'critic', 'patch')],
+                         ['gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.2-sol'])
+        # 직접 생성한 설정(이전 저장값)도 새 실행에서 현재 ID를 쓴다.
+        self.assertEqual(settings_class(model='gpt-6.1-sol', critic_model='gpt-6-astra').model_for('critic'), 'gpt-6.2-astra')
 
     def test_new_database_and_routing_only(self):
         docs = [json.loads(t) for t in self.module.render(IMAGE).values()]
@@ -343,14 +356,11 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(parsed.path == '/liveprobe_application')
         human = json.loads(base64.b64decode(docs['liveprobe-application-identity']['data']['human.json']))
         machine = json.loads(base64.b64decode(docs['liveprobe-application-identity']['data']['machine.json']))
-        self.assertTrue({p['subject'] for p in human['principals']} == {'hwany-tester', 'hwany-approver'})
-        self.assertTrue({p['subject'] for p in machine['principals']} == {'application-runner'})
-        self.assertTrue({p['subject']: set(p['scopes']) for p in human['principals']} == {
-            'hwany-tester': {'incident:read', 'incident:create', 'tester'},
-            'hwany-approver': {'incident:read', 'prd-approver'}})
+        self.assertEqual(human['principals'], [])
+        self.assertEqual([p['subject'] for p in machine['principals']], ['application-runner'])
         self.assertTrue(set(machine['principals'][0]['scopes']) == {'runner', 'incident:create', 'incident:read'})
         principals = human['principals'] + machine['principals']
-        self.assertTrue(len({p['token'] for p in principals}) == 3)
+        self.assertTrue(len({p['token'] for p in principals}) == 1)
         directory = self.root / '.e2e-tmp/application'
         self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
         for principal in principals:
@@ -382,7 +392,7 @@ class ProvisionTests(unittest.TestCase):
         private_password = base64.b64decode(fake.documents[0]['data']['password']).decode()
         self.assertFalse(private_password in output)
         self.assertFalse(fake.calls[-1][1] in output)
-        self.assertEqual(len(list((self.root / '.e2e-tmp/application').glob('*.token'))), 3)
+        self.assertEqual(len(list((self.root / '.e2e-tmp/application').glob('*.token'))), 1)
         self.assertTrue(all('delete' not in argv for argv, _ in fake.calls))
 
     def test_existing_or_symlink_token_path_never_overwritten(self):
@@ -398,7 +408,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertFalse(any(elsewhere.iterdir()))
         (base / 'application').unlink()
         (base / 'application').mkdir(mode=0o700)
-        token = base / 'application/hwany-tester.token'
+        token = base / 'application/application-runner.token'
         token.write_bytes(b'existing-test-marker')
         fake = FakeKubectl()
         rc, output = self.invoke(fake)

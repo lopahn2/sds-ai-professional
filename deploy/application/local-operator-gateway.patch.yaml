@@ -1,0 +1,16 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - {name: LIVEPROBE_LOCAL_READ_KEY_FILE, value: /run/liveprobe-gateway/read}
+            - {name: APPLICATION_LOCAL_READ_KEY_FILE, value: /run/liveprobe-gateway/read}
+            - {name: LIVEPROBE_LOCAL_OPERATOR_KEY_FILE, value: /run/liveprobe-gateway/operator}
+            - {name: LIVEPROBE_LOCAL_GATEWAY_URL, value: 'http://127.0.0.1:4175'}
+          volumeMounts:
+            - {name: operator-gateway, mountPath: /run/liveprobe-gateway/read, subPath: read, readOnly: true}
+            - {name: operator-gateway, mountPath: /run/liveprobe-gateway/operator, subPath: operator, readOnly: true}
+      volumes:
+        - name: operator-gateway
+          secret: {secretName: liveprobe-operator-gateway, defaultMode: 0400}
