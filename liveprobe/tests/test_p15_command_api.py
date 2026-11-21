@@ -10,7 +10,7 @@ from test_p15_commands import MemoryKube, Planner, cm, operation
 
 
 @pytest.fixture
-def api(db_url, monkeypatch):
+def api(db_url, monkeypatch, operator_gateway):
     from app import config, db, main
     from app.commands import CommandService
     from app.models import Incident

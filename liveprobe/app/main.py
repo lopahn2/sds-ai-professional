@@ -13,15 +13,16 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Requ
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import OperationalError, InterfaceError
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
+from .observation_sources import adapter_url, bind_source_settings
 from . import db
 from .auth import require_user, require_webhook
 from .config import get_app_config, get_settings
 from .incidents import Signal
-from .models import (INCIDENT_CLOSED_STATES, Action, AgentRun, AuditLog, Citation, Evidence, Incident, IncidentEvent,
+from .models import (INCIDENT_CLOSED_STATES, Action, AgentRun, AuditLog, Citation, CodeActionLink, Evidence, Incident, IncidentEvent,
                      RagChunk, RoutingDecision, Setting)
 from .model_settings import ModelSettingsIn, RevisionConflict, read_settings, save_settings
 from .lifecycle import transition, update_run
@@ -146,6 +147,7 @@ async def lifespan(app: FastAPI):
     url = settings.sqlalchemy_url()
     db.run_migrations(url)
     db.init_db(url)
+    bind_source_settings(settings)
     broker.bind_loop(asyncio.get_running_loop())
     if settings.background:
         rag_ingest_stop.clear()
@@ -178,11 +180,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LiveProbe", version="0.1.0", lifespan=lifespan, docs_url=None,
               openapi_url=None)
+from .accountability import accountability_router
+app.include_router(accountability_router())
+
 from .command_api import command_router
 from .commands import CommandError
 app.include_router(command_router(STATE))
 from .change_api import change_router
 app.include_router(change_router(STATE))
+from .observation_sources import source_router
+app.include_router(source_router(STATE))
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import ValidationError
@@ -222,6 +229,12 @@ async def unified_no_store(request, call_next):
 from .unified_api import prepare_unified, unified_router
 prepare_unified(STATE)
 app.include_router(unified_router(STATE))
+from .console_history import console_history_router
+app.include_router(console_history_router(STATE))
+from .application.browser_access import install_redirect
+from .human_sessions import local_read_key
+install_redirect(app, os.getenv('LIVEPROBE_LOCAL_GATEWAY_URL'), local_read_key(os.getenv('LIVEPROBE_LOCAL_READ_KEY_FILE')),
+                 legacy_application_host=os.getenv('LIVEPROBE_LEGACY_APPLICATION_HOST'))
 if STATE.get("application") is not None:
     # Preserve runner pull endpoints on the same origin. No host callback is added.
     from fastapi.routing import APIRoute
@@ -408,7 +421,8 @@ def _inventory(kube) -> dict:
     import time as _t
     now = _t.monotonic()
     if _TOPO_CACHE.get("inventory") is None or now - _TOPO_CACHE.get("at", 0.0) > 5:
-        _TOPO_CACHE["inventory"], _TOPO_CACHE["at"] = kube.cluster_inventory(), now
+        observed = kube.cluster_inventory()
+        _TOPO_CACHE.update(inventory=observed, at=now, observed_at=datetime.now(timezone.utc).isoformat())
     return _TOPO_CACHE["inventory"]
 
 
@@ -450,14 +464,16 @@ def operations_overview(user: str = Depends(require_user)):
     settings = get_settings()
     # Only source queries are cached: incident pins and AI stages must change on every request.
     with _OV_LOCK:
-        if _OV_METRICS["url"] != settings.prometheus_url or monotonic() - _OV_METRICS["at"] > 10:
+        if _OV_METRICS["url"] != adapter_url(settings, 'prometheus') or monotonic() - _OV_METRICS["at"] > 10:
             values, errors = ov.fetch_metrics(settings)
-            _OV_METRICS.update(at=monotonic(), url=settings.prometheus_url, values=values, errors=errors)
+            _OV_METRICS.update(at=monotonic(), url=adapter_url(settings, 'prometheus'), values=values, errors=errors)
         values, errors = _OV_METRICS["values"], dict(_OV_METRICS["errors"])
     try:
         inv = _inventory(kube)
+        inventory_observed_at = _TOPO_CACHE.get("observed_at") if _TOPO_CACHE.get("inventory") is inv else None
     except Exception as e:  # noqa: BLE001 - keep source failures visible even if inventory is unavailable
         inv = {}
+        inventory_observed_at = None
         errors["inventory"] = type(e).__name__
     try:
         events = kube.cluster_warning_events()
@@ -491,6 +507,7 @@ def operations_overview(user: str = Depends(require_user)):
     out = ov.assemble(inv, values, events=events, incidents=incidents, today=today,
                       errors=errors, store=STATE.get("flows"), cfg=get_app_config())
     # 정돈-05: header, overview and environment chips read the same buckets; `open` keeps feeding the map pins only.
+    out["inventory_observed_at"] = inventory_observed_at
     out["incidents"]["counts"] = shared
     for env in out["cluster"].get("environments") or []:
         env["open_incidents"] = (shared["by_environment"].get(env["name"]) or {}).get("in_progress", env.get("open_incidents"))
@@ -537,7 +554,8 @@ INCIDENT_ORIGINS = ("evaluation", "unconfirmed")
 def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, search: str | None = None,
                    environment: str | None = None, origin: str | None = None, system: str | None = None,
                    start: date | None = None, end: date | None = None, service: str | None = None,
-                   as_of: int | None = None, user: str = Depends(require_user)):
+                   as_of: int | None = None, work: Literal['approval', 'qa_fix', 'recovery'] | None = None,
+                   user: str = Depends(require_user)):
     """정돈-04: every filter runs in the database before counting and paging, so `total` and every page describe the
     same set over the whole history. `as_of` (the max id of the first page) keeps later pages stable while new
     incidents arrive. Origin uses only the explicit `eval/` marker; everything else stays 'unconfirmed'."""
@@ -557,6 +575,10 @@ def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, 
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     envs = get_app_config().history_namespaces
+    from .application.qa_release import WORK_STATES
+    work_group = case(
+        *((CodeActionLink.application_state.in_(states), key) for key, states in WORK_STATES.items()),
+        ((CodeActionLink.incident_id.is_(None)) & (Incident.status == 'action_pending'), 'approval'))
     with db.session() as s:
         conds = []
         if lower is not None:
@@ -583,14 +605,20 @@ def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, 
         newest = s.scalar(select(func.max(Incident.id))) or 0
         anchor = min(as_of, newest) if as_of is not None else newest
         conds.append(Incident.id <= anchor)
-        total = s.scalar(select(func.count()).select_from(Incident).where(*conds)) or 0
-        incs = list(s.scalars(select(Incident).where(*conds)
+        joined = Incident.__table__.outerjoin(CodeActionLink, CodeActionLink.incident_id == Incident.id)
+        distribution = dict(s.execute(select(work_group, func.count()).select_from(joined)
+                                      .where(*conds).group_by(work_group)).all())
+        by_work = {key: distribution.get(key, 0) for key in WORK_STATES}
+        if work:
+            conds.append(work_group == work)
+        total = by_work[work] if work else sum(distribution.values())
+        incs = list(s.scalars(select(Incident).select_from(joined).where(*conds)
                               .order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit)))
         agg = _agg(s, [i.id for i in incs])
         newer = s.scalar(select(func.count()).select_from(Incident).where(Incident.id > anchor)) or 0
-        return {"items": [_summary(i, agg) for i in incs], "total": total, "as_of": anchor, "newer_since_as_of": newer,
+        return {"items": [_summary(i, agg) for i in incs], "total": total, "as_of": anchor, "newer_since_as_of": newer, "by_work": by_work,
                 "filters": {"status": status or None, "search": (search or "").strip() or None, "environment": environment or None,
-                            "origin": origin, "system": system or None}}
+                            "origin": origin, "system": system or None, "work": work}}
 
 
 def action_dict(a: Action) -> dict:
@@ -659,15 +687,9 @@ def _interpret_job(iid: int) -> str | None:
 
 @app.get("/api/incidents/{iid}/narrative")
 def incident_narrative(iid: int, user: str = Depends(require_user)):
-    """P15 war-room story: Korean headline, raw items (verbatim) with Korean readings, agent flow graph.
-
-    정돈-02: reading a record never starts interpretation, a model call or any DB write. Stored readings only.
-    For an incident whose analysis is still running, the view is registered in memory (no DB, no job) so the
-    pipeline's own per-step interpretation keeps working as before; a finished incident is never registered."""
+    """A read-only incident narrative assembled from persisted facts and public work events."""
     from .narrative import build_narrative
     with db.session() as s:
-        inc = s.get(Incident, iid)
-        active = inc is not None and inc.status not in INCIDENT_CLOSED_STATES
         out = build_narrative(s, iid, interpret_job=_interpret_job(iid))
         projection = projection_rows(s, [iid]).get(iid)
         if out is not None and projection:
@@ -679,9 +701,6 @@ def incident_narrative(iid: int, user: str = Depends(require_user)):
         s.rollback()  # read path: nothing is ever committed from here
     if out is None:
         raise HTTPException(404, "incident not found")
-    worker = STATE.get("interpret")
-    if active and worker is not None and hasattr(worker, "seen"):
-        worker.seen(iid)
     return redact_obj(out)
 
 
@@ -1034,6 +1053,12 @@ def alert_signal(alert: dict, cfg, kube) -> Signal | None:
         return None
     kind = ALERT_KIND[name]
     if kind == "endpoint" and labels.get("endpoint"):
+        from .service_health import read_backend
+        if kube is None:
+            return None
+        svc = kube.get_service(ns, labels["endpoint"])
+        if not svc or read_backend(kube, ns, svc)["backend_state"] != "missing":
+            return None
         return Signal(ns, "Service", labels["endpoint"], name, "alertmanager", {"labels": labels})
     if kind == "app" and labels.get("app"):
         return Signal(ns, "App", labels["app"], name, "alertmanager", {"labels": labels})

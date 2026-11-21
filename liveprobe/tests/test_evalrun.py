@@ -308,6 +308,9 @@ def test_complex_group_with_verified_image_cause_rolls_back_through_safety_execu
         with db.session() as s:
             a = s.get(Action, aid)
             a.status, a.executed = "succeeded", True
+            a.before_snapshot = {"revision": 3, "images": ["registry/inventory:bad"]}
+            a.params = {**a.params, "to_revision": 2, "to_images": ["registry/inventory:good"]}
+            a.after_state = {"images": ["registry/inventory:good"], "waiting_reasons": [], "replicas": 1, "ready_pods": 1}
         from app.safety import ExecResult
         return ExecResult(aid, "succeeded", "ok")
     monkeypatch.setattr(engine_module.safety, "execute", fake_execute)
@@ -365,6 +368,9 @@ def test_complex_group_oom_proposes_memory_limit_through_typed_executor(db_url, 
         with db.session() as s:
             a = s.get(Action, aid)
             a.status, a.executed = "succeeded", True
+            a.before_snapshot = {"memory_limit": "512Mi"}
+            a.params = {**a.params, "applied": {"memory_limit": "768Mi"}}
+            a.after_state = {"checks": {"rollout_healthy": True, "limit_applied": True}}
         from app.safety import ExecResult
         return ExecResult(aid, "succeeded", "ok")
     monkeypatch.setattr(typed, "propose_typed", fake_propose)

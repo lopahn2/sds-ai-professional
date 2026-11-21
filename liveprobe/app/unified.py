@@ -22,11 +22,14 @@ from sqlalchemy.exc import IntegrityError
 from . import db
 from .models import Action, AgentRun, CodeActionLink, Evidence, Incident, OperatorCommand, utcnow
 from .application.contracts import CreateIncident
+from .application.qa_release import projection as release_projection, work_of
 from .application.safety import sha, scrub, text_sha
 
 _SERVICE = None
 TERMINAL = {'completed', 'failed', 'handoff'}
 STATE_KO = {
+    'recovery_review': '서비스 복구 관측 · 운영자 소명 확인 대기',
+    'intake_rejected': '접수 종료 · 등록되지 않은 재현 요청',
     'requested': '코드 조치 연결 대기', 'unavailable': '코드 조치 상태 미관측',
     'detected': '코드 오류 접수', 'collecting': '실행기 근거 수집 대기',
     'source_pinning': '소스 출처 확인', 'analysis_queued': '코드 분석 대기', 'analyzing': '코드 분석 중',
@@ -35,6 +38,9 @@ STATE_KO = {
     'awaiting_prd_approval': 'prd 승인 대기', 'awaiting_merge': '사람 병합 확인 대기',
     'completed': 'prd 검증 완료', 'failed': '코드 조치 실패', 'handoff': '운영자 인계',
     'reconciliation_required': '실제 배포 결과 확인 필요',
+    'qa_queued': 'dev 업무 QA 대기', 'qa_passed': 'dev 업무 QA 통과', 'qa_failed': 'dev QA 보완 필요',
+    'dev_infra_pending': 'dev 인프라 조치 확인 대기', 'dev_infra_verified': 'dev 인프라 조치 확인',
+    'awaiting_recovery': 'prd 업무 복구 확인 중',
 }
 BLOCK_KO = {
     'feature_disabled': '통합 코드 조치가 아직 구성되지 않았습니다.',
@@ -78,11 +84,18 @@ def target_lock(session, namespace, workload):
         session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
 
 
-def active_link(session, namespace, workload):
+def active_link(session, namespace, workload, *, except_id=None):
     target_lock(session, namespace, workload)
-    rows = session.scalars(select(CodeActionLink).join(Incident, Incident.id == CodeActionLink.incident_id)
-                           .where(Incident.namespace == namespace, Incident.workload == workload))
-    for link in rows:
+    query = select(CodeActionLink, Incident).join(Incident, Incident.id == CodeActionLink.incident_id).where(
+        Incident.workload == workload, Incident.namespace.in_(['dev', 'prd'] if namespace == 'dev' else [namespace]))
+    if except_id is not None:
+        query = query.where(Incident.id != except_id)
+    from .mixed_remediation import required
+    for link, incident in session.execute(query):
+        if incident.namespace != namespace and not required(incident):
+            continue
+        if link.state == 'intake_rejected':
+            continue
         if _SERVICE is None or link.state != 'linked':
             return True
         try:
@@ -172,11 +185,39 @@ class UnifiedService:
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{2,63}', installation_id or ''):
             raise ValueError('unified_installation_id_required')
         self.application = application
+        application.state.unified_coordinator = self
         self.control = application.state.control
         self.instance = installation_id
         self.sessions = session_factory
         self._stop = threading.Event()
         self._thread = None
+
+    def mixed_required(self, application_id):
+        from .mixed_remediation import required
+        with self.sessions() as session:
+            incident = session.scalar(select(Incident).join(CodeActionLink, CodeActionLink.incident_id == Incident.id)
+                                      .where(CodeActionLink.application_id == application_id))
+            return bool(incident and required(incident))
+
+    def advance_mixed(self, application_id, release_id):
+        from .mixed_remediation import advance
+        engine = getattr(self, 'mixed_engine', lambda: None)()
+        return advance(self, application_id, release_id, engine)
+
+    def advance_pending_mixed(self):
+        # The Application read, Kubernetes action and receipt consumption are separate committed phases.
+        # Losing a response keeps the same release/action visible to the next poll.
+        for pending in self.control.mixed_pending():
+            if self._stop.is_set():
+                break
+            try:
+                app_id, release_id = pending['application_id'], pending['release_id']
+                if not app_id or not release_id:
+                    continue
+                decision = self.advance_mixed(app_id, release_id)
+                self.control.record_mixed_infra(app_id, decision)
+            except Exception:
+                continue  # Already consumed or temporarily unavailable. Read current state on the next poll.
 
     def blocks_target(self, app_id):
         document = self.control.detail(app_id)
@@ -190,11 +231,11 @@ class UnifiedService:
     def sync_one(self, iid):
         with self.sessions() as session:
             link = session.scalar(select(CodeActionLink).where(CodeActionLink.incident_id == iid))
-            if not link:
+            if not link or link.state == 'intake_rejected':
                 return
             app_id = link.application_id
         try:
-            document = self.control.detail(app_id)
+            document = self.linked_document(iid)
             app_state = document['state']
             status = projected_status(app_state)
             if app_state in TERMINAL and self.blocks_target(app_id):
@@ -226,10 +267,14 @@ class UnifiedService:
         def sync():
             while not self._stop.is_set():
                 try:
+                    self.advance_pending_mixed()
+                except Exception:
+                    pass  # Application store unavailable. Existing core projections can still refresh.
+                try:
                     with self.sessions() as session:
                         ids = list(session.scalars(select(CodeActionLink.incident_id).where(or_(
                             CodeActionLink.state == 'requested',
-                            CodeActionLink.projected_status.in_(['analyzing', 'acting', 'action_pending', 'open']),
+                            CodeActionLink.projected_status.in_(['analyzing', 'acting', 'action_pending', 'open', 'recovery_review']),
                             CodeActionLink.observation != 'observed'))))
                     for iid in ids:
                         if self._stop.is_set():
@@ -261,10 +306,14 @@ class UnifiedService:
             reject('incident_not_found', 404)
         return incident
 
-    def _busy(self, session, inc):
+    def _busy(self, session, inc, *, exclude_action_id=None):
         ids = select(Incident.id).where(Incident.namespace == inc.namespace, Incident.workload == inc.workload)
-        if session.scalar(select(Action.id).where(Action.incident_id.in_(ids),
-                Action.status.in_(['proposed', 'pending_approval', 'approved', 'executing', 'indeterminate'])).limit(1)):
+        from .actions import workload_lock
+        query = select(Action.id).where(or_(Action.incident_id.in_(ids), Action.lock_key == workload_lock(inc.namespace, inc.workload)),
+                Action.status.in_(['proposed', 'pending_approval', 'approved', 'executing', 'indeterminate']))
+        if exclude_action_id is not None:
+            query = query.where(Action.id != exclude_action_id)
+        if session.scalar(query.limit(1)):
             return True
         commands = session.scalars(select(OperatorCommand).where(OperatorCommand.status.in_(
             ['planning', 'awaiting_confirmation', 'awaiting_secret', 'executing', 'rolling_back'])))
@@ -337,9 +386,17 @@ class UnifiedService:
                       'request_sha256': link.request_sha256}
             app_id, payload = link.application_id, copy.deepcopy(link.request)
             request_hash = link.request_sha256
-        self.control.create_linked(CreateIncident.model_validate(payload),
-            {'subject': 'unified-coordinator', 'kind': 'machine'}, origin=origin,
-            application_id=app_id, request_sha256=request_hash)
+            from .mixed_remediation import required
+            mixed = required(self._incident(session, iid))
+        try:
+            self.control.create_linked(CreateIncident.model_validate(payload),
+                {'subject': 'unified-coordinator', 'kind': 'machine'}, origin=origin,
+                application_id=app_id, request_sha256=request_hash, mixed_required=mixed)
+        except HTTPException as exc:
+            if (exc.status_code == 422 and isinstance(exc.detail, dict)
+                    and exc.detail.get('code') == 'reproduction_unregistered'):
+                self._record_rejected_intake(iid, app_id, request_hash)
+            raise
         with self.sessions() as session:
             link = session.scalar(select(CodeActionLink).where(CodeActionLink.incident_id == iid).with_for_update())
             if link.application_id != app_id or link.request_sha256 != request_hash:
@@ -351,9 +408,31 @@ class UnifiedService:
         self.sync_one(iid)
         return self.summary(iid)
 
+    def _record_rejected_intake(self, iid, app_id, request_hash):
+        # Older versions reserved a core row before validating reproduction. Release it only if
+        # this exact invalid reservation never created an Application incident or a runner job.
+        from .application.storage import Incident as ApplicationIncident, Job
+        with self.control.store.read() as app_session:
+            if (app_session.get(ApplicationIncident, app_id) is not None or
+                    app_session.scalar(select(Job.id).where(Job.incident_id == app_id).limit(1))):
+                return
+        with self.sessions() as session:
+            link = session.scalar(select(CodeActionLink).where(CodeActionLink.incident_id == iid).with_for_update())
+            if not (link and link.application_id == app_id and link.request_sha256 == request_hash and
+                    link.state == 'requested' and link.request.get('reproduction') is not None):
+                return
+            link.state = link.application_state = 'intake_rejected'
+            link.projected_status, link.observation = 'failed', 'observed'
+            link.observed_at = link.state_changed_at = utcnow()
+            db.audit(session, 'unified-coordinator', 'code_intake_rejected', iid,
+                     action_id=link.action_id, reason='reproduction_unregistered')
+
     def continue_incident(self, iid, actor, *, automatic=False):
         with self.sessions() as session:
             inc = self._incident(session, iid)
+            from .mixed_remediation import required
+            if inc.namespace == 'prd' and required(inc):
+                target_lock(session, 'dev', inc.workload)
             target_lock(session, inc.namespace, inc.workload)
             # The target lock serializes all link reservations and K8s admissions.
             inc = session.scalar(select(Incident).where(Incident.id == iid).with_for_update())
@@ -362,7 +441,8 @@ class UnifiedService:
                 code = self.eligibility(session, inc)
                 if code:
                     reject(code)
-                if active_link(session, inc.namespace, inc.workload):
+                if active_link(session, inc.namespace, inc.workload) or (
+                        inc.namespace == 'prd' and required(inc) and active_link(session, 'dev', inc.workload)):
                     reject('code_action_owns_target')
                 request = CreateIncident(environment=inc.namespace, service=inc.workload,
                     reason='K8s 분석에서 독립 검증된 사용자 코드 원인. 동일 사건의 코드 수정 조치입니다.')
@@ -383,6 +463,7 @@ class UnifiedService:
                     iid = existing.incident_id
                 else:
                     target_lock(session, request.environment, request.service)
+                    self.control.validate_intake(request)
                     if request.environment not in ('dev', 'prd') or request.service not in self.control.catalog.profiles:
                         reject('service_unregistered', 422)
                     if active_link(session, request.environment, request.service):
@@ -409,6 +490,22 @@ class UnifiedService:
                 iid = link.incident_id
         return {'incident_id': iid, 'room_path': f'/incidents/{iid}', 'code_action': self._dispatch(iid)}
 
+    def matches_origin(self, link, document):
+        origin = {'installation_id': self.instance, 'incident_id': link.incident_id, 'action_id': link.action_id}
+        return (document['id'] == link.application_id == sha(origin) and
+                (document.get('data') or {}).get('unified_origin') == {**origin, 'request_sha256': link.request_sha256})
+
+    def linked_document(self, iid, *, operator=False):
+        with self.sessions() as session:
+            link = session.scalar(select(CodeActionLink).where(CodeActionLink.incident_id == iid))
+            if link is None or link.state != 'linked':
+                reject('code_action_not_found', 404)
+            session.expunge(link)
+        document = self.control.operator_detail(link.application_id) if operator else self.control.detail(link.application_id)
+        if not self.matches_origin(link, document):
+            reject('link_fingerprint_conflict')
+        return document
+
     def summary(self, iid):
         with self.sessions() as session:
             inc = self._incident(session, iid)
@@ -429,10 +526,15 @@ class UnifiedService:
             app_id, link_state = link.application_id, link.state
         result.update(state='requested', phase='code_action', state_ko=STATE_KO['requested'],
                       next_ko='서버가 저장된 요청으로 같은 코드 조치의 연결을 자동 재확인합니다.')
+        if link_state == 'intake_rejected':
+            result.update(state=link_state, state_ko=STATE_KO[link_state], blocks_cluster=False,
+                          linked=False, blocked_code='reproduction_unregistered',
+                          next_ko='원래 접수 기록은 보존됩니다. 등록된 서비스와 증상으로 접수할 수 있습니다.')
+            return result
         if link_state != 'linked':
             return result
         try:
-            document = self.control.detail(app_id)
+            document = self.linked_document(iid)
             state = document['state']
             runner_status = self.control.runner_status_for_incident(app_id)
             runner = runner_status['observed']
@@ -446,7 +548,9 @@ class UnifiedService:
                             'verifying': '결과 검증 중', 'verified': '결과 검증 완료'}.get(state[len(env)+1:], '조치 진행 중')
                         break
             next_ko = {'awaiting_user_test': '시험자는 검증된 dev 버전을 시험하고 결과를 기록하세요.',
-                'awaiting_prd_approval': '승인자는 사용자 시험과 사람 병합 확인 후 정확한 버전을 승인하세요.',
+                'awaiting_prd_approval': '승인자는 시험 결과와 사람의 PR 병합을 확인한 뒤 해당 버전을 승인하세요.',
+                'qa_failed': '실패한 업무 시험의 근거를 확인한 뒤 보완하거나 현재 버전의 QA를 다시 요청하세요.',
+                'awaiting_recovery': '배포된 버전에서 원래 업무 요청이 복구됐는지 확인하고 있습니다.',
                 'awaiting_merge': '등록 저장소에서 사람이 PR을 병합한 결과를 확인해야 합니다.',
                 'completed': 'prd 검증이 완료됐습니다. 결과와 이력을 확인하세요.',
                 'handoff': '권한·데이터 안전 또는 복구 한계를 운영자가 확인하세요.',
@@ -457,7 +561,8 @@ class UnifiedService:
             result.update(state=state, state_ko=label or '코드 조치 진행 중',
                 blocks_cluster=self.blocks_target(app_id),
                 next_ko=next_ko, runner_observed=runner, observed_at=observed,
-                runner_role=runner_status.get('role'), runner_last_claim_at=runner_status.get('last_claim_at'))
+                runner_role=runner_status.get('role'), runner_last_claim_at=runner_status.get('last_claim_at'),
+                **release_projection(document, state))
         except Exception:
             result.update(state='unavailable', state_ko=STATE_KO['unavailable'],
                           next_ko='저장소 연결을 확인하세요. 기존 조치의 성공 여부를 추정하지 않습니다.')
@@ -467,8 +572,9 @@ class UnifiedService:
         summary = self.summary(iid)
         if not summary['linked']:
             reject('code_action_not_found', 404)
-        app_id = summary['application_id']
-        return {'summary': summary, 'application': self.control.detail(app_id),
+        application = self.linked_document(iid, operator=True)
+        app_id = application['id']
+        return {'summary': summary, 'application': application,
                 'release': self.control.release_get(app_id), 'events': self.control.events(app_id)}
 
     def auto_continue(self, iid):
@@ -479,6 +585,16 @@ class UnifiedService:
         except Exception:
             with self.sessions() as session:
                 db.audit(session, 'unified-coordinator', 'code_action_link_pending', iid)
+
+
+def defer_mixed(iid):
+    if _SERVICE is None:
+        return False
+    from .mixed_remediation import required
+    with _SERVICE.sessions() as session:
+        incident = session.get(Incident, iid)
+        return bool(incident and required(incident) and
+                    (incident.handoff or {}).get('code_cause_verification', {}).get('verified') is True)
 
 
 def configure(application=None, instance=None):
@@ -493,13 +609,15 @@ def auto_continue(iid):
 
 
 def projected_status(application_state):
+    if application_state == 'recovery_review':
+        return 'recovery_review'
     if application_state == 'completed':
         return 'resolved'
     if application_state == 'handoff':
         return 'handed_off'
     if application_state == 'failed':
         return 'failed'
-    if application_state in ('awaiting_user_test', 'awaiting_prd_approval', 'awaiting_merge'):
+    if work_of(application_state) in ('approval', 'qa_fix') or application_state == 'awaiting_merge':
         return 'action_pending'
     return 'analyzing'
 
@@ -514,6 +632,7 @@ def effective_status_expr():
 def projection_rows(session, ids):
     return {link.incident_id: {'action_id': link.action_id, 'application_id': link.application_id,
         'state': link.application_state, 'projected_status': link.projected_status,
+        'work': work_of(link.application_state),
         'state_ko': STATE_KO.get(link.application_state, '코드 조치 진행 중'),
         'observed_at': link.observed_at.isoformat() if link.observed_at else None,
         'state_changed_at': link.state_changed_at.isoformat() if link.state_changed_at else None,
@@ -523,11 +642,13 @@ def projection_rows(session, ids):
 
 def apply_projection(item, projection):
     if not projection:
+        item['work'] = 'approval' if item.get('status') == 'action_pending' else None
         return item
     value = dict(item)
     value['kubernetes_status'] = item.get('status')
     value['status'] = projection['projected_status']
     value['code_action'] = projection
+    value['work'] = projection.get('work')
     if projection.get('state_changed_at'):
         value['updated_at'] = projection['state_changed_at']
     if value['status'] not in ('resolved', 'failed', 'handed_off', 'closed'):

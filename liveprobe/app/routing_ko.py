@@ -14,7 +14,7 @@ from .roles_ko import LEVEL_KO
 DECIDED_BY_KO = {"rules": "규칙", "rules+llm": "규칙 + AI 분류", "operator": "운영자", "router_failure": "규칙(분류 실패 인계)"}
 SOURCE_KO = {"deployment": "Deployment", "pod_status": "Pod 상태", "service": "Service", "endpoints": "엔드포인트",
              "k8s_event": "Kubernetes 이벤트", "prometheus": "지표(Prometheus)", "loki": "로그(Loki)", "node": "노드",
-             "configmap": "ConfigMap", "code_refs": "코드 참조"}
+             "configmap": "ConfigMap", "code_refs": "코드 참조", "investigation": "추가 근거 탐색"}
 SOURCE_REF = {"deployment": "E1_deployment", "pod_status": "E2_pods", "service": "E3_service", "endpoints": "E3_service",
               "k8s_event": "E5_recent_events", "prometheus": "E6_metrics", "loki": "E7_error_logs", "node": "E8_node",
               "configmap": "E9_config", "code_refs": None}
@@ -89,7 +89,11 @@ def features_ko(f: dict | None) -> list[str]:
     if has("waiting_reasons") and f["waiting_reasons"]:
         out.append("대기 사유: " + ", ".join(map(str, f["waiting_reasons"])))
     if has("service_has_no_endpoints"):
-        if f["service_has_no_endpoints"] is None:
+        state = f.get("service_backend_state")
+        if state in ("scaled_down", "manual", "external_name"):
+            out.append({"scaled_down": "연결 대상 목표 Pod 0개", "manual": "연결 대상 수동 관리",
+                        "external_name": "외부 DNS 이름으로 연결"}[state])
+        elif f["service_has_no_endpoints"] is None:
             out.append("Service 연결 대상 미관측")
         else:
             out.append("Service 연결 대상 없음" if f["service_has_no_endpoints"] else "Service 연결 대상 있음")
@@ -292,7 +296,7 @@ def progress_ko(audits: list[Any]) -> list[str]:
 # ------------------------------------------------------------------ hand-off view
 OUTCOME_KO = {"handed_off": "운영자 인계 · 자동 복구 아님", "closed": "운영자 종료 · 서비스 복구 판정 아님",
               "resolved": "자동 복구 완료", "failed": "처리 실패 · 자동 복구 아님"}
-ACTION_STATUS_KO = {"succeeded": "성공", "failed": "실패", "denied": "정책상 거부", "rejected": "운영자 거절",
+ACTION_STATUS_KO = {"cancelled": "증상 해소로 조치 취소", "succeeded": "성공", "failed": "실패", "denied": "정책상 거부", "rejected": "운영자 거절",
                     "pending_approval": "승인 대기", "approved": "승인됨", "executing": "실행 중", "proposed": "제안됨",
                     "rolled_back": "원복됨", "rolling_back": "원복 중"}
 PENDING_KO = "한글 해석 준비 중"

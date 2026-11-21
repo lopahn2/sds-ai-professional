@@ -176,7 +176,7 @@ def test_stopped_queue_yields_worker_until_external_effect_is_confirmed(db_url, 
     worker.start()
     try:
         wait_until(lambda: other not in eng._scheduled)
-        assert iid not in eng._scheduled and eng._cleanup_pending is None
+        assert iid not in eng._scheduled and not eng._cleanup_pending
         assert snapshot(iid)["status"] == "open"
         assert snapshot(other)["status"] == "handed_off"
         assert not [e for e in runlog.events_since(iid) if e["kind"] == "completed"]
@@ -355,29 +355,18 @@ def test_queued_stop_is_committed_before_publish_and_idempotent(db_url, monkeypa
         assert len(audits) == 1 and audits[0].detail["cluster_changed"] is False
 
 
-def test_delayed_timer_and_stale_queue_cannot_restart_a_stopped_incident(db_url, monkeypatch):
+def test_settle_window_and_stale_queue_cannot_restart_a_stopped_incident(db_url, monkeypatch):
     from app import changes, engine as module
     iid = incident("delayed")
-    timers, collected, followups = [], [], []
-
-    class Timer:
-        def __init__(self, delay, fn, args):
-            self.fn, self.args = fn, args
-
-        def start(self):
-            timers.append(self)
-
+    collected, followups = [], []
     eng = engine()
-    monkeypatch.setattr(module.threading, "Timer", Timer)
     monkeypatch.setattr(module, "collect", lambda *a, **kw: collected.append(True))
     monkeypatch.setattr(changes, "auto_create_for_incident", lambda *a: followups.append(True))
-    eng.schedule(iid, delay=60)
+    eng.schedule(iid, delay=0.05)
     runlog.set_control(iid, "stop")
-    eng.schedule(iid, delay=60)
-    assert len(timers) == 1
-    timers[0].fn(*timers[0].args)
-    worker = threading.Thread(target=eng._worker, daemon=True)
-    worker.start()
+    eng.schedule(iid, delay=0.05)
+    assert list(eng._scheduled) == [iid]
+    eng.start()
     try:
         wait_until(lambda: iid not in eng._scheduled)
         eng.process(iid)
@@ -386,5 +375,6 @@ def test_delayed_timer_and_stale_queue_cannot_restart_a_stopped_incident(db_url,
         assert len([e for e in runlog.events_since(iid) if e["kind"] == "completed"]) == 1
     finally:
         eng.stop()
-        worker.join(6)
-        assert not worker.is_alive()
+        for worker in (eng._worker_thread, eng._image_worker):
+            worker.join(6)
+            assert not worker.is_alive()

@@ -23,7 +23,7 @@ class Base(DeclarativeBase):
 
 INCIDENT_OPEN_STATES = ("open", "analyzing", "action_pending", "acting")
 # "closed" (P17): an operator ended an incident the AI already stopped on. It records a decision; nothing ran.
-INCIDENT_CLOSED_STATES = ("resolved", "handed_off", "failed", "closed")
+INCIDENT_CLOSED_STATES = ("resolved", "handed_off", "failed", "closed", "recovery_review")
 
 
 class Incident(Base):

@@ -404,7 +404,8 @@ def apply(kube: Any, v: Validated, *, now: Callable[[], str] = _now) -> dict:
         cm = v.snapshot["configmap"]
         res = kube.patch_configmap_json(ns, name, [
             {"op": "test", "path": "/metadata/resourceVersion", "value": cm["resourceVersion"]},
-            {"op": "replace", "path": "/data", "value": v.private["new_data"]}])
+            # Kubernetes는 빈 data 필드를 생략할 수 있다. add는 기존 값도 교체한다.
+            {"op": "add", "path": "/data", "value": v.private["new_data"]}])
         applied = {"configmap_resourceVersion": _meta(res or {}).get("resourceVersion"),
                    "data_sha256": v.snapshot["version"]["data_sha256"]}
         # envFrom is read at container start: restart the single consumer Deployment.
@@ -485,7 +486,7 @@ def compensate(kube: Any, v: Validated, applied: dict, *, now: Callable[[], str]
             raise TargetConflict("resourceVersion after restore unknown; refusing blind compensation")
         kube.patch_configmap_json(ns, name, [
             {"op": "test", "path": "/metadata/resourceVersion", "value": rv},
-            {"op": "replace", "path": "/data", "value": v.private["old_data"]}])
+            {"op": "add", "path": "/data", "value": v.private["old_data"]}])
         dep = kube.get_deployment(ns, v.workload) or {}
         stamp = now()
         kube.patch_deployment_json(ns, v.workload, _restart_ops(
@@ -559,11 +560,16 @@ def propose_typed(s: Session, cfg: AppConfig, kube: Any, incident: Incident, lev
     return act
 
 
-def _authorized(s: Session, act: Action, inc: Incident | None) -> str | None:
+def _authorized(s: Session, act: Action, inc: Incident | None, kube=None) -> str | None:
     """Return None when executable, else a denial reason."""
     if act.type not in TYPED:
         return "not a typed safe action"
-    if inc is None or inc.status not in INCIDENT_OPEN_STATES:
+    if (act.params or {}).get("mixed"):
+        from .mixed_remediation import DevTarget
+        if (not isinstance(kube, DevTarget) or kube.action_id != act.id or kube.binding != act.params["mixed"]
+                or not inc or inc.status not in ("resolved", "handed_off") or inc.severity_level == "HIGH_RISK"):
+            return "release-scoped dev action requires its verified coordinator binding"
+    elif inc is None or inc.status not in INCIDENT_OPEN_STATES:
         return "incident is not open"
     if not inc.system:
         return "incident system is unobserved; ownership cannot be verified"
@@ -615,7 +621,7 @@ def execute_typed(session_factory, cfg: AppConfig, kube: Any, action_id: int, ac
         if not act:
             return TypedResult(action_id, "denied", "action not found")
         inc = s.get(Incident, act.incident_id)
-        why = _authorized(s, act, inc)
+        why = _authorized(s, act, inc, kube)
         if why is None and not getattr(kube, "typed_actions_enabled", False):
             why = "typed action executor is not configured (observe-only client)"
         if why is None:
@@ -639,7 +645,7 @@ def execute_typed(session_factory, cfg: AppConfig, kube: Any, action_id: int, ac
     try:
         with session_factory() as s:
             act = s.scalar(select(Action).where(Action.id == action_id).with_for_update())
-            why = _authorized(s, act, s.get(Incident, act.incident_id))
+            why = _authorized(s, act, s.get(Incident, act.incident_id), kube)
             if why is not None:
                 audit(s, actor, "action_denied", act.incident_id, action_id=act.id, stage="lock", reason=why)
                 return TypedResult(act.id, "denied", why)

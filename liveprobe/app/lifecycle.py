@@ -9,10 +9,11 @@ from .models import INCIDENT_CLOSED_STATES, Incident, WorkflowRun
 
 TRANSITIONS = {
     "open": {"analyzing", "failed", "handed_off"},
-    "analyzing": {"action_pending", "acting", "resolved", "handed_off", "failed"},
+    "analyzing": {"recovery_review", "action_pending", "acting", "resolved", "handed_off", "failed"},
     # An operator may close an approval nobody will act on (e.g. an action that already finished elsewhere).
-    "action_pending": {"acting", "handed_off", "failed", "closed"},
-    "acting": {"resolved", "handed_off", "failed"},
+    "action_pending": {"acting", "handed_off", "failed", "closed", "resolved", "recovery_review"},
+    "recovery_review": {"resolved"},
+    "acting": {"recovery_review", "resolved", "handed_off", "failed"},
     "resolved": set(),
     # The AI stopped and a person owns it; only that person's explicit close ends it.
     "handed_off": {"closed"},
@@ -25,7 +26,7 @@ def transition(inc: Incident, status: str) -> None:
     if status not in TRANSITIONS.get(inc.status, set()):
         raise ValueError(f"invalid incident transition {inc.status} -> {status}")
     inc.status = status
-    if status in INCIDENT_CLOSED_STATES:
+    if status in INCIDENT_CLOSED_STATES and status != "recovery_review":
         inc.closed_at = datetime.now(timezone.utc)
 
 

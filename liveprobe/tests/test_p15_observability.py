@@ -51,7 +51,7 @@ def test_alloy_all_namespaces_preserves_bounded_labels_no_hostpath():
     docs = objects(OBS / "alloy/alloy.yaml")
     config = next(o for o in docs if o["kind"] == "ConfigMap")["data"]["config.alloy"]
     assert 'names = ["liveprobe-target"]' not in config and 'regex         = "order|inventory"' not in config
-    assert 'values = ["namespace", "app", "pod", "container"]' in config
+    assert 'values = ["namespace", "app", "system", "pod", "container"]' in config
     assert "loki.source.kubernetes" in config
     dep = next(o for o in docs if o["kind"] == "Deployment")
     assert not any("hostPath" in v for v in dep["spec"]["template"]["spec"].get("volumes", []))

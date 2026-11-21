@@ -9,11 +9,11 @@ from .k8s import parse_ts
 from .router import CRITICAL_SOURCES, _metric_latency_signal, extract_features, rules_decide
 
 K8S_SIGNALS = {'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'InvalidImageName',
-               'TargetWorkloadImagePullFailing', 'NoEndpoints', 'TargetServiceNoEndpoints',
+               'TargetWorkloadImagePullFailing', 'TargetWorkloadCrashLooping', 'TargetWorkloadNotReady', 'NoEndpoints', 'TargetServiceNoEndpoints',
                'OOMKilled', 'OOMKilling', 'TargetWorkloadOOMKilled'}
 HTTP_SIGNALS = {'High5xx', 'OrderHigh5xxRate', 'InventoryHigh5xxRate', 'TargetHigh5xxRate', 'ApplicationException'}
 LATENCY_SIGNALS = {'HighLatency', 'SlowResponse', 'TargetHighLatency'}
-POOL_SIGNALS = {'PoolExhausted', 'PoolHold'}
+POOL_SIGNALS = {'PoolExhausted', 'PoolHold', 'TargetConnectionPoolExhausted'}
 SUPPORTED = K8S_SIGNALS | HTTP_SIGNALS | LATENCY_SIGNALS | POOL_SIGNALS
 
 
@@ -50,7 +50,7 @@ def recovery_proof(first: Bundle, second: Bundle, signals: list[str], *, min_int
         desired = b.deployment.get('replicas', 0)
         if (desired <= 0 or b.deployment.get('ready_replicas', 0) < desired
                 or b.deployment.get('available_replicas', 0) < desired or b.deployment.get('unavailable_replicas', 0)
-                or f['ready_pods'] != len(b.pods) or f['waiting_reasons'] or f['service_has_no_endpoints']):
+                or f['ready_pods'] != len(b.pods) or f['waiting_reasons'] or f['service_backend_state'] != 'ready'):
             return None
         own_pods = {p['name'] for p in b.pods}
         if set(b.service.get('matching_pods') or []) != own_pods or not b.service.get('selector'):
@@ -80,9 +80,12 @@ def recovery_proof(first: Bundle, second: Bundle, signals: list[str], *, min_int
                 return None
         stamp = observed_at(b)
         assert stamp is not None
+        pod_uids = {p['name']: p.get('uid') for p in b.pods}
         snapshots.append({'observed_at': stamp.isoformat(), 'namespace': b.namespace, 'workload': b.workload,
                           'ready_pods': f['ready_pods'], 'ready_endpoints': b.service['ready_endpoints'],
-                          'containers': [{'pod': p, 'name': n, 'restart_count': c.get('restart_count'),
+                          'service_uid': b.service.get('uid'), 'service_selector': b.service.get('selector'),
+                          'pod_labels': {p['uid']: p.get('labels') for p in b.pods if p.get('uid')},
+                          'containers': [{'pod': p, 'pod_uid': pod_uids[p], 'name': n, 'restart_count': c.get('restart_count'),
                                           'last_terminated_at': c.get('last_terminated_at')} for (p, n), c in _containers(b).items()]})
     before, after = _containers(first), _containers(second)
     if not before or before.keys() != after.keys():

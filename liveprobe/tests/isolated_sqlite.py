@@ -10,7 +10,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import BigInteger, create_engine, event
+from sqlalchemy import BigInteger, MetaData, create_engine, event
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
@@ -46,7 +46,7 @@ def _sqlite_compat(metadata):
     """SQLite cannot evaluate to_tsvector(); the generated column is display-irrelevant for these tests.
 
     PostgreSQL partial unique indexes keep their WHERE clause on SQLite (sqlite_where) instead of silently becoming
-    full unique indexes. Mutates the in-process metadata only; never used against PostgreSQL in the same process."""
+    full unique indexes. Only the disposable SQLite metadata copy is modified."""
     for table in metadata.tables.values():
         for column in table.columns:
             if column.computed is not None:
@@ -84,8 +84,11 @@ def isolated_k8s_db(tmp_path: Path):
     def _fk(dbapi_conn, _record):  # pragma: no cover - connection hook
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
 
-    _sqlite_compat(Base.metadata)
-    Base.metadata.create_all(engine)
+    sqlite_schema = MetaData()
+    for table in Base.metadata.tables.values():
+        table.to_metadata(sqlite_schema)
+    _sqlite_compat(sqlite_schema)
+    sqlite_schema.create_all(engine)
     old_engine, old_session = db._engine, db._Session
     db._engine, db._Session = engine, sessionmaker(engine, expire_on_commit=False)
     try:

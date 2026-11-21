@@ -206,7 +206,7 @@ def _client(db_url, monkeypatch):
 
 
 @needs_db
-def test_api_accepts_target_role_and_returns_hold(db_url, monkeypatch, iid):
+def test_api_accepts_target_role_and_returns_hold(operator_gateway, db_url, monkeypatch, iid):
     with _client(db_url, monkeypatch) as c:
         r = c.post(f"/api/incidents/{iid}/messages", json={"body": "반박 근거를 더 찾아", "target_role": "challenger",
                                                             "target_node": "plan:3:challenger"})
@@ -222,7 +222,7 @@ def test_api_accepts_target_role_and_returns_hold(db_url, monkeypatch, iid):
 
 
 @needs_db
-def test_api_rejects_unknown_role_and_long_node(db_url, monkeypatch, iid):
+def test_api_rejects_unknown_role_and_long_node(operator_gateway, db_url, monkeypatch, iid):
     with _client(db_url, monkeypatch) as c:
         assert c.post(f"/api/incidents/{iid}/messages", json={"body": "x", "target_role": "hacker"}).status_code == 422
         assert c.post(f"/api/incidents/{iid}/messages", json={"body": "x", "target_role": "challenger",
@@ -235,7 +235,7 @@ from test_p15_command_api import api  # fixture uses fake planner/Kubernetes onl
 
 
 @pytest.mark.parametrize("status", ["analyzing", "handed_off", "resolved", "failed"])
-def test_targeted_mutation_keeps_command_safety_and_target_metadata(api, status):
+def test_targeted_mutation_keeps_command_safety_and_target_metadata(operator_gateway, api, status):
     from app import db, runlog
     from app.models import Incident, OperatorMessage
     from test_p15_commands import operation
@@ -257,7 +257,7 @@ def test_targeted_mutation_keeps_command_safety_and_target_metadata(api, status)
 
 
 @needs_db
-def test_api_closed_incident_still_409(db_url, monkeypatch, iid):
+def test_api_closed_incident_still_409(operator_gateway, db_url, monkeypatch, iid):
     from app import db
     from app.models import Incident
     with db.session() as s:

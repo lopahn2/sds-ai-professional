@@ -32,7 +32,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .config import AppConfig, RoleModel
-from .proposals import ACTION_RULES, group_action
+from .proposals import ACTION_RULES, PLAN_PROPERTIES, group_action
 from .remediation import Remediation, REMEDIATION_SCHEMA, REMEDIATION_RULES, remediation_errors
 from .workflows import AgentCall
 
@@ -92,6 +92,7 @@ GROUP_SCHEMA: dict[str, Any] = {
         "next_action": {"type": "string", "enum": ["act", "handoff", "investigate_more", "none"]},
         "recommended_steps": {"type": "array", "items": _STR},
         "action": {"type": ["object", "null"], "properties": {
+            **PLAN_PROPERTIES,
             "type": _STR, "target": {"type": ["string", "null"]}, "replicas": {"type": ["integer", "null"]},
             "memory_limit_mi": {"type": ["integer", "null"]}, "version": {"type": ["string", "null"]}, "why": _STR}},
     },
@@ -151,6 +152,10 @@ class EvidenceStore:
         self.misses = 0
         self._lock = threading.Lock()
 
+    def invalidate_views(self):
+        with self._lock:
+            self._views.clear()
+
     def key(self, ref: str) -> str | None:
         ref = (ref or "").strip()
         m = _REF_RE.match(ref)
@@ -184,7 +189,7 @@ class EvidenceStore:
                 self.hits += 1
                 return self._views[ck]
             self.misses += 1
-        chosen = {k: v for k, v in self.sources.items() if k.split("_", 1)[0] in keys or k in keys}
+        chosen = {k: v for k, v in self.sources.items() if k.split("_", 1)[0] in keys or k in keys or k.endswith("_investigation")}
         if "E8_code_refs" in chosen:
             chosen = {"E8_code_refs": chosen.pop("E8_code_refs"), **chosen}
         from .analysis_context import bounded_view
@@ -270,6 +275,7 @@ class GroupController:
         self.events: list[dict] = []
         self._lock = threading.Lock()
         self.primary_model = primary_model
+        self.inquire = None
 
     # -- roles
     def role_model(self, role: str) -> RoleModel:
@@ -583,7 +589,8 @@ def build_complex_graph(ctl: GroupController, store: EvidenceStore):
 
     def gate(state):
         ch = state["msgs"].get("challenger") or {}
-        if ch.get("verdict") == "contradicted" and state.get("rounds", 0) < ctl.policy.max_rounds:
+        if (ch.get("verdict") in ("contradicted", "insufficient") and state.get("rounds", 0) < ctl.policy.max_rounds
+                and (ctl.inquire(state, "challenger") if ctl.inquire else ch.get("verdict") == "contradicted")):
             ctl.event("contradiction", by="challenger", target="cause_reasoner",
                       reason=(ch.get("summary") or "")[:300])
             return {"objection": _objection(ch)}
@@ -615,8 +622,9 @@ def build_complex_graph(ctl: GroupController, store: EvidenceStore):
     g.add_conditional_edges("challenge_gate", lambda s: "finalize" if _stopped(s) else
                             ("revise" if s.get("objection") else "group_verifier"),
                             {"finalize": "finalize", "revise": "revise", "group_verifier": "group_verifier"})
-    g.add_conditional_edges("revise", lambda s: "finalize" if _stopped(s) else "group_verifier",
-                            {"finalize": "finalize", "group_verifier": "group_verifier"})
+    g.add_conditional_edges("revise", lambda s: "finalize" if _stopped(s) else
+                            (["challenger", "recovery_planner"] if ctl.inquire else "group_verifier"),
+                            {k: k for k in ("finalize", "challenger", "recovery_planner", "group_verifier")})
     g.add_conditional_edges("group_verifier", lambda s: _after_verify(ctl, s, "revise"),
                             {"finalize": "finalize", "revise": "revise"})
     g.add_edge("finalize", END)
@@ -656,15 +664,21 @@ def _verify(ctl: GroupController, store: EvidenceStore, state: GState) -> GState
         "the operator and must not defer to one merely because you are a verifier): when the cause is supported and the "
         "action fixes it within the approved bounds and is reversible, set next_action='act' and repeat the SAME `action`; "
         "set 'handoff' only with a concrete reason the evidence does not support it, it exceeds the bounds, or it would "
-        "not fix the cause."), state) + \
+        "not fix the cause. If an E-numbered follow-up investigation is present, cite that new observation "
+        "in both the conclusion and verification only if it distinguishes competing explanations."), state) + \
         "Conclusion under review:\n" + _candidates_block(concl) + "\n" + _proposal_block(state) + "\n\n" + store.view(ALL_E)
     out, rep, _ = ctl.run_role("group_verifier", p, store, needs_candidates=False)
     upd: GState = {"msgs": {"group_verifier": out}, "reports": {"group_verifier": rep}}
-    if out and out.get("verdict") == "contradicted":
+    upd["objection"] = None
+    if out and out.get("verdict") in ("contradicted", "insufficient"):
         ctl.event("contradiction", by="group_verifier", target=primary, reason=(out.get("summary") or "")[:300])
         upd["objection"] = _objection(out)
-    else:
-        upd["objection"] = None
+    elif ctl.inquire and out and out.get("verdict") == "supported":
+        from .analysis_acceptance import assess
+        floor = max(ctl.cfg.min_confidence, ctl.policy.min_agent_confidence or 0)
+        acceptance = assess(store, concl, out, floor)
+        if not acceptance["accepted"] or len(acceptance["candidate_indexes"]) != 1:
+            upd["objection"] = "후보를 하나로 확정할 근거가 부족합니다. " + " ".join(acceptance["reasons"])
     return upd
 
 
@@ -672,9 +686,10 @@ def _after_verify(ctl: GroupController, state: GState, revise_node: str) -> str:
     if _stopped(state):
         return "finalize"
     v = state["msgs"].get("group_verifier") or {}
-    if v.get("verdict") == "contradicted" and state.get("rounds", 0) < ctl.policy.max_rounds:
+    if (state.get("objection") and state.get("rounds", 0) < ctl.policy.max_rounds
+            and (ctl.inquire(state, "group_verifier") if ctl.inquire else v.get("verdict") == "contradicted")):
         return "revise"
-    if v.get("verdict") == "supported":
+    if v.get("verdict") == "supported" and not state.get("objection"):
         ctl.event("early_stop", stage="verification", reason="independent verifier supports the conclusion; "
                   "no further rounds")
     return "finalize"
@@ -702,8 +717,15 @@ def finalize(ctl: GroupController, store: EvidenceStore, state: GState) -> GStat
         cands.append({**c, "verified_quotes": quotes[:3], "verifier": "supported" if i in supported else "unconfirmed"})
     cands = cands[:3]
     stops = state.get("stop") or []
-    verified = acceptance["accepted"] and not stops
+    verified = acceptance["accepted"] and len(cands) == 1 and not stops
     notes = list(acceptance["reasons"])
+    follow_up = {k for k in store.sources if k.endswith("_investigation")}
+    if verified and follow_up:
+        cause_refs = {store.key(r) for r in cands[0].get("evidence_refs") or []}
+        reviewed_refs = {q["ref"] for q in vrep.verified_quotes} if vrep else set()
+        if not follow_up & cause_refs & reviewed_refs:
+            verified = False
+            notes.append("추가 수집한 근거가 최종 원인과 독립 검증에서 함께 인용되지 않았습니다.")
     if stops:
         status, reason = "stopped", f"limit reached ({stops[0]['kind']}): {stops[0]['detail']}"
     elif not msg:

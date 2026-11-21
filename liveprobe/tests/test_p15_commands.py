@@ -110,7 +110,7 @@ def test_plan_is_dry_only_and_explicit_confirmation_precedes_verified_execution(
     assert x.kube.get(operation())["data"]["mode"] == "new"
     with db.session() as s:
         run = s.scalar(select(AgentRun).where(AgentRun.role == "operator_planner"))
-        assert run.model == "gpt-6.1-sol" and run.input_tokens == 100
+        assert run.model == "gpt-6.2-sol" and run.input_tokens == 100
 
 
 def test_rollback_restores_only_approved_fields_and_is_version_fenced(setup):

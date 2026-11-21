@@ -65,7 +65,7 @@ def test_restart_marks_inflight_without_repeating_actions(db_url):
         assert "indeterminate" in s.scalar(select(Action).where(Action.incident_id == iid)).reason
         assert s.scalar(select(WorkflowRun).where(WorkflowRun.incident_id == iid)).status == "failed"
         assert s.scalar(select(AuditLog).where(AuditLog.event == "action_interrupted"))
-    assert engine.q.empty()
+    assert not engine._scheduled
 
 
 @needs_db

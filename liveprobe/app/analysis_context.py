@@ -6,6 +6,10 @@ import re
 def bounded_view(sources, rag, errors, limit):
     blocks = []
     for key, value in sources.items():
+        if key.split('_', 1)[0] == 'E1' and isinstance(value, dict) and 'revision_context' in value:
+            # JSONB may reorder stored keys. Pin collected revision facts before abridging this source.
+            value = {'revision_context': value['revision_context'],
+                     **{k: v for k, v in value.items() if k != 'revision_context'}}
         if isinstance(value, list):
             value = sorted(value, key=lambda item: str(item.get('observed_at') or item.get('last')
                            or item.get('timestamp') or item.get('at') or '')
@@ -18,16 +22,32 @@ def bounded_view(sources, rag, errors, limit):
                        str(hit.get('content') or '')))
     if not blocks:
         return '관측 근거 없음'[:limit]
-    # 한 출처의 긴 본문이 나중의 반대 근거·문서를 밀어내지 않게 균등 예약한다.
-    share = max(1, limit // len(blocks))
+    # 짧은 출처가 쓰지 않는 몫을 재배분한다. 조치 경계와 파드별 상태는
+    # 상대적으로 큰 몫을 주되, 다른 출처와 뒤쪽 반대 근거도 계속 예약한다.
+    remaining = max(0, limit - len(blocks) + 1)
+    sizes = [len(title) + 1 + len(text) for title, text in blocks]
+    weights = [2 if title.split('_', 1)[0] in ('E1', 'E2') else 1 for title, _ in blocks]
+    budgets = [0] * len(blocks)
+    pending = set(range(len(blocks)))
+    while pending and remaining:
+        total_weight = sum(weights[i] for i in pending)
+        complete = [i for i in pending if sizes[i] * total_weight <= remaining * weights[i]]
+        if not complete:
+            for i in sorted(pending):
+                budgets[i] = remaining * weights[i] // total_weight
+            break
+        for i in complete:
+            budgets[i] = sizes[i]
+            remaining -= sizes[i]
+            pending.remove(i)
     sections = []
-    for title, text in blocks:
+    for (title, text), share in zip(blocks, budgets):
         header = title + '\n'
-        available = max(0, share - len(header) - 2)
+        available = max(0, share - len(header))
         if len(text) > available:
             keep = max(0, (available - 7) // 2)
             text = text[:keep] + '\n…생략…\n' + (text[-keep:] if keep else '')
-        sections.append((header + text)[:share - 1])
+        sections.append((header + text)[:share])
     return '\n'.join(sections)[:limit]
 
 

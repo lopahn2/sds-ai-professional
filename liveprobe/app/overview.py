@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 from kubernetes.utils.quantity import parse_quantity
 
+from .observation_sources import adapter_url
 from .flows import FlowStore, _wl_name, build_topology
 from .systems import current_inventory
 
@@ -45,7 +46,7 @@ def fetch_metrics(settings) -> tuple[dict, dict]:
     def query(item):
         key, q = item
         try:
-            r = httpx.get(f"{settings.prometheus_url}/api/v1/query", params={"query": q}, timeout=4)
+            r = httpx.get(f"{adapter_url(settings, 'prometheus')}/api/v1/query", params={"query": q}, timeout=4)
             r.raise_for_status()
             b = r.json()
             if b.get("status") != "success" or b.get("data", {}).get("resultType") != "vector":
@@ -77,13 +78,13 @@ def _quantity(v: Any) -> float | None:
         return None
 
 
-def _index(rows: list, labels: tuple[str, ...]) -> dict:
+def _index(rows: list, labels: tuple[str, ...], *, field: int = 1) -> dict:
     out = {}
     for r in rows:
         metric = r.get("metric") or {}
         val = r.get("value") or []
         if len(val) == 2:
-            out[tuple(metric.get(k, "") for k in labels)] = _number(val[1])
+            out[tuple(metric.get(k, "") for k in labels)] = _number(val[field])
     return out
 
 
@@ -138,6 +139,7 @@ def assemble(inventory: dict, values: dict, *, events: list | None = None, incid
         podmap[wid].append((ns, pod))
     indexes = {k: _index(values.get(k) or [], ("namespace", "pod")) for k in ("pod_cpu", "pod_mem", "pod_restarts")}
     apps = {k: _index(values.get(k) or [], ("namespace", "app")) for k in ("req_rate", "err_rate", "p95_ms")}
+    request_times = _index(values.get("req_rate") or [], ("namespace", "app"), field=0)
     latest = {}
     for inc in incidents:
         latest.setdefault((inc.get("namespace"), inc.get("workload")), inc)
@@ -151,7 +153,7 @@ def assemble(inventory: dict, values: dict, *, events: list | None = None, incid
                   "mem": _sum_seen(indexes["pod_mem"].get(p) for p in podmap[wid]),
                   "restarts_1h": _sum_seen(indexes["pod_restarts"].get(p) for p in podmap[wid]),
                   **{k: apps[k].get(pair) for k in apps}}
-        w = {"id": wid, "namespace": n.get("namespace"), "name": n["name"], "kind": n["kind"],
+        w = {"metric_at": request_times.get(pair) if metric["req_rate"] is not None else None, "id": wid, "namespace": n.get("namespace"), "name": n["name"], "kind": n["kind"],
              "system": n.get("system"), "environment": cfg.environment(n.get("namespace")),
              "ready": n.get("ready"), "desired": n.get("desired", n.get("pods")), **metric,
              "incident": {"id": inc["id"], "level": inc.get("severity_level"), "status": inc["status"], "stage": inc.get("stage"), "system": inc.get("system"), "environment": cfg.environment(inc.get("namespace"))} if inc else None}
@@ -183,6 +185,7 @@ def assemble(inventory: dict, values: dict, *, events: list | None = None, incid
                       "mem_used_bytes": node_mem.get((name,)), "pods": pods_by_node[name]})
     labels = ("source_workload_namespace", "source_workload", "destination_workload_namespace", "destination_workload")
     er, ee = _index(values.get("edge_req") or [], labels), _index(values.get("edge_err") or [], labels)
+    edge_times = _index(values.get("edge_req") or [], labels, field=0)
     observed = {(e["from"], e["to"]): e for e in topo["observed_edges"]}
     pair_nodes = {(n.get("namespace"), n.get("name")): n["id"] for n in tnodes.values() if n["kind"] in ("Deployment", "StatefulSet", "DaemonSet", "Pod")}
     for pair, req in er.items():
@@ -192,7 +195,7 @@ def assemble(inventory: dict, values: dict, *, events: list | None = None, incid
         e = observed.setdefault((src, dst), {"from": src, "to": dst, "type": "observed_network", "flows": 0, "ok": 0, "dropped": 0, "errors": 0,
                                             "last_seen": None, "ports": {}, "drop_reasons": {}, "via_service": {},
                                             "state": "unknown"})
-        e.update(req_rate=req, err_rate=ee.get(pair))
+        e.update(req_rate=req, err_rate=ee.get(pair), metric_at=edge_times.get(pair))
         if (ee.get(pair) or 0) > 0:
             e["state"] = "degraded"
     topo["nodes"] = sorted(tnodes.values(), key=lambda n: n["id"])

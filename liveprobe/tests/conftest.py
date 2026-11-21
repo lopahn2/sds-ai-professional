@@ -195,3 +195,34 @@ def family4_kube() -> FakeKube:
     k.services["inventory"] = {"metadata": {"name": "inventory"}, "spec": {"selector": {"app": "inventory-broken"}}}
     k.endpoints["inventory"] = {"subsets": []}
     return k
+
+@pytest.fixture
+def operator_gateway(tmp_path, monkeypatch):
+    """Sign requests from the simulated loopback dashboard for core HTTP integration tests."""
+    from fastapi.testclient import TestClient
+    from app import local_operator
+
+    read_path, write_path = tmp_path / 'gateway-read', tmp_path / 'gateway-write'
+    for path in (read_path, write_path):
+        path.write_text(uuid.uuid4().hex + uuid.uuid4().hex)
+        path.chmod(0o600)
+    monkeypatch.setenv('LIVEPROBE_LOCAL_READ_KEY_FILE', str(read_path))
+    monkeypatch.setenv('LIVEPROBE_LOCAL_OPERATOR_KEY_FILE', str(write_path))
+    key = write_path.read_bytes()
+    nonce = local_operator.new_token(key)
+    original = TestClient.send
+
+    def forward(client, request, **kwargs):
+        host = request.headers.get('host')
+        if host == 'liveprobe.localhost':
+            request.headers.setdefault('X-LiveProbe-Local-Read', read_path.read_text())
+            path = request.url.raw_path.decode('ascii')
+            if local_operator.human_path(path) and request.headers.get('X-LiveProbe-Client') == 'dashboard':
+                cookie = request.headers.get('Cookie', '')
+                request.headers['Cookie'] = (cookie+'; ' if cookie else '') + local_operator.COOKIE+'='+nonce
+                request.headers.setdefault('Origin', 'http://'+host)
+                request.headers.setdefault(local_operator.CSRF, nonce)
+                request.headers[local_operator.HEADER] = local_operator.proof(key, request.method, path, host, nonce)
+        return original(client, request, **kwargs)
+
+    monkeypatch.setattr(TestClient, 'send', forward)

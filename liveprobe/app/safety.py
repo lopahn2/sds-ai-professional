@@ -152,6 +152,12 @@ def verify_rollout(kube: Any, ns: str, name: str, timeout_s: int, poll_s: float 
         replicas = spec.get("replicas", 1)
         sel = (spec.get("selector") or {}).get("matchLabels") or {}
         pods = [p for p in kube.list_pods(ns, sel) if not (p.get("metadata") or {}).get("deletionTimestamp")]
+        ready_pods = [p for p in pods if (p.get("status") or {}).get("phase") == "Running"
+                      and any(c.get("type") == "Ready" and c.get("status") == "True"
+                              for c in (p.get("status") or {}).get("conditions") or [])
+                      and (p.get("status") or {}).get("containerStatuses")
+                      and all(c.get("ready") is True and "running" in (c.get("state") or {})
+                              for c in p["status"]["containerStatuses"])]
         waiting = sorted({r for p in pods for r in K.pod_waiting_reasons(p)})
         last = {
             "generation": (dep.get("metadata") or {}).get("generation"),
@@ -159,11 +165,13 @@ def verify_rollout(kube: Any, ns: str, name: str, timeout_s: int, poll_s: float 
             "replicas": replicas, "updated": st.get("updatedReplicas", 0) or 0,
             "available": st.get("availableReplicas", 0) or 0, "total": st.get("replicas", 0) or 0,
             "waiting_reasons": waiting, "images": K.container_images(spec.get("template") or {}),
+            "observed_pods": len(pods), "ready_pods": len(ready_pods),
             "revision": K.revision_of(dep),
         }
         ok = (last["observed_generation"] or 0) >= (last["generation"] or 0) \
             and last["updated"] == replicas and last["available"] == replicas and last["total"] == replicas \
-            and not waiting
+            and isinstance(replicas, int) and replicas > 0 \
+            and len(pods) == replicas and len(ready_pods) == replicas and not waiting
         if ok:
             return True, last
         if time.monotonic() > deadline:

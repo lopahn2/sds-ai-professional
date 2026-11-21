@@ -16,8 +16,13 @@ HISTORICAL_ENVIRONMENTS: tuple[str, ...] = ('dev', 'stg', 'prd')
 
 LEGACY_RELEASE_PROTOCOL = 'dev-stg-prd/v1'
 RELEASE_PROTOCOL = 'dev-prd/v2'
-PROTOCOL_STAGES = {LEGACY_RELEASE_PROTOCOL: ('dev', 'stg', 'prd'), RELEASE_PROTOCOL: ('dev', 'prd')}
-# 사람 사용자 시험을 수행하는 환경(프로토콜별). prd 승인 직전 단계다.
+# 2026-11-20: dev 사람 시험 대신 실행기의 실제 dev 화면 QA 영수증과 prd 위험 그림을 승인 근거로 쓰는 절차.
+# 기존 v2 기록(사람 dev 시험 대기 포함)은 그대로 v2로 진행·조회한다. 새 release에서만 선택한다.
+QA_RELEASE_PROTOCOL = 'dev-qa-prd/v3'
+ACTIVE_RELEASE_PROTOCOLS: tuple[str, ...] = (RELEASE_PROTOCOL, QA_RELEASE_PROTOCOL)
+PROTOCOL_STAGES = {LEGACY_RELEASE_PROTOCOL: ('dev', 'stg', 'prd'), RELEASE_PROTOCOL: ('dev', 'prd'),
+                   QA_RELEASE_PROTOCOL: ('dev', 'prd')}
+# 사람 사용자 시험을 수행하는 환경(프로토콜별). prd 승인 직전 단계다. v3는 사람 시험이 없다.
 USER_TEST_ENVIRONMENT = {LEGACY_RELEASE_PROTOCOL: 'stg', RELEASE_PROTOCOL: 'dev'}
 RETIRED_CODE = 'environment_retired'
 

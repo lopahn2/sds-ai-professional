@@ -31,7 +31,11 @@ class Session:
         return next((r for r in self.rows.get(cls, []) if r.id == key), None)
 
     def scalars(self, query):
-        return list(self.rows.get(query.column_descriptions[0]["entity"], []))
+        selection = query.column_descriptions[0]
+        rows = self.rows.get(selection["entity"], [])
+        if selection["expr"] is AgentRun.output:
+            return [r.output for r in rows if r.role == "interpreter"]
+        return list(rows)
 
     def scalar(self, query):
         return next(iter(self.scalars(query)), None)
@@ -98,6 +102,16 @@ def test_duplicate_row_and_bundle_texts_use_one_slot_and_keep_agent_conclusion(m
     assert all(legacy[i["raw"]] == i["ko"] for i in after if i.get("evidence_id") is not None)
     assert interpreter.run(1) == 0 and len(provider.calls) == 1
     assert session.rows[AgentRun][-1].input_tokens == 11, "해석 비용을 중복 계상하지 않는다"
+
+
+def test_identical_fact_in_later_collection_reuses_first_paid_reading(monkeypatch):
+    session, provider, interpreter = setup(monkeypatch, ["repeat this later"])
+    interpreter.run(1)
+    session.rows[Evidence].append(N(id=2, source="loki", target="시험", payload={"lines": ["repeat this later"]},
+                                    error=None, collected_at=T))
+    assert interpreter.run(1) == 1 and len(provider.calls) == 1
+    keys = [r for r in session.rows[Interpretation] if r.item_key.startswith(("evidence:1:", "evidence:2:"))]
+    assert len(keys) == 2 and len({(r.ko, r.agent_run_id) for r in keys}) == 1
 
 
 @pytest.mark.parametrize("mode,known", [("partial", 1), ("empty", 0), ("failure", 0)])

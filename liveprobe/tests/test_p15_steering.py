@@ -34,9 +34,9 @@ def test_operator_escalation_climbs_model_then_effort():
     from app.config import AppConfig
     from app.steering import escalate_model
     cfg = AppConfig()
-    assert escalate_model(cfg, "gpt-6-luna", "low") == ("gpt-6.1-sol", "low")
-    assert escalate_model(cfg, "gpt-6-astra", "high") == ("gpt-6-astra", "xhigh")
-    assert escalate_model(cfg, "gpt-6-astra", "xhigh") is None
+    assert escalate_model(cfg, "gpt-6-luna", "low") == ("gpt-6.2-sol", "low")
+    assert escalate_model(cfg, "gpt-6.2-astra", "high") == ("gpt-6.2-astra", "xhigh")
+    assert escalate_model(cfg, "gpt-6.2-astra", "xhigh") is None
 
 
 def test_reroute_never_lowers_high_risk():
@@ -215,7 +215,7 @@ def test_mid_run_reroute_switches_to_the_requested_group(db_url, monkeypatch):
 
 
 @needs_db
-def test_api_message_returns_intent_and_ack(db_url, monkeypatch, iid):
+def test_api_message_returns_intent_and_ack(operator_gateway, db_url, monkeypatch, iid):
     monkeypatch.setenv("LIVEPROBE_DATABASE_URL", db_url)
     monkeypatch.setenv("LIVEPROBE_BACKGROUND", "false")
     from app import config

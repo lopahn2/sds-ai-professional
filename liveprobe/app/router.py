@@ -118,7 +118,9 @@ def extract_features(b: Bundle, recent_minutes: int = 15, now: datetime | None =
     prev_diff = [r for r in revs if r["revision"] != cur and r["images"] != cur_images]
     selector_mismatch = bool(
         svc and svc.get("selector") and not svc.get("matching_pods") and svc.get("pods_labeled_app_eq_service"))
-    no_endpoints = bool(svc is not None and svc.get("ready_endpoints", 0) == 0)
+    from .service_health import service_state
+    backend = service_state(svc)
+    no_endpoints = backend == "missing" if backend in ("missing", "ready") else None
     callers_failing = [c["name"] for c in b.callers if (c.get("http_5xx_rate_per_s") or 0) > 0]
     caller_errors_in_logs = [c["name"] for c in b.callers if any(l.startswith(f"[{c['name']}]") for l in b.logs)]
     ready_pods = [p["name"] for p in b.pods if all(c.get("ready") for c in p["containers"]) and p["containers"]]
@@ -135,6 +137,8 @@ def extract_features(b: Bundle, recent_minutes: int = 15, now: datetime | None =
         "has_previous_revision": bool(prev_diff),
         "service_selector_matches_zero_pods": selector_mismatch,
         "service_has_no_endpoints": no_endpoints,
+        "service_backend_state": backend,
+        "http_5xx_rate_per_s": (b.metrics.get("http_5xx_rate_per_s") or {}).get(b.workload),
         # Zero endpoints because the workload's own pods are not ready (crash, OOM, pull failure, restarting) is a workload
         # problem, not a routing change. A routing fault is: selector matches nothing although labelled pods exist.
         "endpoints_empty_because_workload_down": bool(
@@ -261,11 +265,12 @@ def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] |
         f["latency_signal"] |= any("latency" in s.lower() or "slow" in s.lower() or "pool" in s.lower()
                                    for s in f["signal_reasons"])
         level, why = rules_decide(f)
-        direct_failure = bool(f['waiting_reasons'] or observed_oom or observed_latency
+        direct_failure = bool((f.get('http_5xx_rate_per_s') or 0) > 0 or f['waiting_reasons'] or observed_oom or observed_latency
                               or f['service_has_no_endpoints'] or f['dependent_callers_failing']
                               or any(any(word in line.lower() for word in ('error', 'exception', 'traceback', 'failed'))
                                      for line in b.logs))
         complete = bool(b.deployment and b.pods and b.service is not None
+                        and f.get('service_backend_state') == 'ready'
                         and not (set(f['evidence_errors']) & CRITICAL_SOURCES))
         f['evidence_state'] = ('fault_observed' if direct_failure else 'currently_healthy'
                                if complete and f['ready_pods'] == len(b.pods) and not f['service_has_no_endpoints']

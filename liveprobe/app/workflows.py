@@ -75,13 +75,40 @@ def _ctx(state: WFState) -> str:
 
 OUTPUT_RULES = (
     "evidence: 각 항목은 {ref, quote, supports}이며 quote는 원문 그대로, supports는 후보 cause와 정확히 같아야 한다. "
-    "검토 역할은 verdict와 후보별 candidate_verdicts [{index, verdict, reason}]도 작성한다.\n"
+    "quote는 최대 160자의 짧고 연속된 발췌만 사용하고, 생략 부분을 이어 붙이거나 닫는 따옴표를 임의로 추가하지 않는다. "
+    "검토 역할은 verdict와 후보별 candidate_verdicts [{index, verdict, reason}]도 작성한다. "
+    "index는 검토 대상 root_cause_candidates 배열의 0부터 시작하는 번호다. 첫 후보는 0이며, "
+    "검토 대상 후보마다 정확히 한 개의 판정을 작성하고 후보 번호를 바꾸지 않는다.\n"
     "한국어 표시: summary_ko는 summary와 같은 뜻의 자연스러운 한국어, 각 후보 cause_ko는 cause의 한국어 문장이다. 식별자는 원문 표기를 유지하고 "
     "quote는 번역하지 않으며 supports는 영어 cause와 정확히 같게 쓴다.\n"
     "Output fields: summary; summary_ko; root_cause_candidates (max 3, each with cause, confidence 0..1, evidence_refs "
     "citing evidence ids and runbook ids); counter_evidence; confidence 0..1; next_action; action (when acting); "
     "recommended_steps (manual steps for an operator).\n" + ACTION_RULES + "\n" + REMEDIATION_RULES
 )
+
+
+def _review_indexes_valid(primary: dict | None, review: dict | None) -> bool:
+    candidates = (primary or {}).get("root_cause_candidates") or []
+    indexes = [v.get("index") for v in (review or {}).get("candidate_verdicts") or []]
+    return (all(type(i) is int for i in indexes)
+            and sorted(indexes) == list(range(len(candidates))))
+
+
+def _citation_errors(state: WFState, output: dict | None) -> list[str]:
+    from .agent_groups import EvidenceStore, check_citations
+    report = check_citations(EvidenceStore(state.get('evidence') or {}, state.get('rag') or []), output or {})
+    errors = [f"{q['ref']}: {q['why']}" for q in report.forged_quotes]
+    if report.unknown_refs:
+        errors.append("unknown evidence reference")
+    return list(dict.fromkeys(errors))
+
+
+def _repair_prompt(prompt: str, errors: list[str]) -> str:
+    return (prompt + "\nValidation feedback: " + json.dumps(errors, ensure_ascii=False)
+            + ". Recheck the same sources and return the complete answer. Copy only short, contiguous verbatim "
+            "quotes actually present in the displayed source; never join omitted spans or invent closing syntax. "
+            "For review verdicts use exactly the listed 0-based indexes. Do not change a negative verdict merely "
+            "to pass validation. This is the only format-repair retry for this role.")
 
 
 def build_simple_graph(run_agent: RunAgent):
@@ -92,16 +119,41 @@ def build_simple_graph(run_agent: RunAgent):
             "restore). Use next_action='handoff' if unsure, if the action would not fix the cause, or if the cause is in "
             "application code or data rather than Kubernetes.\n" + OUTPUT_RULES + "\n\n" + _ctx(state))
         r = run_agent("signal_analyst", prompt)
+        errors = _citation_errors(state, r.output) if r.ok else []
+        if errors:
+            r = run_agent("signal_analyst", _repair_prompt(prompt, errors))
+            remaining = _citation_errors(state, r.output) if r.ok else []
+            if remaining:
+                why = "signal_analyst citations invalid after one retry: " + "; ".join(remaining[:3])
+                return {"analyst": r.output, "outcome": "handoff", "reason": why,
+                        "handoff": {**_handoff(r.output, [why]), "workflow_status": "unverified"}}
         return {"analyst": r.output if r.ok else None, **({} if r.ok else {"outcome": "handoff", "reason": f"signal_analyst failed: {r.error}"})}
 
     def verifier(state: WFState) -> WFState:
+        indexed = [{"index": i, "cause": c.get("cause")}
+                   for i, c in enumerate((state.get("analyst") or {}).get("root_cause_candidates") or [])]
         prompt = (
             "Role: result_verifier. Independently verify the analyst's conclusion against the evidence. "
             "Look for counter-evidence (e.g. is the previous revision healthy? would the proposed action fix the "
             "cause? are other services affected?). Repeat the SAME next_action and `action` only if you agree it is "
             "correct and safe; otherwise 'handoff'.\n" + OUTPUT_RULES + "\n\nAnalyst output:\n"
-            + json.dumps(state.get("analyst"), default=str) + "\n\n" + _ctx(state))
+            + json.dumps(state.get("analyst"), default=str)
+            + "\nCandidate indexes to review (0-based; preserve these exact mappings):\n"
+            + json.dumps(indexed, ensure_ascii=False) + "\n\n" + _ctx(state))
         r = run_agent("result_verifier", prompt)
+        errors = _citation_errors(state, r.output) if r.ok else []
+        if r.ok and not _review_indexes_valid(state.get("analyst"), r.output):
+            errors.append("candidate_verdicts indexes must match the listed candidates exactly")
+        if errors:
+            # Ask the independent reviewer again; never relabel or accept its verdicts locally.
+            r = run_agent("result_verifier", _repair_prompt(prompt, errors))
+            invalid_indexes = r.ok and not _review_indexes_valid(state.get("analyst"), r.output)
+            remaining = _citation_errors(state, r.output) if r.ok else []
+            if r.ok and (invalid_indexes or remaining):
+                why = ("result_verifier candidate indexes invalid after one retry" if invalid_indexes else
+                       "result_verifier citations invalid after one retry: " + "; ".join(remaining[:3]))
+                return {"verifier": r.output, "outcome": "handoff", "reason": why,
+                        "handoff": {**_handoff(r.output, [why]), "workflow_status": "unverified"}}
         return {"verifier": r.output if r.ok else None, **({} if r.ok else {"outcome": "handoff", "reason": f"result_verifier failed: {r.error}"})}
 
     def decide(state: WFState) -> WFState:

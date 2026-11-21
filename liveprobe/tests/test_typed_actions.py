@@ -103,6 +103,7 @@ class ExecKube(FakeKube):
         self.replicasets = [{"metadata": {"name": "inventory-aaa", "ownerReferences": [
             {"kind": "Deployment", "name": "inventory", "controller": True}]}}]
         p = mk_pod("inventory-aaa-1", "inventory", "inventory-aaa")
+        p["status"]["conditions"] = [{"type": "Ready", "status": "True"}]
         p["metadata"].update(uid="pod-uid-1", resourceVersion="50", labels={"app": "inventory", **OWN})
         self.pods = [p]
         self.configmaps["inventory-config"] = {"metadata": {"name": "inventory-config", "uid": "cm-uid",
@@ -128,6 +129,16 @@ class ExecKube(FakeKube):
         st["observedGeneration"] = d["metadata"]["generation"]
         if self.healthy:
             st.update(replicas=r, updatedReplicas=r, availableReplicas=r, readyReplicas=r)
+            # A healthy rollout reconciles actual Pods as well as Deployment counters.
+            current = [p for p in self.pods if p["metadata"]["labels"].get("app") == name]
+            for pod in current[r:]:
+                self.pods.remove(pod)
+            for i in range(len(current), r):
+                pod_name = f"{name}-aaa-{i + 1}"
+                pod = mk_pod(pod_name, name, f"{name}-aaa")
+                pod["metadata"].update(uid=f"uid-{pod_name}", resourceVersion=self._bump(), labels={"app": name, **OWN})
+                pod["status"]["conditions"] = [{"type": "Ready", "status": "True"}]
+                self.pods.append(pod)
         else:
             st.update(replicas=r, updatedReplicas=r, availableReplicas=0, readyReplicas=0)
 

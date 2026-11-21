@@ -152,7 +152,7 @@ def test_engine_resolves_observation_and_persists_both(db_url, monkeypatch):
     e.process(iid)
     with db.session() as s:
         inc = s.get(Incident, iid)
-        assert inc.status == 'resolved' and inc.handoff['observed_recovery']['ai_remediation'] is False
+        assert inc.status == 'recovery_review' and inc.handoff['observed_recovery']['ai_remediation'] is False
         assert len(list(s.scalars(select(Evidence).where(Evidence.incident_id == iid)))) == 10
         run = s.scalar(select(WorkflowRun).where(WorkflowRun.incident_id == iid))
         assert run.status == 'succeeded' and len(run.snapshot['observations']) == 1
@@ -160,9 +160,9 @@ def test_engine_resolves_observation_and_persists_both(db_url, monkeypatch):
         from app.narrative import build_narrative
         story = build_narrative(s, iid)
         assert story['incident']['recovery_kind'] == 'observed'
-        assert '원인 미확정' in story['headline']['stage']['label']
+        assert '소명 확인 대기' in story['headline']['stage']['label']
         assert '자동 복구 완료' not in str(story)
-        assert 'AI가 복구 조치를 실행한 것은 아닙니다' in story['headline']['next']
+        assert '소명 근거' in story['headline']['next']
 
 
 @needs_db
@@ -174,7 +174,7 @@ def test_latest_collection_wins_but_failed_history_retained(db_url, monkeypatch)
     iid = seed()
     e.process(iid)
     with db.session() as s:
-        assert s.get(Incident, iid).status == 'resolved'
+        assert s.get(Incident, iid).status == 'recovery_review'
         rows = list(s.scalars(select(Evidence).where(Evidence.incident_id == iid)))
         assert len(rows) == 15 and sum(bool(row.error) for row in rows) == 1
         run = s.scalar(select(WorkflowRun).where(WorkflowRun.incident_id == iid))
@@ -212,7 +212,7 @@ def test_reassessment_never_writes_and_archives_original(client, monkeypatch, ac
     assert r.status_code == 200, r.text
     data = r.json()
     assert data['read_only'] is True and data['cluster_changed'] is False
-    assert data['status'] == ('handed_off' if active else 'resolved')
+    assert data['status'] == ('handed_off' if active else 'recovery_review')
     if active:
         assert data['handoff']['reassessment']['outcome'] == 'diagnosed'
     else:
@@ -329,7 +329,7 @@ def test_verified_group_no_action_resolves_only_with_new_health_proof(db_url, mo
     iid = seed('analyzing')
     e._run_group(iid, decide(first, 15), first, {'signals': ['CrashLoopBackOff'], 'workload': 'delivery'})
     with db.session() as s:
-        assert s.get(Incident, iid).status == 'resolved'
+        assert s.get(Incident, iid).status == 'recovery_review'
 
 
 @needs_db
@@ -386,7 +386,7 @@ def test_concurrent_reassessments_admit_only_one_live_run(client, monkeypatch):
             assert denied.value.status_code == 409
         finally:
             release.set()
-        assert winner.result(timeout=10)['status'] == 'resolved'
+        assert winner.result(timeout=10)['status'] == 'recovery_review'
     with db.session() as s:
         assert len(s.get(Incident, iid).handoff['reassessments']) == 1
         assert len(list(s.scalars(select(WorkflowRun).where(WorkflowRun.incident_id == iid)))) == 2
@@ -398,7 +398,7 @@ def test_active_fault_runs_group_and_existing_executor_boundary(db_url, monkeypa
     first, second = pair()
     for b in (first, second):
         b.pods[0]['containers'][0].update(ready=False, waiting_reason='CrashLoopBackOff')
-    e = engine(monkeypatch, [first, second])
+    e = engine(monkeypatch, [first, second, deepcopy(second)])
     monkeypatch.setattr(e, '_classify', lambda *args: {'level': 'COMPLEX', 'rationale': 'active crash', 'confidence': 0.9})
     group_calls, executor_calls = [], []
     def group(*args):
@@ -446,6 +446,6 @@ def test_fault_cleared_during_group_gets_two_new_healthy_observations(db_url, mo
     e._run_group(iid, decide(active, 15), active, {'signals': ['CrashLoopBackOff'], 'workload': 'delivery'})
     with db.session() as s:
         inc = s.get(Incident, iid)
-        assert inc.status == 'resolved'
+        assert inc.status == 'recovery_review'
         assert len(inc.handoff['observed_recovery']['observations']) == 2
         assert len(list(s.scalars(select(Evidence).where(Evidence.incident_id == iid)))) == 10

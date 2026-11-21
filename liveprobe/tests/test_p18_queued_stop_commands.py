@@ -584,11 +584,12 @@ def test_start_claim_revalidates_after_preflight_transaction(db_url, method, cha
 
 def test_started_action_still_verifies_then_resolves(db_url, monkeypatch):
     from app import safety
-    from app.models import Action, WorkflowRun
+    from app.models import Action, Incident, WorkflowRun
     from test_p18_queued_stop import engine
     iid = incident('running-action', status='analyzing')
     with db.session() as s:
-        action = Action(incident_id=iid, type='rollout_undo', target='offline-only/Deployment/fake', params={}, status='approved', policy_mode='assessment')
+        s.get(Incident, iid).signal_reasons = ['ImagePullBackOff']
+        action = Action(incident_id=iid, type='rollout_undo', target='offline-only/Deployment/running-action', params={}, status='approved', policy_mode='assessment')
         s.add_all([action, WorkflowRun(incident_id=iid, status='running', phase='analysis', snapshot={})])
         s.flush()
         aid = action.id
@@ -602,7 +603,10 @@ def test_started_action_still_verifies_then_resolves(db_url, monkeypatch):
         assert release.wait(12)
         with db.session() as s:
             row = s.get(Action, action_id)
-            row.status, row.after_state = 'succeeded', {'synthetic_verified': True}
+            row.before_snapshot = {'revision': 4, 'images': ['offline/bad']}
+            row.params = {**row.params, 'to_revision': 3, 'to_images': ['offline/healthy']}
+            row.after_state = {'images': ['offline/healthy'], 'waiting_reasons': [], 'replicas': 1, 'ready_pods': 1}
+            row.status = 'succeeded'
         return safety.ExecResult(aid, 'succeeded', '합성 실행 및 검증 완료')
     monkeypatch.setattr(safety, 'execute', execute)
     eng = engine()

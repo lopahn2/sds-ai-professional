@@ -24,14 +24,21 @@ CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
     "configmap_restore": ("ConfigMap", ("version",)),
 }
 ACTION_TYPES = tuple(CATALOG)
+# Human-readable proposal context only. These fields never enter action parameters.
+PLAN_FIELDS = ("impact_ko", "success_condition_ko", "rollback_condition_ko")
+PLAN_PROPERTIES = {field: {"type": ["string", "null"]} for field in PLAN_FIELDS}
 
 from .remediation import REMEDIATION_RULES
 
 ACTION_RULES = (
+    "For an action, describe the expected blast radius (impact_ko), the signal that would verify success "
+    "(success_condition_ko), and when to restore or stop (rollback_condition_ko) in Korean. Use null if unknown. "
+    "These are proposed checks, never describe them as observed results. "
     "Kubernetes actions you may propose (at most one, only when it fixes the VERIFIED cause; otherwise hand off): "
     "rollout_undo (previous revision; for a bad image/config rollout), rollout_restart (restart pods; for a stuck or "
     "corrupted process state), pod_delete (target = the exact Pod name from the evidence), scale_replicas (replicas 1..2), "
-    "set_memory_limit (memory_limit_mi 256..768; for OOMKilled), configmap_restore (version = an approved ConfigMap version). "
+    "set_memory_limit (memory_limit_mi 256..768; for OOMKilled), configmap_restore (version = an exact name in the "
+    "ConfigMap evidence's approved_versions; do not invent a version or reconstruct configuration values). "
     "Set next_action='act' and fill `action` {type, target, replicas|memory_limit_mi|version, why}. `target` is the "
     "Deployment name (Pod name for pod_delete, ConfigMap name for configmap_restore). "
     "Do NOT propose an action for application-code or data problems that a restart cannot relieve (startup exceptions that "
@@ -110,7 +117,7 @@ def group_action(msgs: dict, primary: dict | None, verified: bool, features: dic
         v = resolve(gv, workload)
         if v is not None and not same(cand, v):
             return {"propose": False, "why": "verifier proposed a different action than the proposer"}
-        if v is None and gv.get("next_action") == "handoff":
+        if v is None:
             return {"propose": False, "why": "verifier did not support the proposed action"}
     if cand is None:
         return {"propose": False, "why": "agents proposed no Kubernetes action (handoff / not fixable in Kubernetes)"}

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,7 +17,7 @@ from . import db
 from .config import AppConfig, Settings
 from .db import audit
 from .evidence import Bundle, collect, compact_summary
-from .incidents import Signal, ingest
+from .incidents import REASON_CLASS, Signal, ingest
 from .llm import AGENT_SCHEMA, ROUTER_SCHEMA, AgentOutput, LLMError, RouterOutput, estimate_cost
 from .models import INCIDENT_CLOSED_STATES, Action, AgentRun, Citation, Evidence, Incident, IncidentEvent, RoutingDecision, WorkflowRun
 from .lifecycle import transition, update_run
@@ -48,15 +48,38 @@ class _WorkerAttempt:
 _worker_attempt: ContextVar[_WorkerAttempt | None] = ContextVar("worker_attempt", default=None)
 
 
+@dataclass(frozen=True)
+class _QueuePlacement:
+    target: tuple[str, str]
+    image_pull: bool
+
+    @classmethod
+    def for_incident(cls, inc: Incident) -> _QueuePlacement:
+        reasons = inc.signal_reasons or []
+        # A scheduling hint only. Evidence collection, routing and action policy
+        # still evaluate the complete incident, including newly observed signals.
+        image_pull = inc.status == "open" and bool(reasons) and all(
+            REASON_CLASS.get(reason) == "image" for reason in reasons
+        )
+        return cls((inc.namespace, inc.workload), image_pull)
+
+
+@dataclass
+class _PendingIncident:
+    placement: _QueuePlacement
+    ready_at: float
+    running: bool = False
+
+
 class Engine:
     def __init__(self, cfg: AppConfig, settings: Settings, kube: Any, provider: Any, rag: RAG | None):
         self.cfg, self.settings, self.kube, self.provider, self.rag = cfg, settings, kube, provider, rag
-        self.q: "queue.Queue[int]" = queue.Queue()
-        self._scheduled: set[int] = set()
-        self._lock = threading.Lock()
+        self._scheduled: dict[int, _PendingIncident] = {}
+        self._work_changed = threading.Condition()
         self._stop = threading.Event()
         self._worker_thread: threading.Thread | None = None
-        self._cleanup_pending: int | None = None
+        self._image_worker: threading.Thread | None = None
+        self._cleanup_pending: set[int] = set()
         # Evaluation harness only (app/evalrun.py): restrict RAG kinds, capture the evidence store of the last run.
         self.exec_kube = None    # SafeActionKube (separate write identity) or None => typed actions are denied
         self.rag_kinds: list[str] | None = None
@@ -72,39 +95,91 @@ class Engine:
         with db.session() as s:
             inc, outcome = ingest(s, self.cfg, sig, kube=self.kube)
             iid = inc.id if inc else None
-        if outcome == "created" and iid:
+            placement = _QueuePlacement.for_incident(inc) if inc else None
+        if outcome == "created" and iid and placement:
             broker.publish(iid, "created", "open")
-            self.schedule(iid, delay=self.cfg.settle_seconds)
-        elif outcome == "merged" and iid:
+            self.schedule(iid, delay=self.cfg.settle_seconds, placement=placement)
+            # A concurrent merge may have committed before this creator registered.
+            if placement.image_pull and not self._image_signal_current(iid):
+                self._demote(iid)
+        elif outcome == "merged" and iid and placement:
+            if not placement.image_pull:
+                self._demote(iid)
             broker.publish(iid, "updated")
 
-    def schedule(self, incident_id: int, delay: float = 0) -> None:
-        with self._lock:
-            if incident_id in self._scheduled:
+    def schedule(self, incident_id: int, delay: float = 0, *, placement: _QueuePlacement | None = None) -> None:
+        if placement is None:
+            with db.session() as s:
+                inc = s.get(Incident, incident_id)
+                if inc is None:
+                    return
+                placement = _QueuePlacement.for_incident(inc)
+        with self._work_changed:
+            if self._stop.is_set() or incident_id in self._scheduled:
                 return
-            self._scheduled.add(incident_id)
-        if delay > 0:
-            t = threading.Timer(delay, self.q.put, args=(incident_id,))
-            t.daemon = True
-            t.start()
-        else:
-            self.q.put(incident_id)
+            self._scheduled[incident_id] = _PendingIncident(placement, time.monotonic() + delay)
+            self._work_changed.notify_all()
+
+    def _image_signal_current(self, iid: int) -> bool:
+        try:
+            with db.session() as s:
+                inc = s.get(Incident, iid)
+                return inc is not None and _QueuePlacement.for_incident(inc).image_pull
+        except Exception:
+            log.warning("사건 %s의 이미지 신호 재확인을 일반 작업자로 넘깁니다.", iid)
+            return False
+
+    def _demote(self, iid: int) -> None:
+        with self._work_changed:
+            task = self._scheduled.get(iid)
+            if task and task.placement.image_pull:
+                task.placement = _QueuePlacement(task.placement.target, False)
+                self._work_changed.notify_all()
+
+    def _claim(self, image_lane: bool) -> int | None:
+        with self._work_changed:
+            while not self._stop.is_set():
+                now = time.monotonic()
+                next_deadline = None
+                seen_targets = set()
+                # Insertion order is FIFO per workload, even across the two lanes.
+                # A claimed or settling head blocks only its own target.
+                for iid, task in self._scheduled.items():
+                    target = task.placement.target
+                    if target in seen_targets:
+                        continue
+                    seen_targets.add(target)
+                    if task.running or task.placement.image_pull != image_lane:
+                        continue
+                    if task.ready_at <= now:
+                        task.running = True
+                        return iid
+                    if next_deadline is None or task.ready_at < next_deadline:
+                        next_deadline = task.ready_at
+                self._work_changed.wait(None if next_deadline is None else max(0, next_deadline - time.monotonic()))
+        return None
 
     def start(self) -> None:
-        with self._lock:
+        with self._work_changed:
             # 한 Engine의 시작은 한 번뿐이다. 죽은 작업자를 조용히 재시작하지 않는다.
             if self._worker_thread is not None or self._stop.is_set():
                 return
             self._worker_thread = threading.Thread(target=self._worker, name="incident-worker", daemon=True)
+            self._image_worker = threading.Thread(target=self._worker, args=(True,),
+                                                  name="incident-image-pull", daemon=True)
             self._worker_thread.start()
+            self._image_worker.start()
 
     def stop(self) -> None:
-        self._stop.set()
+        with self._work_changed:
+            self._stop.set()
+            self._work_changed.notify_all()
 
     def worker_health(self) -> dict[str, bool]:
-        with self._lock:
-            alive = self._worker_thread is not None and self._worker_thread.is_alive()
-            pending = self._cleanup_pending is not None
+        with self._work_changed:
+            alive = all(t is not None and t.is_alive()
+                        for t in (self._worker_thread, self._image_worker))
+            pending = bool(self._cleanup_pending)
             return {"alive": alive, "cleanup_pending": pending,
                     "ready": alive and not pending and not self._stop.is_set()}
 
@@ -117,7 +192,7 @@ class Engine:
         failed_ids: list[int] = []
         action_ids: list[int] = []
         run_ids: list[int] = []
-        resume_ids: list[int] = []
+        pending: dict[int, tuple[float, _QueuePlacement]] = {}
         with db.session() as s:
             for inc in s.scalars(select(Incident).where(Incident.status.in_(("analyzing", "acting")))):
                 prev = inc.status
@@ -128,7 +203,7 @@ class Engine:
                         and s.scalar(select(Action.id).where(Action.incident_id == inc.id).limit(1)) is None):
                     read_run.status, read_run.phase = 'resume_pending', 'analysis'
                     read_run.reason = '완료된 읽기 자료 재사용 대기; 쓰기 재실행 없음'
-                    resume_ids.append(inc.id)
+                    pending[inc.id] = (0, _QueuePlacement.for_incident(inc))
                     audit(s, 'liveprobe', 'analysis_resume_pending', inc.id, workflow_run_id=read_run.id)
                     continue
                 transition(inc, "failed")
@@ -153,7 +228,8 @@ class Engine:
             for run in s.scalars(select(WorkflowRun).where(WorkflowRun.status == "running")):
                 run.status, run.reason = "failed", "LiveProbe restarted; work not replayed"
                 run_ids.append(run.incident_id)
-            open_ids = list(s.scalars(select(Incident.id).where(Incident.status == "open")))
+            for inc in s.scalars(select(Incident).where(Incident.status == "open").order_by(Incident.id)):
+                pending[inc.id] = (self.cfg.settle_seconds, _QueuePlacement.for_incident(inc))
         for iid in dict.fromkeys(failed_ids):
             broker.publish(iid, "failed", "failed")
         # Interrupted actions/runs whose incident was not itself failed above (e.g. action_pending).
@@ -163,17 +239,25 @@ class Engine:
         for iid in dict.fromkeys(run_ids):
             if iid not in failed_ids and iid not in action_ids:
                 broker.publish(iid, "updated")
-        for iid in dict.fromkeys([*open_ids, *resume_ids]):
-            self.schedule(iid, delay=0 if iid in resume_ids else self.cfg.settle_seconds)
+        for iid, (delay, placement) in pending.items():
+            self.schedule(iid, delay=delay, placement=placement)
 
-    def _worker(self) -> None:
+    def _worker(self, image_lane: bool = False) -> None:
         while not self._stop.is_set():
-            try:
-                iid = self.q.get(timeout=1)
-            except queue.Empty:
-                continue
-            if self._stop.is_set():
+            iid = self._claim(image_lane)
+            if iid is None or self._stop.is_set():
                 return
+            if image_lane:
+                image_only = self._image_signal_current(iid)
+                with self._work_changed:
+                    task = self._scheduled[iid]
+                    if not image_only or not task.placement.image_pull:
+                        task.placement = _QueuePlacement(task.placement.target, False)
+                        task.running = False
+                        self._work_changed.notify_all()
+                        continue
+                    if self._stop.is_set():
+                        return
             attempt = _WorkerAttempt(self, iid)
             token = _worker_attempt.set(attempt)
             try:
@@ -185,14 +269,15 @@ class Engine:
                 self._finish_worker(iid, e, worker_run_id=attempt.workflow_run_id)
             finally:
                 _worker_attempt.reset(token)
-                with self._lock:
-                    if self._cleanup_pending != iid:
-                        self._scheduled.discard(iid)
+                with self._work_changed:
+                    if iid not in self._cleanup_pending:
+                        del self._scheduled[iid]
+                        self._work_changed.notify_all()
 
     def _finish_worker(self, iid: int, error: Exception, *, worker_run_id: int | None = None) -> None:
         # 처리 자체는 재실행하지 않는다. 종료 기록만 새 트랜잭션에서 재확인한다.
-        with self._lock:
-            self._cleanup_pending = iid
+        with self._work_changed:
+            self._cleanup_pending.add(iid)
         while not self._stop.is_set():
             try:
                 if isinstance(error, runlog.RunStopped):
@@ -209,8 +294,8 @@ class Engine:
                 # 중단 소유 실행의 종료는 확정됐다. 남은 외부 조치/다른 실행은
                 # callback·수동 조정이 재확인하며 사건은 비종결로 둔다.
                 # DB 예외(아래 except)는 여전히 정리 확정 전 다음 사건을 막는다.
-                with self._lock:
-                    self._cleanup_pending = None
+                with self._work_changed:
+                    self._cleanup_pending.discard(iid)
                 return
             except Exception:  # noqa: BLE001
                 log.warning("사건 %s 종료 기록 보류; 저장소 재확인을 기다립니다.", iid)
@@ -255,6 +340,13 @@ class Engine:
         return runlog.CleanupResult.COMPLETED
 
     # ------------------------------------------------------------ processing
+    def _request_readings(self, iid: int) -> None:
+        if self.interpret_worker is not None:
+            try:
+                self.interpret_worker.request(iid)
+            except Exception:
+                log.warning("display reading queue unavailable for incident %s", iid)
+
     def _set_status(self, iid: int, status: str, **fields) -> None:
         with db.session() as s:
             inc = s.get(Incident, iid)
@@ -277,6 +369,7 @@ class Engine:
                 setattr(inc, k, v)
             update_run(s, iid, "failed" if status == "failed" else "succeeded" if status in ("resolved", "handed_off") else "running", status, fields.get("status_reason"))
             audit(s, "liveprobe", "incident_status", iid, status=status, reason=fields.get("status_reason"))
+        self._request_readings(iid)
         broker.publish(iid, status if status in ("resolved", "handed_off", "failed") else "updated", status)
         if status in ("resolved", "handed_off", "failed"):
             runlog.emit(iid, "completed", {"resolved": "해결됨", "handed_off": "운영자 인계", "failed": "실패"}[status] +
@@ -432,6 +525,7 @@ class Engine:
             "sources": sorted({it.source for it in bundle.items}),
             "errors": [{"source": it.source, "error": str(it.error)[:160]} for it in bundle.items if it.error][:5]})
 
+        self._request_readings(iid)
         self._save_remediation(iid, bundle)
         # routing ------------------------------------------------------------
         strategy = arm.get("strategy", "adaptive")
@@ -496,7 +590,8 @@ class Engine:
                          handoff={"summary": "Group 재지정이 3회를 넘었습니다.", "root_cause_candidates": [],
                                   "recommended_steps": ["분석 기록을 검토한 뒤 채팅으로 지시하세요."], "notes": ["reroute limit"]})
 
-    def _observe_recovery(self, iid: int, first: Bundle, incident_view: dict, *, phase: str) -> tuple[bool, Bundle]:
+    def _observe_recovery(self, iid: int, first: Bundle, incident_view: dict, *, phase: str,
+                          pending_action_id: int | None = None) -> tuple[bool, Bundle]:
         from .observed_recovery import observed_at, recovery_proof
         runlog.gate(iid, '읽기 전용 건강 재확인')
         start = observed_at(first)
@@ -524,23 +619,43 @@ class Engine:
                 inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
                 # A merged unknown signal, operator instruction or any action invalidates a read-only proof.
                 from .models import OperatorCommand, OperatorMessage, RunControl
-                if (inc.status != 'analyzing' or list(inc.signal_reasons) != incident_view['signals']
-                        or s.scalar(select(Action.id).where(Action.incident_id == iid).limit(1)) is not None
+                other_actions = select(Action.id).where(Action.incident_id == iid)
+                pending = None
+                if pending_action_id is not None:
+                    pending = s.scalar(select(Action).where(Action.id == pending_action_id,
+                        Action.incident_id == iid).with_for_update())
+                    if not pending or pending.executed or pending.status not in ('approved', 'pending_approval'):
+                        return False, fresh
+                    other_actions = other_actions.where(Action.id != pending_action_id)
+                expected_state = 'action_pending' if pending else 'analyzing'
+                if (inc.status != expected_state or list(inc.signal_reasons) != incident_view['signals']
+                        or s.scalar(other_actions.limit(1)) is not None
                         or s.scalar(select(OperatorCommand.id).where(OperatorCommand.incident_id == iid,
                             OperatorCommand.status.in_(('planning', 'awaiting_confirmation', 'awaiting_secret', 'executing', 'rolling_back'))).limit(1)) is not None
                         or s.scalar(select(OperatorMessage.id).where(OperatorMessage.incident_id == iid,
                             OperatorMessage.applied_at.is_(None)).limit(1)) is not None
                         or (s.get(RunControl, iid) and s.get(RunControl, iid).state != 'running')):
                     return False, fresh
-                transition(inc, 'resolved')
-                inc.status_reason = '정상 상태 확인 · 원인 미확정 · AI 조치 없음'
+                if pending:
+                    pending.status, pending.reason = "cancelled", "두 관측에서 원래 증상의 해소를 확인해 적용하지 않았습니다."
+                    audit(s, "liveprobe", "action_cancelled_after_recovery", iid, action_id=pending.id)
+                from .accountability import AWAITING, WAITING_LABEL, append, investigate
                 retained = {k: v for k, v in (inc.handoff or {}).items() if k != 'handoff_classification'}
-                inc.handoff = {**retained, 'observed_recovery': proof, 'summary': inc.status_reason,
-                               'summary_ko': inc.status_reason}
-                update_run(s, iid, 'succeeded', 'resolved', inc.status_reason)
+                inc.handoff = {**retained, 'observed_recovery': proof}
+                report = investigate(s, inc)
+                if report['status'] == 'explained':
+                    proof = {**proof, 'cause_confirmed': True}
+                    inc.handoff = {**inc.handoff, 'observed_recovery': proof}
+                status = 'resolved' if report['status'] == 'explained' else AWAITING
+                transition(inc, status)
+                inc.status_reason = '정상 · 복구 원인 확인' if status == 'resolved' else WAITING_LABEL
+                inc.handoff = {**inc.handoff, 'summary': inc.status_reason, 'summary_ko': inc.status_reason}
+                append(s, iid, report, 'liveprobe')
+                update_run(s, iid, 'succeeded', status, inc.status_reason)
                 audit(s, 'liveprobe', 'observed_recovery', iid, **proof)
-            broker.publish(iid, 'resolved', 'resolved')
-            runlog.emit(iid, 'completed', '정상 상태 확인 · 원인 미확정 · AI 조치 없음', {'outcome': 'resolved', **proof})
+            self._request_readings(iid)
+            broker.publish(iid, 'updated', status)
+            runlog.emit(iid, 'completed', inc.status_reason, {'outcome': status, **proof})
             return True, fresh
         return False, fresh
 
@@ -552,7 +667,7 @@ class Engine:
             for it in bundle.items:
                 s.add(Evidence(incident_id=iid, source=it.source, target=it.target, payload=it.payload,
                                error=it.error, collected_at=it.collected_at))
-            if self._workflow_run_id is not None:
+            if getattr(self, '_workflow_run_id', None) is not None:
                 row = s.scalar(select(WorkflowRun).where(WorkflowRun.id == self._workflow_run_id).with_for_update())
                 row.snapshot = {**(row.snapshot or {}), 'observations': [
                     *((row.snapshot or {}).get('observations') or []), {'phase': phase, 'collection': frozen}]}
@@ -616,6 +731,7 @@ class Engine:
             audit(s, "router", "routed", iid, level=decision.level, workflow=decision.workflow,
                   decided_by=decision.decided_by)
         broker.publish(iid, "updated", "analyzing")
+        self._request_readings(iid)
         runlog.emit(iid, "routing_decided", f"사건 수준 {decision.level} → {decision.workflow}",
                     {"level": decision.level, "workflow": decision.workflow, "decided_by": decision.decided_by,
                      "rationale": redact(decision.rationale)[:400], "confidence": decision.confidence})
@@ -672,6 +788,8 @@ class Engine:
             audit(s, "workflow", "wf_citation_check", iid, **audit_detail)
         if isinstance(out.get("handoff"), dict):
             out["handoff"]["citation_check"] = audit_detail
+            if unknown and out.get("outcome") == "handoff":
+                out["reason"] = "출처·원문 인용 검증 실패 · 수집되지 않은 근거 번호를 인용했습니다."
         if unknown and out.get("outcome") == "propose_action":
             out = {**out, "outcome": "handoff", "reason": f"cited evidence refs do not exist: {unknown[:5]}",
                    "handoff": {"summary": summary, "notes": ["citation check failed; automatic action withheld"],
@@ -712,6 +830,8 @@ class Engine:
             return
 
         # safety -------------------------------------------------------------
+        if self._guard_new_change(iid, bundle, incident_view, decision.level):
+            return
         if self._propose_and_run(iid, decision.level, out["action"], summary):
             return
         self._set_status(iid, "handed_off", status_reason="action was not executable; operator handoff",
@@ -794,11 +914,39 @@ class Engine:
                                   'notes': ['late NetworkDrop; no automatic action']})
         return True
 
+    def _guard_new_change(self, iid: int, bundle: Bundle, incident_view: dict, level: str, handoff=None) -> bool:
+        """An incident can recover during an agent call. Re-read the target before creating a write."""
+        if self.capture is not None:
+            return False
+        runlog.gate(iid, "조치 직전 서비스 상태 확인")
+        fresh = collect(self.kube, self.cfg, self.settings, bundle.namespace, bundle.workload,
+                        since=datetime.now(timezone.utc) - timedelta(seconds=60))
+        self._save_observation(iid, fresh, "before_action")
+        latest = R.decide(fresh, self.cfg.recent_rollout_minutes, cfg=self.cfg,
+                          signal_reasons=incident_view.get("signals"))
+        if latest.level == "HIGH_RISK" and latest.decided_by != "router_failure" and level != "HIGH_RISK":
+            from .handoff_classes import record
+            self._record_decision(iid, latest)
+            detail = {**(handoff or {}), "handoff_classification": record("rules_high_risk", {}, authorization={"level": latest.level})}
+            self._set_status(iid, "handed_off", status_reason=latest.rationale, handoff=detail)
+            return True
+        # A previously terminated Pod can retain its old OOM reason. Let the two-snapshot
+        # proof compare actual restart counters and symptom metrics, independently of that label.
+        if fresh.service and (fresh.service.get("ready_endpoints") or 0) > 0 and fresh.pods and all(
+                c.get("ready") is True for pod in fresh.pods for c in pod.get("containers") or []):
+            recovered, _ = self._observe_recovery(iid, fresh, incident_view, phase="before_verified_action")
+            return recovered
+        return False
+
     def _propose_and_run(self, iid: int, level: str, action: dict, summary: str | None) -> bool:
         """One agent-proposed Kubernetes action through the validated executor. True when the incident was finished
         or moved to approval; False when the proposal was denied (caller hands off)."""
         from . import actions as typed
         if self._network_handoff(iid):
+            return True
+        from .unified import defer_mixed
+        if defer_mixed(iid):
+            self._set_status(iid, "handed_off", status_reason="복합 원인을 확인했습니다. 코드 수정의 dev 검증 뒤 인프라 조치를 확인합니다.")
             return True
         with db.session() as s:
             inc = s.get(Incident, iid)
@@ -826,6 +974,23 @@ class Engine:
         runlog.gate(iid, "조치 실행")        # last chance to pause/stop; once executing, the action runs to verification
         if self._network_handoff(iid, aid):
             return safety.ExecResult(aid, 'denied', 'NetworkDrop: operator handoff')
+        # Human approval may arrive long after proposal. Only a not-yet-executed, pending
+        # change can be withdrawn; an action that has started always reaches verification.
+        from .observed_recovery import SUPPORTED
+        with db.session() as s:
+            inc, action = s.get(Incident, iid), s.get(Action, aid)
+            signals = list(inc.signal_reasons or [])
+            pending = (inc.status == 'action_pending' and action and not action.executed and
+                       action.status in ('approved', 'pending_approval') and signals and set(signals) <= SUPPORTED)
+            ns, workload = inc.namespace, inc.workload
+        if pending:
+            snapshot = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc)-timedelta(seconds=60))
+            self._save_observation(iid, snapshot, "approval_recheck")
+            if snapshot.service and (snapshot.service.get("ready_endpoints") or 0) > 0 and snapshot.pods:
+                recovered, _ = self._observe_recovery(iid, snapshot, {"signals": signals},
+                    phase="before_approved_action", pending_action_id=aid)
+                if recovered:
+                    return safety.ExecResult(aid, "cancelled", "서비스가 회복되어 대기 중인 조치를 취소했습니다.")
         runlog.emit(iid, "action_proposed", f"조치 #{aid} 실행 시작", {"action_id": aid, "actor": actor, "level": level})
         self._set_status(iid, "acting")
         res = safety.execute(db.session, self.cfg, self._kube_for(aid), aid, actor, level=level)
@@ -834,9 +999,48 @@ class Engine:
         runlog.emit(iid, "verification_result", "롤아웃 검증 " + ("통과" if res.status == "succeeded" else "미통과"),
                     {"action_id": aid, "ok": res.status == "succeeded"})
         if res.status == "succeeded":
+            from .accountability import AWAITING, WAITING_LABEL, append, investigate
+            from .accountability import action_explanation
+            from .observed_recovery import SUPPORTED, recovery_proof
             with db.session() as s:
-                atype = (s.get(Action, aid).type if s.get(Action, aid) else None) or "action"
-            self._set_status(iid, "resolved", status_reason=f"{atype} succeeded and verified")
+                inc, act = s.get(Incident, iid), s.get(Action, aid)
+                signals = list(inc.signal_reasons or [])
+                ns, workload = inc.namespace, inc.workload
+                direct_proof = action_explanation(inc, act)
+            observed = None
+            if not direct_proof and signals and set(signals) <= SUPPORTED:
+                # Release the database connection while collecting original-symptom observations.
+                baseline = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc))
+                self._save_observation(iid, baseline, "post_action")
+                self._sleep(self.cfg.recovery.observation_interval_s)
+                final = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc))
+                self._save_observation(iid, final, "post_action")
+                observed = recovery_proof(baseline, final, signals, min_interval=self.cfg.recovery.observation_interval_s)
+            with db.session() as s:
+                inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
+                act = s.get(Action, aid)
+                if observed and list(inc.signal_reasons or []) == signals:
+                    inc.handoff = {**(inc.handoff or {}), "observed_recovery": {**observed, "ai_remediation": None, "applied_action_id": aid}}
+                report = investigate(s, inc)
+                append(s, iid, report, actor)
+                if report["status"] == "explained":
+                    status, explanation = "resolved", report["recovery_ko"]
+                elif report["recovery_observed_at"]:
+                    status, explanation = AWAITING, WAITING_LABEL
+                else:
+                    status, explanation = "handed_off", "조치는 적용했지만 원래 장애의 해소를 확인할 근거가 부족합니다."
+                    from .handoff_classes import record, RECOVERY_EXHAUSTED
+                    inc.handoff = {**(inc.handoff or {}), "summary_ko": explanation,
+                        "handoff_classification": record("post_action_observation_exhausted",
+                            {"post_action_observation_exhausted": RECOVERY_EXHAUSTED},
+                            attempts=[{"kind": "post_action_observation", "action_id": aid}])}
+                transition(inc, status)
+                inc.status_reason = explanation
+                update_run(s, iid, "succeeded", status, explanation)
+                audit(s, actor, "incident_status", iid, status=status, reason=explanation)
+            self._request_readings(iid)
+            broker.publish(iid, "updated", status)
+            runlog.emit(iid, "completed", report["recovery_ko"], {"outcome": status, "action_id": aid})
         else:
             self._set_status(iid, "handed_off", status_reason=f"action {res.status}: {res.reason}",
                              handoff={"notes": [f"automatic action {res.status}: {res.reason}"]})
@@ -865,6 +1069,10 @@ class Engine:
 
         ctl = GroupController(decision.level, self.cfg, call, on_event,
                               primary_model=(decision.policy or {}).get("selected_model"))
+        from .investigation import EvidenceInquiry
+        inquiry = EvidenceInquiry(self, iid, bundle, incident_view, store, ctl)
+        if self.capture is None:
+            ctl.inquire = inquiry
         try:
             res = run_group(decision.level, ctl, store, incident_view, decision.features)
         except StopGroup as e:  # configuration problems before the first node
@@ -877,11 +1085,14 @@ class Engine:
                    "recommended_steps": res.get("recommended_steps", []), "notes": res.get("notes", []),
                    "group": res.get("group"), "workflow_status": res.get("status"),
                    "counter_evidence": res.get("counter_evidence", []), "verification": res.get("verification"),
-                   "budget": res.get("budget"), "confidence": res.get("confidence")}
+                   "budget": res.get("budget"), "confidence": res.get("confidence"),
+                   "investigations": inquiry.attempts}
         with db.session() as s:
             s.get(Incident, iid).summary = res.get("summary")
         proposal = res.get("action") or {}
         if proposal.get("propose") and incident_view.get("workload"):
+            if self._guard_new_change(iid, bundle, incident_view, decision.level, handoff):
+                return
             if self._propose_and_run(iid, decision.level, proposal, res.get("summary")):
                 return
             handoff["notes"] = [*handoff.get("notes", []), "proposed action was not executable"]
@@ -929,14 +1140,24 @@ class Engine:
             return AgentCall(False, None, None, f"no model mapping for role {role}", error_kind="config")
         model = model_override or rm.model
         effort = effort_override if role_model is not None else rm.effort
+        from uuid import uuid4
+        from . import dispatch as D
+        # C3: one call identity per logical call, created before chat is consumed so `operator_applied` names it.
+        call_id = uuid4().hex
+        delivered: list[int] = []
+        instructions_at = None
         # node boundary: honour pause/stop, then apply pending operator chat (P15 steering). The router never
         # consumes chat: a reroute request waits for the first agent after routing.
         runlog.gate(iid, f"에이전트 {role}")
         if role != "router":
             from . import steering
-            st = steering.take(iid, role, getattr(self, "_current_level", None))
+            st = steering.take(iid, role, getattr(self, "_current_level", None), call_id=call_id)
             if st.reroute is not None:
                 raise st.reroute
+            if st.texts:
+                # Only instruction messages enter the prompt; escalate requests change the model, not the prompt.
+                instructions_at = len(prompt)
+                delivered = list(st.message_ids)
             prompt = runlog.with_operator_instructions(prompt, st.texts)
             if st.escalate:
                 up = steering.escalate_model(self.cfg, model, effort)
@@ -948,9 +1169,11 @@ class Engine:
                                 {"role": role, "by": "operator", "from_model": model, "from_effort": effort,
                                  "to_model": up[0], "to_effort": up[1]})
                     model, effort = up
-        from uuid import uuid4
-        call_id = uuid4().hex
-        runlog.emit(iid, "agent_started", f"{role} 시작", {"role": role, "model": model, "effort": effort, "call_id": call_id})
+        # dispatch/v1: public facts of THIS call, computed from the final prompt; the prompt itself is not stored.
+        runlog.emit(iid, "agent_started", f"{role} 시작", {"role": role, "model": model, "effort": effort, "call_id": call_id,
+                                                         "investigation_seq": getattr(self, "_investigation_seq", None),
+                                                         "dispatch": D.build(role, prompt, hits, delivered,
+                                                                             instructions_at=instructions_at)})
         from .runtime_resume import fingerprint, source_fingerprint
         from .analysis_context import rag_usage
         input_sha = fingerprint({'role': role, 'prompt': prompt, 'schema': schema, 'model': model, 'effort': effort,
@@ -1048,11 +1271,7 @@ class Engine:
                                                 "evidence_refs": c.get("evidence_refs")}
                                                for c in (_out.get("root_cause_candidates") or [])[:3]]})
         usage = dict(cost_usd=cost, model=model, effort=effort, input_tokens=in_tok, output_tokens=out_tok)
-        if self.interpret_worker is not None:
-            try:
-                self.interpret_worker.request(iid)
-            except Exception:  # noqa: BLE001 - display helper never affects the analysis
-                pass
+        self._request_readings(iid)
         if err is None:
             return AgentCall(True, result.data, rid, **usage)
         return AgentCall(False, None, rid, err, error_kind=err_kind, **usage)
@@ -1067,19 +1286,23 @@ class Engine:
         from .runtime_budget import complete, aggregate_usage
         runtime = getattr(self, '_incident_runtime', None)
         prior_usage, prior_duration, actual_attempts = [], 0, 0
+        capture = getattr(self.provider, "capture_events", None)
         while True:
             try:
-                res = complete(runtime, self.provider, role, prompt, schema, model, effort, self.cfg.llm.timeout_s)
+                with capture() if capture else nullcontext([]) as events:
+                    try:
+                        res = complete(runtime, self.provider, role, prompt, schema, model, effort, self.cfg.llm.timeout_s)
+                    finally:
+                        if events:
+                            self._relay_pool_events(iid, events)
                 actual_attempts += res.provider_attempts or 0
                 res.provider_attempts = actual_attempts
                 res.usage = aggregate_usage([*prior_usage, res.usage]) if prior_usage else res.usage
                 res.duration_ms += prior_duration
                 if announced:
                     runlog.emit(iid, "resumed", "Codex 사용 한도가 풀려 분석을 이어갑니다.", {"after_s": round(waited)})
-                self._relay_pool_events(iid)
                 return res
             except LLMError as e:
-                self._relay_pool_events(iid)
                 actual_attempts += e.provider_attempts or 0
                 if e.provider_attempts:
                     prior_usage.append(e.usage)
@@ -1119,12 +1342,9 @@ class Engine:
         while time.monotonic() < end and not self._stop.is_set():
             time.sleep(min(1.0, max(0.0, end - time.monotonic())))
 
-    def _relay_pool_events(self, iid: int) -> None:
-        """Turn account switches reported by the pool into feed events (once each)."""
-        pool = self.provider
-        if not hasattr(pool, "drain_events"):
-            return
-        for kind, detail in pool.drain_events():
+    def _relay_pool_events(self, iid: int, events: list[tuple[str, dict]]) -> None:
+        """Publish the account events captured by this specific incident call."""
+        for kind, detail in events:
             if kind == "account_switched":
                 runlog.emit(iid, "account_switched", f"Codex 계정을 {detail.get('from')} → {detail.get('to')}로 전환했습니다.", detail)
             elif kind == "account_limited":

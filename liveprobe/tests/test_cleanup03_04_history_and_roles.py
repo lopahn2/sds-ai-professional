@@ -66,7 +66,7 @@ class _Kube:
         raise AssertionError("change creation must not read the cluster any more")
 
 
-def test_new_k8s_change_request_is_refused_without_writes_and_existing_history_stays_readable(k8s):
+def test_new_k8s_change_request_is_refused_without_writes_and_existing_history_stays_readable(k8s, operator_gateway):
     from app import db
     from app.changes import ChangeError, ChangeService, auto_create_for_incident
     from app.change_models import ChangeRequest

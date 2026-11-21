@@ -202,12 +202,13 @@ def _annotate_roles(nodes: dict, structure: list, svc_to_wl: dict, images: dict,
         if not s or wid not in nodes:
             continue
         s["folded_into"] = wid
-        by_wl.setdefault(wid, []).append({"name": s["name"], "ports": s.get("ports") or [], "endpoints_ready": s.get("endpoints_ready")})
+        by_wl.setdefault(wid, []).append({"name": s["name"], "ports": s.get("ports") or [], "endpoints_ready": s.get("endpoints_ready"),
+                                           "backend_state": s.get("backend_state")})
     for wid, svcs in by_wl.items():
         w = nodes[wid]
         w["services"] = svcs
-        if w.get("status") != "completed" and w.get("pods") and any(x["endpoints_ready"] == 0 for x in svcs):
-            w["no_endpoints"] = [x["name"] for x in svcs if x["endpoints_ready"] == 0]
+        if w.get("status") != "completed" and w.get("pods") and any(x["backend_state"] == "missing" for x in svcs):
+            w["no_endpoints"] = [x["name"] for x in svcs if x["backend_state"] == "missing"]
 
     controller_ids: dict[str, str] = {}      # ingress class -> controller workload id
     for ing in inventory.get("ingresses", []):
@@ -219,18 +220,19 @@ def _annotate_roles(nodes: dict, structure: list, svc_to_wl: dict, images: dict,
             sid = f"{ns}/Service/{r.get('service')}"
             wid = svc_to_wl.get(sid)
             svc = nodes.get(sid)
-            ok = bool(svc) and (svc.get("endpoints_ready") or 0) > 0
-            bad += 0 if ok else 1
+            state = svc["backend_state"] if svc else "missing"
+            ok = True if state == "ready" else False if state == "missing" else None
+            bad += int(ok is False)
             if r.get("host") and r["host"] not in hosts:
                 hosts.append(r["host"])
             routes.append({"host": r.get("host"), "path": r.get("path"), "service": r.get("service"), "port": r.get("port"),
                            "workload": wid, "backend_ready": ok, "backend_found": bool(svc)})
             if wid:
                 structure.append({"from": iid, "to": wid, "type": "routes_to", "via_service": r.get("service")})
-        nodes[iid] = {"id": iid, "kind": "Ingress", "name": name, "namespace": ns, "status": "degraded" if bad and bad < len(routes) else ("down" if bad else "ready"),
+        nodes[iid] = {"id": iid, "kind": "Ingress", "name": name, "namespace": ns, "status": "degraded" if bad and bad < len(routes) else ("down" if bad else "ready" if routes and all(r["backend_ready"] is True for r in routes) else "unknown"),
                       "hosts": hosts, "routes": routes, "ingress_class": sp.get("ingressClassName"), "role": "entry",
                       "system": (md.get("labels") or {}).get("app.kubernetes.io/part-of") or None}
-        nodes[iid]["broken_routes"] = [r["service"] for r in routes if not r["backend_ready"]]
+        nodes[iid]["broken_routes"] = [r["service"] for r in routes if r["backend_ready"] is False]
 
     for nid, n in nodes.items():
         if n.get("role"):
@@ -333,12 +335,20 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
         w["desired"] = sp.get("replicas")
     for w in nodes.values():
         if "pods" in w:
-            if w["pods"] == 0 and w.get("completed"):
+            if w.get("desired") == 0 and w["pods"] == 0:
+                w["status"] = "scaled_down"
+            elif w["pods"] == 0 and w.get("completed"):
                 w["status"] = "completed"
             else:
                 w["status"] = "ready" if w["ready"] == w["pods"] and w["pods"] else ("degraded" if w["ready"] else "down")
             if w.get("node") and f"node/{w['node']}" in nodes:
                 structure.append({"from": w["id"], "to": f"node/{w['node']}", "type": "runs_on"})
+    from .service_health import backend_observation
+    endpoint_index = {(e.get("metadata", {}).get("namespace"), e.get("metadata", {}).get("name")): e
+                      for e in inventory.get("endpoints", [])}
+    deployments = {}
+    for d in inventory.get("deployments", []):
+        deployments.setdefault(d["metadata"]["namespace"], []).append(d)
     for s in inventory.get("services", []):
         md, sp = s.get("metadata") or {}, s.get("spec") or {}
         ns, name = md.get("namespace"), md.get("name")
@@ -346,6 +356,9 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
         nodes[sid] = {"id": sid, "kind": "Service", "name": name, "namespace": ns, "status": "unknown",
                       "system": (md.get("labels") or {}).get("app.kubernetes.io/part-of") or None,
                       "cluster_ip": sp.get("clusterIP"), "ports": [p.get("port") for p in sp.get("ports") or []]}
+        obs = backend_observation(s, endpoint_index.get((ns, name)), deployments.get(ns, []))
+        nodes[sid].update(endpoints_ready=obs["ready_endpoints"], backend_state=obs["backend_state"],
+                          status={"missing": "no_endpoints", "ready": "ready"}.get(obs["backend_state"], obs["backend_state"]))
         if sp.get("clusterIP") and sp["clusterIP"] != "None":
             ip_to_node[f"ip/{sp['clusterIP']}"] = sid
         sel = sp.get("selector") or {}
@@ -355,14 +368,6 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
                 if pmd.get("namespace") == ns and all((pmd.get("labels") or {}).get(k) == v for k, v in sel.items()):
                     structure.append({"from": sid, "to": f"{ns}/{_wl_name(p)}", "type": "selects"})
     structure = [dict(t) for t in {(e["from"], e["to"], e["type"]): e for e in structure}.values()]
-    for ep in inventory.get("endpoints", []):
-        md = ep.get("metadata") or {}
-        sid = f"{md.get('namespace')}/Service/{md.get('name')}"
-        if sid in nodes:
-            ready = sum(len(s.get("addresses") or []) for s in ep.get("subsets") or [])
-            nodes[sid]["endpoints_ready"] = ready
-            nodes[sid]["status"] = "ready" if ready else "no_endpoints"
-
     svc_to_wl: dict[str, str] = {}
     for e in structure:
         if e["type"] == "selects" and nodes[e["from"]].get("system") == nodes[e["to"]].get("system"):

@@ -1,7 +1,8 @@
 FROM node:22-bookworm-slim AS codex
-# 0.163.0: first pinned version whose model catalog accepts gpt-6.1-sol on a ChatGPT (subscription) account;
-# 0.157.0 rejects it with "not supported when using Codex with a ChatGPT account" (checked 2026-10-18).
-RUN npm install -g @openai/codex@0.163.0
+# 0.170.0 (2026-11-18): the 0.163.0 bundled/refreshed model catalog has neither gpt-6.2-sol nor gpt-6.2-astra;
+# 0.170.0 is the official npm latest whose offline catalog lists both. Earlier: 0.163.0 was the first pin that
+# accepted gpt-6.1-sol on a ChatGPT (subscription) account; 0.157.0 rejected it (checked 2026-10-18).
+RUN npm install -g @openai/codex@0.170.0
 
 # Claude Code CLI (native per-arch binary shipped via optional npm deps). Pinned; verified with --version.
 FROM node:22-bookworm-slim AS claude

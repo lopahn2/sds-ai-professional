@@ -28,7 +28,7 @@ KINDS = ("evidence_collected", "routing_decided", "group_composed", "agent_start
          "operator_message", "operator_applied", "paused", "resumed", "stopped", "account_switched",
          "waiting_quota", "status", "completed", "note", "steering_interpreted",
          "command_planned", "command_confirmed", "command_executed", "command_failed", "command_rolled_back",
-         "command_cancelled", "agent_progress")
+         "command_cancelled", "agent_progress", "investigation_started", "investigation_progress", "investigation_finished")
 CONTROL_ACTIONS = ("pause", "resume", "stop")
 POLL_S = 1.0
 

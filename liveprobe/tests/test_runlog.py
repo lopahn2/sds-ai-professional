@@ -117,9 +117,13 @@ def test_engine_call_gates_instructs_and_logs(iid, monkeypatch):
     runlog.add_message(iid, "태그만 확인해 주세요")
     r = eng._call(iid, "signal_analyst", "ANALYSE", AGENT_SCHEMA, AgentOutput, hits=[])
     assert r.ok and "태그만 확인해 주세요" in seen["prompt"]
-    kinds = [e["kind"] for e in runlog.events_since(iid)]
-    assert kinds == ["operator_message", "operator_applied", "agent_started", "agent_finished"]
-    fin = runlog.events_since(iid)[-1]
+    events = runlog.events_since(iid)
+    assert [e['kind'] for e in events] == ["operator_message", "operator_applied", "agent_started",
+                                          "agent_progress", "agent_progress", "agent_finished"]
+    start, requested, received, fin = events[2:]
+    assert [event['detail']['phase'] for event in (requested, received)] == ['started', 'succeeded']
+    assert requested['detail']['attempt_id'] == received['detail']['attempt_id']
+    assert all(event['detail']['call_id'] == start['detail']['call_id'] for event in (requested, received, fin))
     assert fin["detail"]["model"] and fin["detail"]["root_cause_candidates"][0]["cause"] == "bad tag"
 
     runlog.set_control(iid, "stop")
@@ -130,7 +134,7 @@ def test_engine_call_gates_instructs_and_logs(iid, monkeypatch):
 
 # ---------------------------------------------------------------- API
 @pytest.fixture()
-def api(db_url, monkeypatch):
+def api(db_url, monkeypatch, operator_gateway):
     monkeypatch.setenv("LIVEPROBE_DATABASE_URL", db_url)
     monkeypatch.setenv("LIVEPROBE_BACKGROUND", "false")
     from app import config
@@ -143,7 +147,7 @@ def api(db_url, monkeypatch):
 
 @needs_db
 def test_api_feed_message_control_roundtrip(api, iid):
-    assert api.get(f"/api/incidents/{iid}/events").json() == {"events": [], "control": "running"}
+    assert api.get(f"/api/incidents/{iid}/events").json() == {"events": [], "control": "running", "streaming": True}
     r = api.post(f"/api/incidents/{iid}/messages", json={"body": "로그부터 보세요"})
     assert r.status_code == 202 and r.json()["applies"] == "next_node_boundary"
     assert api.post(f"/api/incidents/{iid}/control", json={"action": "pause"}).json() == {"state": "paused"}

@@ -13,6 +13,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from .observation_sources import adapter_url
 from . import db
 from .change_models import ChangeRequest, RunnerJob
 from .commands import CommandError, canonical, safe_name
@@ -600,7 +601,7 @@ class ChangeService:
     def _logs(self, ns, service, start, end):
         query = (f'{{namespace={json.dumps(ns)},app={json.dumps(service)}}}'
                  ' |~ "(?i)(exception|traceback|error:|error |uncaught|unhandled|panic)"')
-        r = httpx.get(self.settings.loki_url + '/loki/api/v1/query_range', params={
+        r = httpx.get(adapter_url(self.settings, 'loki') + '/loki/api/v1/query_range', params={
             'query': query, 'start': str(int(start.timestamp() * 1e9)), 'end': str(int(end.timestamp() * 1e9)),
             'limit': 1, 'direction': 'forward'}, timeout=8)
         r.raise_for_status(); payload = r.json()

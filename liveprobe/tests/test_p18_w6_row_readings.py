@@ -14,7 +14,8 @@ def _item(ref, kind, payload):
 def test_endpoints_row_reads_ready_addresses():
     assert rule_ko(_item("E3_service", "status", {"ready_addresses": 1})) == "엔드포인트에 준비된 주소가 1개 등록되어 있습니다."
     assert rule_ko(_item("E3_service", "status", {"ready_addresses": 0})) == \
-        "엔드포인트에 준비된 주소가 0개라 요청을 받을 Pod가 없습니다."
+        "준비된 엔드포인트 주소가 0개입니다."
+    assert "요청" not in rule_ko(_item("E3_service", "status", {"ready_addresses": 0}))
 
 
 def test_metrics_row_states_only_observed_values_and_never_fills_unobserved_with_zero():

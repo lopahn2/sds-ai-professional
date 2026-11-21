@@ -21,7 +21,7 @@ class Session:
     def __init__(self):
         self.rows = {cls: [] for cls in (Action, AgentRun, AuditLog, Evidence, Incident, Interpretation,
                                         OperatorCommand, OperatorMessage, RoutingDecision, RunEvent)}
-        self.rows[Incident] = [N(id=1, namespace="시험", workload="서비스", system=None, signal_reasons=[],
+        self.rows[Incident] = [N(id=1, fingerprint="fixture/k8s", namespace="시험", workload="서비스", system=None, signal_reasons=[],
                                  signal_count=1, status="analyzing", severity_level="COMPLEX", handoff=None,
                                  created_at=T, updated_at=T, status_reason=None, title="시험", closed_at=None)]
         self.rows[RoutingDecision] = [decision(10, 0)]
@@ -31,6 +31,9 @@ class Session:
 
     def scalars(self, query):
         return Rows(self.rows[query.column_descriptions[0]["entity"]])
+
+    def scalar(self, query):
+        return next(iter(self.scalars(query)), None)
 
     def execute(self, query):
         # P20: build_flow joins citations to reference chunks; these scenarios record none.

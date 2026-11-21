@@ -126,7 +126,7 @@ def test_fetch_patch_build_and_ordered_promotions(setup):
     x = setup; c = built(x)
     assert c['status'] == 'built'
     assert c['source_files'][0] == {'path': 'app.py', 'size': 4, 'sha256': hashlib.sha256(b'bad\n').hexdigest()}
-    assert x.planner.calls[0][0::2] == ('code_fixer', 'gpt-6.1-sol')
+    assert x.planner.calls[0][0::2] == ('code_fixer', 'gpt-6.2-sol')
     assert 'ValueError' in x.planner.calls[0][1]
     for stage in ('dev', 'stg', 'prd'):
         if stage == 'prd':
@@ -246,10 +246,10 @@ def test_code_fixer_model_settings_are_saved_and_resolved(db_url):
     cfg = AppConfig()
     with db.session() as s:
         data = read_settings(s, cfg)
-        assert data['assist']['code_fixer'] == {'model': 'gpt-6.1-sol', 'effort': 'high'}
-        body = ModelSettingsIn(expected_revision=0, router=data['router'], groups=data['groups'], assist={'code_fixer': {'model': 'gpt-6-astra', 'effort': 'high'}})
+        assert data['assist']['code_fixer'] == {'model': 'gpt-6.2-sol', 'effort': 'high'}
+        body = ModelSettingsIn(expected_revision=0, router=data['router'], groups=data['groups'], assist={'code_fixer': {'model': 'gpt-6.2-astra', 'effort': 'high'}})
         result = save_settings(s, cfg, body, 'operator')
-        assert result['assist']['code_fixer']['model'] == 'gpt-6-astra'
+        assert result['assist']['code_fixer']['model'] == 'gpt-6.2-astra'
 
 
 def test_runner_real_git_roundtrip_and_no_original_mutation(tmp_path):
@@ -329,7 +329,7 @@ def test_untrusted_pr_receipts_cannot_unlock_prd(setup):
         with pytest.raises(ChangeError, match='github_merge_required'): x.service.plan(c['id'], 'prd')
 
 
-def test_runner_http_plan_promote_confirm_and_no_token_fallback(setup, tmp_path):
+def test_runner_http_plan_promote_confirm_and_no_token_fallback(operator_gateway, setup, tmp_path):
     from app.change_api import change_router
     x = setup; c = built(x); app = FastAPI(); app.include_router(change_router({'changes':x.service}))
     with TestClient(app, base_url='http://liveprobe.localhost', headers={'X-LiveProbe-Client':'dashboard'}) as client:
@@ -428,7 +428,7 @@ def test_release_transport_exactly_three_image_only_ops(tmp_path, monkeypatch):
     assert [method for _, method, _ in calls] == ['GET', 'PATCH', 'GET']
 
 
-def test_runner_auth_is_distinct_from_dashboard_guard_and_redacts_token(setup, tmp_path):
+def test_runner_auth_is_distinct_from_dashboard_guard_and_redacts_token(operator_gateway, setup, tmp_path):
     from app.change_api import change_router
     token = tmp_path / 'token'; token.write_text('runner-test-only')
     state = {'changes': setup.service}

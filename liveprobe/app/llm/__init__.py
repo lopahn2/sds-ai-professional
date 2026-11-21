@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..config import AppConfig, Settings
+from ..proposals import PLAN_PROPERTIES
 from ..remediation import Remediation, REMEDIATION_SCHEMA
 from .base import LLMError, LLMResult, Provider, Usage  # noqa: F401
 from .anthropic_api import AnthropicAPIProvider
@@ -28,6 +29,9 @@ class ActionOut(BaseModel):
     memory_limit_mi: int | None = None
     version: str | None = None
     why: str = ""
+    impact_ko: str | None = None
+    success_condition_ko: str | None = None
+    rollback_condition_ko: str | None = None
 
 
 class AgentOutput(BaseModel):
@@ -85,6 +89,7 @@ AGENT_SCHEMA: dict[str, Any] = {
         "next_action": {"type": "string", "enum": ["rollout_undo", "act", "handoff", "none"]},
         "recommended_steps": {"type": "array", "items": {"type": "string"}},
         "action": {"type": ["object", "null"], "properties": {
+            **PLAN_PROPERTIES,
             "type": {"type": "string"}, "target": {"type": ["string", "null"]},
             "replicas": {"type": ["integer", "null"]}, "memory_limit_mi": {"type": ["integer", "null"]},
             "version": {"type": ["string", "null"]}, "why": {"type": "string"}}},

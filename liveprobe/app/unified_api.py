@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 from datetime import date
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import Field
-from .auth import require_user
-from .application.contracts import CreateIncident, UserTest, Approval
+from .auth import require_user, host_allowed
+from .config import get_settings
+from .application.contracts import CreateIncident, UserTest, Approval, Supplement
 from .application.merge_policy import MergeReview
 from .application.security import Identities
 from .unified import BLOCK_KO, reject
@@ -17,7 +19,23 @@ class UnifiedCreate(CreateIncident):
 
 
 def unified_router(state):
-    router = APIRouter(dependencies=[Depends(require_user)])
+    def entry(request: Request, settings=Depends(get_settings)):
+        # Every mutating unified handler resolves its actual human/session identity below.
+        # Dedicated bearer clients and the preserved CLI session endpoints do not become local operators.
+        if (request.method not in ('GET', 'HEAD', 'OPTIONS') and not request.headers.get('x-liveprobe-operator-proof')
+                and (request.headers.get('authorization') or request.cookies.get('lp_human_session')
+                     or request.url.path.startswith('/api/human-sessions'))):
+            if not host_allowed(settings, request.headers.get('host')):
+                raise HTTPException(403, 'host not allowed')
+            try:
+                H.local_read_key(os.getenv('LIVEPROBE_LOCAL_READ_KEY_FILE')).require(request.headers)
+                H.check_browser_request(request.headers, H.same_host(request.headers.get('host')), mutation=True)
+            except H.SessionError as exc:
+                raise H.http_error(exc) from None
+            return
+        require_user(request, settings)
+
+    router = APIRouter(dependencies=[Depends(entry)])
 
     def backend():
         service = state.get('unified')
@@ -25,10 +43,19 @@ def unified_router(state):
             reject('feature_disabled', 503)
         return service
 
-    def human(authorization, scope):
+    from .application.browser_access import actor as browser_actor, summary as project_summary, local_read
+    from . import human_sessions as H
+
+    def resolve_session():
+        application = backend().application
+        return application.state.human_sessions, application.state.identities, H.local_read_key(os.getenv('LIVEPROBE_LOCAL_READ_KEY_FILE'))
+
+    H.install_routes(router, '/api/human-sessions', resolve=resolve_session,
+                     origin_allowed=lambda r, netloc: H.same_host(r.headers.get('host'))(netloc))
+
+    def human(request, authorization, scope):
         service = backend()
-        actor = Identities(service.application.state.settings).authenticate(authorization, scope)
-        return service, actor
+        return service, browser_actor(service.application, request, scope)
 
     @router.get('/api/incidents/{iid}/code-action')
     def summary(iid: int):
@@ -42,40 +69,50 @@ def unified_router(state):
         return service.summary(iid)
 
     @router.post('/api/incidents/{iid}/code-action')
-    def connect(iid: int, authorization: str | None = Header(default=None)):
-        service, actor = human(authorization, 'incident:create')
+    def connect(iid: int, *, request: Request, authorization: str | None = Header(default=None)):
+        service, actor = human(request, authorization, 'incident:create')
         return service.continue_incident(iid, actor)
 
     @router.get('/api/incidents/{iid}/code-action/detail')
-    def detail(iid: int, authorization: str | None = Header(default=None)):
-        service, _ = human(authorization, 'incident:read')
+    def detail(iid: int, *, request: Request, authorization: str | None = Header(default=None)):
+        service, _ = human(request, authorization, 'incident:read')
         return service.detail(iid)
 
     def child(service, iid):
-        summary = service.summary(iid)
-        if not summary['linked']:
-            reject('code_action_not_found', 404)
-        return summary['application_id']
+        return service.linked_document(iid)['id']
+
+    @router.post('/api/incidents/{iid}/code-action/supplements')
+    def supplement(iid: int, body: Supplement, request: Request):
+        def apply():
+            service, actor = human(request, request.headers.get('authorization'), 'incident:create')
+            return service.control.supplement(child(service, iid), body, actor)
+        if request.headers.get('authorization'):
+            return apply()
+        return backend().application.state.human_sessions.once(request.cookies.get(H.COOKIE), apply)
 
     @router.post('/api/incidents/{iid}/code-action/user-test')
-    def test(iid: int, body: UserTest, authorization: str | None = Header(default=None)):
-        service, actor = human(authorization, 'tester')
+    def test(iid: int, body: UserTest, *, request: Request, authorization: str | None = Header(default=None)):
+        service, actor = human(request, authorization, 'tester')
         return service.control.user_test(child(service, iid), body, actor)
 
     @router.post('/api/incidents/{iid}/code-action/approve-prd')
-    def approve(iid: int, body: Approval, authorization: str | None = Header(default=None)):
-        service, actor = human(authorization, 'prd-approver')
-        return service.control.approve(child(service, iid), body, actor)
+    def approve(iid: int, body: Approval, *, request: Request, authorization: str | None = Header(default=None)):
+        def apply():
+            service, actor = human(request, authorization, 'prd-approver')
+            return service.control.approve(child(service, iid), body, actor)
+        if authorization:
+            return apply()
+        return backend().application.state.human_sessions.once(request.cookies.get(H.COOKIE), apply)
 
     # MergeReview is owned by the independently authenticated release gate module.
     @router.post('/api/incidents/{iid}/code-action/review-merge')
-    def merge(iid: int, body: MergeReview, authorization: str | None = Header(default=None)):
-        service, actor = human(authorization, 'prd-approver')
+    def merge(iid: int, body: MergeReview, *, request: Request, authorization: str | None = Header(default=None)):
+        service, actor = human(request, authorization, 'prd-approver')
         return service.control.review_merge(child(service, iid), body, actor)
 
     @router.post('/api/unified/incidents', status_code=201)
-    def create(body: UnifiedCreate, authorization: str | None = Header(default=None)):
-        service, actor = human(authorization, 'incident:create')
+    def create(body: UnifiedCreate, *, request: Request, authorization: str | None = Header(default=None)):
+        service, actor = human(request, authorization, 'incident:create')
         request = CreateIncident.model_validate(body.model_dump(exclude={'request_id'}))
         return service.create(request, body.request_id, actor)
 
@@ -87,13 +124,26 @@ def unified_router(state):
                     'historical_environments': ['dev', 'stg', 'prd'], 'profiles_configured': False}
         return {'enabled': True, **service.control.catalog.public()}
 
+    @router.get('/api/unified/summaries')
     @router.get('/api/unified/history')
     def history(environment: str | None = None, service: str | None = None, system: str | None = None,
                 state_filter: str | None = Query(default=None, alias='state'), group: str | None = None,
+                work: Literal['approval', 'qa_fix', 'recovery'] | None = None,
                 search: str | None = None, start: date | None = None, end: date | None = None,
                 limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0),
-                as_of: float | None = Query(default=None, ge=0), authorization: str | None = Header(default=None)):
-        coordinator, _ = human(authorization, 'incident:read')
+                as_of: float | None = Query(default=None, ge=0), *, request: Request, authorization: str | None = Header(default=None)):
+        coordinator = backend()
+        projected = request.url.path.endswith('/summaries')
+        if projected:
+            _, _, key = resolve_session()
+            try:
+                if not key.configured:
+                    raise H.SessionError(403, 'local_gateway_required')
+                key.require(request.headers)
+            except H.SessionError as exc:
+                raise H.http_error(exc) from None
+        else:
+            human(request, authorization, 'incident:read')
         if group is not None and group not in coordinator.control.LIST_STATE_GROUPS:
             reject('list_group_invalid', 422)
         if any(v is not None and len(v) > 120 for v in (environment, service, system, state_filter, search)):
@@ -104,17 +154,26 @@ def unified_router(state):
         except ValueError:
             reject('list_dates_invalid', 422)
         result = coordinator.control.list_incidents(environment=environment, service=service, system=system,
-            state=state_filter, group=group, search=search, lower=lower, upper=upper,
+            state=state_filter, group=group, work=work, search=search, lower=lower, upper=upper,
             limit=limit, offset=offset, as_of=as_of)
         from sqlalchemy import select
         from .models import CodeActionLink
         ids = [i['id'] for i in result['incidents']]
         with coordinator.sessions() as session:
+            documents = {item['id']: item for item in result['incidents']}
             roots = {link.application_id: link.incident_id for link in session.scalars(
-                select(CodeActionLink).where(CodeActionLink.application_id.in_(ids)))}
+                select(CodeActionLink).where(CodeActionLink.application_id.in_(ids), CodeActionLink.state == 'linked'))
+                if coordinator.matches_origin(link, documents[link.application_id])}
         for item in result['incidents']:
             item['root_incident_id'] = roots.get(item['id'])
-            item['source'] = 'application'
+            item['source'] = 'unified' if item['root_incident_id'] else 'native'
+        if projected:
+            result['incidents'] = [{**project_summary(item), 'root_incident_id': item['root_incident_id'], 'source': item['source']}
+                                   for item in result['incidents']]
+        else:
+            from .application.qa_release import projection
+            for item in result['incidents']:
+                item.update(projection(item, item['state']))
         return result
 
     return router
@@ -129,6 +188,7 @@ def prepare_unified(state):
     application = create_app()
     state['application'] = application
     state['unified'] = configure(application, os.getenv('LIVEPROBE_INSTALLATION_ID'))
+    state['unified'].mixed_engine = lambda: state.get('engine')
     def create_root(body, actor):
         from .application.safety import sha
         result = state['unified'].create(body, sha(body.model_dump(mode='json')), actor)

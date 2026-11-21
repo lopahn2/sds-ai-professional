@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
-from .config import AppConfig, GPT_LOW, GPT_MID, GPT_HIGH, RoleModel
+from .config import AppConfig, GPT_LOW, GPT_MID, GPT_HIGH, LEGACY_MODEL_IDS, PRICE_SOURCES, RoleModel, current_model_id
 from .db import audit
 from .models import Setting
 
@@ -23,9 +23,30 @@ MODELS = (GPT_LOW, GPT_MID, GPT_HIGH)
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
 
 
+def normalized_value(value: dict) -> tuple[dict, bool]:
+    """Previous-lineup ids in a stored row -> current ids for new runs and display. The stored row is not rewritten."""
+    changed = False
+
+    def place(rm):
+        nonlocal changed
+        if isinstance(rm, dict) and rm.get('model') in LEGACY_MODEL_IDS:
+            changed = True
+            return {**rm, 'model': current_model_id(rm['model'])}
+        return rm
+    out = dict(value)
+    if 'router' in out:
+        out['router'] = place(out['router'])
+    if isinstance(out.get('groups'), dict):
+        out['groups'] = {level: {**group, 'roles': {role: place(rm) for role, rm in (group.get('roles') or {}).items()}}
+                         if isinstance(group, dict) else group for level, group in out['groups'].items()}
+    if isinstance(out.get('assist'), dict):
+        out['assist'] = {name: place(rm) for name, rm in out['assist'].items()}
+    return out, changed
+
+
 class Placement(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    model: Literal['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']
+    model: Literal['gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra']
     effort: Literal['low', 'medium', 'high', 'xhigh']
 
 
@@ -70,12 +91,14 @@ def defaults(cfg: AppConfig) -> dict:
 def read_settings(s, cfg: AppConfig) -> dict:
     row = s.get(Setting, KEY)
     base = defaults(cfg)
-    value = row.value if row else {'revision': 0, **base}
+    value, legacy = normalized_value(row.value if row else {'revision': 0, **base})
     return {'revision': value['revision'], 'source': 'database' if row else 'config',
             'provider': cfg.llm.provider, 'editable': cfg.llm.provider == 'codex_cli',
             'updated_at': row.updated_at.isoformat() if row and row.updated_at else None,
+            'legacy_normalized': legacy,
             'router': value['router'], 'groups': value['groups'], 'assist': value.get('assist', base['assist']), 'defaults': base,
-            'catalog': [{'model': name, 'efforts': EFFORTS, 'price': cfg.llm.prices.get(name)} for name in MODELS],
+            'catalog': [{'model': name, 'efforts': EFFORTS, 'price': cfg.llm.prices.get(name),
+                         'price_source': PRICE_SOURCES.get(name)} for name in MODELS],
             'prices_version': cfg.llm.prices_version,
             'limits': {'max_cost_usd': cfg.workflows.max_cost_usd, 'max_agent_calls': cfg.workflows.max_agent_calls,
                        'model_ladder': cfg.workflows.model_ladder['openai'], 'effort_ladder': cfg.workflows.effort_ladder}}
@@ -139,7 +162,8 @@ def snapshot_config(s, cfg: AppConfig) -> tuple[AppConfig, dict | None]:
     if row is None:
         # Config defaults are a real version too: preserve their complete run placement.
         return frozen, {'revision': 0, **defaults(frozen)}
-    value = row.value
+    # A row saved with the previous lineup runs on the current tier ids; the row itself stays as stored.
+    value, _ = normalized_value(row.value)
     # Corrupt storage must fail before any model call; never silently adopt partial settings.
     parsed = ModelSettingsIn.model_validate({'expected_revision': value['revision'],
                                              'router': value['router'], 'groups': value['groups']})

@@ -17,7 +17,7 @@ def test_host_allow_list():
 
 
 @pytest.fixture()
-def client(db_url, monkeypatch):
+def client(db_url, monkeypatch, operator_gateway):
     monkeypatch.setenv("LIVEPROBE_DATABASE_URL", db_url)
     monkeypatch.setenv("LIVEPROBE_WEBHOOK_TOKEN", "hook-token-abc")
     monkeypatch.setenv("LIVEPROBE_BACKGROUND", "false")
@@ -106,11 +106,13 @@ def test_incident_list_and_detail_shapes(client):
         iid = inc.id
     login(client)
     lst = client.get("/api/incidents").json()
-    assert set(lst) == {"items", "total", "as_of", "newer_since_as_of", "filters"} and lst["total"] == 1
+    assert set(lst) == {"items", "total", "as_of", "newer_since_as_of", "filters", "by_work"} and lst["total"] == 1
+    assert lst['by_work'] == {'approval': 0, 'qa_fix': 0, 'recovery': 0}
     item = lst["items"][0]
     assert set(item) == {"system", "environment", "id", "title", "title_ko", "namespace", "workload", "status", "severity_level",
                          "signal_count", "created_at", "updated_at", "closed_at", "total_cost_usd", "agent_run_count",
-                         "known_cost_usd", "cost_missing_runs", "cost_status", "origin", "recovery_kind"}
+                         "known_cost_usd", "cost_missing_runs", "cost_status", "origin", "recovery_kind", "work"}
+    assert item['work'] is None
     assert item['recovery_kind'] is None  # existing incidents keep their original remediation label
     assert item["agent_run_count"] == 1 and item["total_cost_usd"] == 0.01
     assert item["created_at"].endswith("Z")

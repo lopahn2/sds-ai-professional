@@ -74,8 +74,8 @@ def test_tier_selection_per_level():
     # low tier for SIMPLE, mid tier for NORMAL/COMPLEX, high tier only for HIGH_RISK (2026-10-18 lineup, router v2)
     cfg = AppConfig()
     picked = {lvl: score_models(lvl, cfg)["selected_model"] for lvl in ("SIMPLE", "NORMAL", "COMPLEX", "HIGH_RISK")}
-    assert picked == {"SIMPLE": "gpt-6-luna", "NORMAL": "gpt-6.1-sol", "COMPLEX": "gpt-6.1-sol",
-                      "HIGH_RISK": "gpt-6-astra"}
+    assert picked == {"SIMPLE": "gpt-6-luna", "NORMAL": "gpt-6.2-sol", "COMPLEX": "gpt-6.2-sol",
+                      "HIGH_RISK": "gpt-6.2-astra"}
     # the log-scale cost term keeps the previous lineup's v1 choices
     old = AppConfig.model_validate({
         "llm": {"prices": {"gpt-6-luna": {"input": .1, "output": .5}, "gpt-5.6-terra": {"input": 2, "output": 12},

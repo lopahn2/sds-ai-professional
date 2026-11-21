@@ -157,7 +157,7 @@ def test_list_filter_counts_and_terminal_time_use_stable_projection(service,monk
 @pytest.mark.parametrize('path,body',[('close',{'reason':'confirmed record','confirm':True}),
     ('control',{'action':'stop'}),('messages',{'body':'restart this service'}),
     ('handoff/claim',{}),('reassess',{'reason':'read-only review','confirm':True}),('interpretations',{'confirm':True})])
-def test_direct_core_writes_cannot_bypass_code_action(service,monkeypatch,path,body):
+def test_direct_core_writes_cannot_bypass_code_action(operator_gateway, service,monkeypatch,path,body):
     from fastapi.testclient import TestClient
     from app.main import app,STATE
     seed();service.continue_incident(1,ACTOR)
@@ -171,7 +171,7 @@ def test_direct_core_writes_cannot_bypass_code_action(service,monkeypatch,path,b
     c.close()
 
 
-def test_openapi_resolves_unified_body_contracts_and_validation_never_echoes_input():
+def test_openapi_resolves_unified_body_contracts_and_validation_never_echoes_input(operator_gateway):
     from app.main import app
     from fastapi.testclient import TestClient
     schema=app.openapi()
@@ -184,22 +184,52 @@ def test_openapi_resolves_unified_body_contracts_and_validation_never_echoes_inp
 
 @needs_db
 def test_application_human_scope_is_required_for_details_and_creation(service,monkeypatch,tmp_path):
+    from contextlib import closing
     import json
     from dataclasses import replace
     from app.main import app,STATE
     from fastapi.testclient import TestClient
-    identity=tmp_path/'human.json'
-    identity.write_text(json.dumps({'principals':[{'subject':'reader','token':'synthetic-reader-token-012345','scopes':['incident:read']}]}))
-    service.application.state.settings=replace(service.application.state.settings,identity_file=str(identity))
-    seed();service.continue_incident(1,ACTOR)
-    monkeypatch.setitem(STATE,'unified',service)
-    c=TestClient(app,base_url='http://liveprobe.localhost',headers={'X-LiveProbe-Client':'dashboard'})
-    assert c.get('/api/incidents/1/code-action/detail').status_code==401
-    headers={'Authorization':'Bearer synthetic-reader-token-012345'}
-    assert c.get('/api/incidents/1/code-action/detail',headers=headers).status_code==200
-    assert c.post('/api/incidents/1/code-action',headers=headers,json={}).status_code==403
-    assert c.post('/api/incidents/1/code-action/approve-prd',headers=headers,json={}).status_code in (403,422)
-    c.close()
+
+    token = 'synthetic-reader-token-012345'
+    application_state = service.application.state
+
+    def use_identity(filename, scopes):
+        identity = tmp_path / filename
+        identity.write_text(json.dumps({'principals': [{'subject': 'reader', 'token': token, 'scopes': scopes}]}))
+        application_state.settings = replace(application_state.settings, identity_file=str(identity))
+
+    use_identity('human.json', ['incident:read'])
+    seed()
+    service.continue_incident(1, ACTOR)
+    monkeypatch.setitem(STATE, 'unified', service)
+    monkeypatch.delenv('LIVEPROBE_LOCAL_READ_KEY_FILE', raising=False)
+    origin = 'http://liveprobe.localhost'
+    ui = {'X-LiveProbe-Client': 'dashboard'}
+    browser = {'Origin': origin, 'Sec-Fetch-Site': 'same-origin'}
+    bearer = {'Authorization': f'Bearer {token}'}
+    detail = '/api/incidents/1/code-action/detail'
+    create = {'request_id': 'request-reader-001', 'environment': 'dev', 'service': 'order', 'reason': 'synthetic'}
+    sessions = '/api/human-sessions'
+    # The fixture initializes both test stores; do not run the cluster app lifespan.
+    with closing(TestClient(app, base_url=origin, headers=ui)) as c, closing(TestClient(app, base_url=origin, headers=ui)) as cli:
+        assert c.get(detail).status_code == 401
+        assert cli.get(detail, headers=bearer).status_code == 200
+        assert cli.post('/api/unified/incidents', headers=bearer, json=create).status_code == 403
+
+        pending = c.post(sessions, headers=browser, json={'scope': 'incident:read'})
+        assert pending.status_code == 201, pending.text
+        approval = {'scope': 'incident:read', 'user_code': pending.json()['user_code']}
+        approved = cli.post(sessions + '/approve', headers=bearer, json=approval)
+        assert approved.status_code == 200, approved.text
+        csrf = c.get(sessions + '/current', headers=browser).json()['csrf_token']
+        assert c.get(detail, headers=browser).status_code == 200
+        denied = c.post('/api/unified/incidents', headers={**browser, 'X-CSRF-Token': csrf}, json=create)
+        assert denied.status_code == 403 and denied.json()['detail']['code'] == 'scope_forbidden'
+
+        # Replacing the active file path must revoke the read grant in both paths.
+        use_identity('updated.json', ['tester'])
+        assert cli.get(detail, headers=bearer).status_code == 403
+        assert c.get(detail, headers=browser).status_code == 403
 
 @needs_db
 def test_app_origin_and_foreign_incident_commands_cannot_bypass_target_safety(service):
@@ -227,6 +257,90 @@ def test_flow_continuation_is_a_real_link_without_model_usage():
     assert node['type']=='code_action' and node['depth']==4
     assert node['model'] is None and node['tokens'] is None and node['cost_usd'] is None
     assert result['edges'][0]['source']=='outcome' and flow['nodes']==[{'id':'outcome','type':'outcome','depth':3}]
+
+
+@needs_db
+def test_work_filters_count_linked_and_kubernetes_only_before_paging(service, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app, STATE
+
+    monkeypatch.setitem(STATE, 'unified', service)
+    seed()
+    app_id = service.continue_incident(1, ACTOR)['application_id']
+    with db.session() as session:
+        session.add(Incident(id=2, fingerprint='test/2', namespace='dev', workload='catalog',
+                             title='catalog limit', status='action_pending'))
+    client = TestClient(app, base_url='http://liveprobe.localhost', headers={'X-LiveProbe-Client': 'dashboard'})
+    for state, work, stage, status in [
+        ('qa_failed', 'qa_fix', 'qa', 'action_pending'),
+        ('awaiting_prd_approval', 'approval', 'approval', 'action_pending'),
+        ('awaiting_recovery', 'recovery', 'recovery', 'analyzing'),
+    ]:
+        with service.control.store.transaction() as session:
+            service.control.transition(session, session.get(AppIncident, app_id), state)
+        service.sync_one(1)
+        summary = client.get('/api/incidents/1/code-action').json()
+        assert (summary['work'], summary['mega_stage']) == (work, stage)
+        result = client.get('/api/incidents', params={'work': work, 'limit': 1}).json()
+        assert result['total'] == result['by_work'][work] == (2 if work == 'approval' else 1)
+        scoped = client.get('/api/incidents', params={'work': work, 'service': 'order'}).json()
+        assert [(i['id'], i['work'], i['status']) for i in scoped['items']] == [(1, work, status)]
+        assert sum(scoped['by_work'].values()) == 1
+    assert client.get('/api/incidents', params={'work': 'invalid'}).status_code == 422
+    client.close()
+
+
+@needs_db
+def test_supplement_checks_human_scope_csrf_and_link_origin_on_both_routes(service, monkeypatch, tmp_path):
+    from contextlib import closing
+    from dataclasses import replace
+    import json
+    from fastapi.testclient import TestClient
+    from app.main import app, STATE
+
+    human_token, machine_token = 'synthetic-human-test-token', 'synthetic-detection-test-token'
+    for name, token in [('human', human_token), ('machine', machine_token)]:
+        (tmp_path / name).write_text(json.dumps({'principals': [
+            {'subject': name, 'token': token, 'scopes': ['incident:create']}]}))
+    service.application.state.settings = replace(service.application.state.settings,
+        identity_file=str(tmp_path / 'human'), machine_identity_file=str(tmp_path / 'machine'))
+    monkeypatch.delenv('LIVEPROBE_LOCAL_READ_KEY_FILE', raising=False)
+    monkeypatch.setitem(STATE, 'unified', service)
+    seed()
+    app_id = service.continue_incident(1, ACTOR)['application_id']
+    with service.control.store.transaction() as session:
+        service.control.transition(session, session.get(AppIncident, app_id), 'completed')
+    body = {'request_id': 'root-native-note', 'kind': 'revise', 'note_ko': '복구 후 주문 지연을 점검합니다.'}
+    root_url = '/api/incidents/1/code-action/supplements'
+    native_url = '/api/application/v1/incidents/' + app_id + '/supplements'
+    origin = 'http://liveprobe.localhost'
+    browser = {'Origin': origin, 'Sec-Fetch-Site': 'same-origin'}
+    human = {'Authorization': 'Bearer ' + human_token}
+    seen = []
+    for server, path, sessions in [(app, root_url, '/api/human-sessions'),
+                                   (service.application, native_url, '/api/application/v1/human-sessions')]:
+        with closing(TestClient(server, base_url=origin, headers={'X-LiveProbe-Client':'dashboard'})) as client:
+            assert client.post(path, json=body, headers={'Authorization': 'Bearer ' + machine_token}).status_code == 403
+            pending = client.post(sessions, headers=browser, json={'scope': 'incident:create'})
+            assert pending.status_code == 201
+            verified = client.post(sessions + '/approve', headers=human,
+                json={'scope': 'incident:create', 'user_code': pending.json()['user_code']})
+            assert verified.status_code == 200
+            csrf = client.get(sessions + '/current', headers=browser).json()['csrf_token']
+            assert client.post(path, json=body, headers=browser).status_code == 403
+            receipt = client.post(path, json=body, headers={**browser, 'X-CSRF-Token': csrf})
+            assert receipt.status_code == 200, receipt.text
+            assert receipt.json()['incident_id'] == app_id
+            seen.append(receipt.json()['followup']['id'])
+    assert len(set(seen)) == 1
+    with service.control.store.transaction() as session:
+        incident = session.get(AppIncident, app_id)
+        assert len(incident.document['data']['followups']) == 1
+        origin = dict(incident.document['data']['unified_origin'], incident_id=2)
+        service.control.data(incident, 'unified_origin', origin)
+    with closing(TestClient(app, base_url='http://liveprobe.localhost', headers={'X-LiveProbe-Client':'dashboard'})) as client:
+        assert client.post(root_url, headers=human, json=body).status_code == 409
+        assert client.post(root_url.replace('/1/', '/2/'), headers=human, json=body).status_code == 404
 
 
 @needs_db

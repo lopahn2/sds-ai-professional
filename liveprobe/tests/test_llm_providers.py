@@ -381,7 +381,18 @@ def test_existing_configmap_shape_still_valid():
 def test_estimate_cost_versioned_prices_and_unknown():
     from app.config import AppConfig
     cfg = AppConfig()
-    assert cfg.llm.prices_version == "2026-10-18"
+    assert cfg.llm.prices_version == "2026-11-18"
+    # One million fresh input, one million cached input, and one million output.
+    usage = Usage(input_tokens=2_000_000, output_tokens=1_000_000, cached_input_tokens=1_000_000)
+    for model, expected in {
+        "gpt-6.2-sol": 12.1,
+        "gpt-6.2-astra": 48.4,
+        "gpt-6.1-sol": 12.1,
+        "gpt-6-astra": 61.0,
+        "gpt-5.6-terra": 14.2,
+        "gpt-6-sol": 12.2,
+    }.items():
+        assert estimate_cost(cfg, model, usage) == expected, model
     # 1M fresh input + 1M output on sonnet 5 = 2 + 10
     assert estimate_cost(cfg, "claude-sonnet-5", Usage(input_tokens=1_000_000, output_tokens=1_000_000)) == 12.0
     # cached part billed at cache-read rate: 0.5M fresh * 1 + 0.5M cached * 0.1 + 0 output

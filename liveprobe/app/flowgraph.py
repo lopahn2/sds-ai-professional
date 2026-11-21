@@ -154,8 +154,7 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
         from .interpret import incident_items, readings
         items = readings(s, iid, incident_items(s, iid))
     n_evidence = bool(evidence)
-    ko = {r.item_key: r.ko for r in s.scalars(select(Interpretation).where(Interpretation.incident_id == iid))
-          if r.item_key.startswith("agent:")}
+    ko = {i["id"]: i["ko"] for i in items if i.get("ko") and i["id"].startswith("agent:")}
     finished = inc.status in INCIDENT_CLOSED_STATES
     g = _G()
 
@@ -164,14 +163,6 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
     g.node("evidence", "evidence", f"근거 수집 {ev_count}건" if n_evidence else "근거 수집", 1,
            status="done" if n_evidence else ("failed" if finished else "running"))
     g.edge("signal", "evidence")
-    for r in runs:
-        if r.role == "interpreter":
-            g.node(f"run:{r.id}", "interpret", "한글 해석(표시용)", 1, status="done" if r.status == "succeeded" else "failed",
-                   role="interpreter", model=r.model, effort=r.reasoning_effort,
-                   tokens={"in": r.input_tokens, "out": r.output_tokens} if r.input_tokens is not None else None,
-                   cost_usd=r.estimated_cost_usd, duration_ms=r.duration_ms, agent_run_id=r.id)
-            g.edge("evidence", f"run:{r.id}", "verify", "표시용")
-            break
     router_run = next((r for r in runs if r.role == "router"), None)
     started = Counter(e.detail.get("role") for e in events if e.kind == "agent_started" and isinstance(e.detail, dict))
     finished_runs = Counter(r.role for r in runs)
@@ -302,7 +293,7 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
 
     # actions and outcome -------------------------------------------------------------
     for a in actions:
-        st = {"succeeded": "done", "failed": "failed", "denied": "failed", "rejected": "failed",
+        st = {"succeeded": "done", "failed": "failed", "denied": "failed", "rejected": "failed", "cancelled": "skipped",
               "pending_approval": "running", "executing": "running", "approved": "running"}.get(a.status, "planned")
         from .routing_ko import ACTION_STATUS_KO
         n = g.node(f"action:{a.id}", "action", f"조치: {ACTION_KO.get(a.type, a.type)}", depth, lane=0, status=st,
@@ -312,12 +303,12 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
             g.edge(t, n["id"])
         prev_tail = [n["id"]]
         depth += 1
-    label = {"resolved": "자동 복구 완료", "handed_off": "운영자 인계", "failed": "처리 실패", "closed": "운영자 종료"}.get(inc.status, "결과 대기")
+    label = {"resolved": "자동 복구 완료", "handed_off": "운영자 인계", "failed": "처리 실패", "closed": "운영자 종료", "recovery_review": "서비스 복구 관측 · 운영자 소명 확인 대기"}.get(inc.status, "결과 대기")
     if inc.status == 'resolved' and (inc.handoff or {}).get('observed_recovery'):
-        label = '정상 상태 확인 · 원인 미확정'
+        label = inc.status_reason if (inc.status_reason or '').startswith('정상 ·') else '정상 상태 확인 · 원인 미확정'
     from .readings_ko import status_reason_ko
     g.node("outcome", "outcome", label, depth, lane=0,
-           status="done" if inc.status in ("resolved", "handed_off", "closed") else "failed" if inc.status == "failed" else "planned",
+           status="done" if inc.status in ("resolved", "handed_off", "closed", "recovery_review") else "failed" if inc.status == "failed" else "planned",
            conclusion_raw=inc.status_reason, conclusion_ko=status_reason_ko(inc.status_reason))
     for t in prev_tail:
         g.edge(t, "outcome")
@@ -339,6 +330,11 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
                    if e.kind == "agent_finished" and isinstance(e.detail, dict) and e.detail.get("call_id")}
     ended = {e.detail.get("call_id") for e in events
              if e.kind == "agent_finished" and isinstance(e.detail, dict)}
+    # dispatch/v1 (C3): the public record of what THIS call was asked, only when its agent_started carried one.
+    # Older incidents have no record and the node gets no `dispatch` key -- it is never reconstructed.
+    dispatches = {e.detail["call_id"]: e.detail["dispatch"] for e in events
+                  if e.kind == "agent_started" and isinstance(e.detail, dict) and e.detail.get("call_id")
+                  and isinstance(e.detail.get("dispatch"), dict) and e.detail["dispatch"].get("version") == "dispatch/v1"}
     for node in g.nodes:
         if node.get("agent_run_id"):
             node["call_id"] = completions.get(node["agent_run_id"])
@@ -347,6 +343,36 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
                           and isinstance(e.detail, dict) and e.detail.get("role") == node["role"]
                           and e.detail.get("call_id") and e.detail["call_id"] not in ended), None)
             node["call_id"] = start.detail["call_id"] if start else None
+        if node.get("call_id") in dispatches:
+            node["dispatch"] = dispatches[node["call_id"]]
+    # Each recorded search attaches to its actual reviewer, then to calls consuming its result.
+    by_run = {n["agent_run_id"]: n for n in g.nodes if n.get("agent_run_id")}
+    by_call = {n["call_id"]: n for n in g.nodes if n.get("call_id")}
+    searches = {}
+    results = {e.detail.get("investigation_seq"): e for e in events if e.kind == "investigation_finished" and e.detail}
+    for event in events:
+        detail = event.detail or {}
+        if event.kind == "investigation_started":
+            parent = by_run.get(detail.get("parent_run_id"))
+            dest = results.get(event.seq)
+            node = g.node(f"investigation:{event.seq}", "investigation", "추가 근거 탐색",
+                          parent["depth"] + 1 if parent else 2,
+                          status="done" if dest else ("failed" if finished else "running"),
+                          job_ko=event.summary, at=_iso(event.created_at),
+                          conclusion_ko=dest.summary if dest else None,
+                          inputs=(dest.detail.get("evidence_refs") or []) if dest else [])
+            searches[event.seq] = node
+            if parent:
+                g.edge(parent["id"], node["id"], "review")
+        elif event.kind == "investigation_progress" and detail.get("investigation_seq") in searches:
+            investigation = searches[detail["investigation_seq"]]
+            investigation.setdefault("source_activity", []).append({
+                key: detail.get(key) for key in ("at", "phase", "file", "job_id", "seq", "attempt")
+            })
+        elif event.kind == "agent_started" and detail.get("investigation_seq") in searches:
+            target = by_call.get(detail.get("call_id"))
+            if target:
+                g.edge(searches[detail["investigation_seq"]]["id"], target["id"], "review")
     return {"nodes": g.nodes, "edges": g.edges}
 
 
@@ -392,7 +418,7 @@ def _evidence_card(evidence: list, items: list[dict]) -> dict:
     readings_by_id = {i["id"]: i for i in items if i.get("evidence_id") is not None}
     rows = []
     for e in evidence:
-        ref = SOURCE_REF.get(e.source)
+        ref = (e.payload or {}).get("ref") if e.source == "investigation" and isinstance(e.payload, dict) else SOURCE_REF.get(e.source)
         ok = not e.error and e.payload is not None
         raw = []
         for item in evidence_items([e]):
@@ -435,7 +461,7 @@ def source_labels(evidence: list) -> dict[str, str]:
     from .routing_ko import SOURCE_KO, SOURCE_REF
     out: dict[str, str] = {}
     for e in evidence:
-        ref = SOURCE_REF.get(e.source)
+        ref = (e.payload or {}).get("ref") if e.source == "investigation" and isinstance(e.payload, dict) else SOURCE_REF.get(e.source)
         if ref:
             out.setdefault(ref, SOURCE_KO.get(e.source, e.source))
             out.setdefault(ref.split("_", 1)[0], out[ref])
@@ -556,6 +582,7 @@ def _window(rows: list, t0, t1, attr: str) -> list:
 
 def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, seg_nodes, routing_live: bool,
            citations: dict[int, list[dict]] | None = None) -> None:
+    from .proposals import PLAN_FIELDS, resolve
     from .routing_ko import (ACTION_STATUS_KO, DECIDED_BY_KO, WF_STATUS_KO, handoff_view, pair_router_runs, progress_ko,
                              routing_card)
     by_id = {n["id"]: n for n in g.nodes}
@@ -638,9 +665,22 @@ def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, 
                            and e.detail.get("role") == n.get("role")), None)) if n["status"] == "running" else None)
             n["card"] = _agent_card(n, run, inc_open, later, sources,
                                       citations.get(run.id, []) if run is not None else [])
-    for n in g.nodes:
-        if n["type"] == "interpret" and n.get("agent_run_id") in run_by_id:
-            n["at"] = _iso(run_by_id[n["agent_run_id"]].created_at)
+            if run is not None:
+                card = n["card"]
+                prefix = f"agent:{run.id}:"
+                for section, field, text in (("cause", "candidates", "cause_ko"),
+                                             ("counter", "counter_evidence", "text_ko"),
+                                             ("verdict", "candidate_verdicts", "reason_ko")):
+                    for i, entry in enumerate(card.get(field) or []):
+                        entry[text] = entry.get(text) or ko.get(f"{prefix}{section}:{i}")
+                proposal = resolve(run.output, inc.workload)
+                if proposal:
+                    card["proposed_action"] = {
+                        "type_ko": ACTION_KO[proposal["type"]], "target": f'{inc.namespace}/{proposal["kind"]}/{proposal["name"]}',
+                        **{field: ko.get(f"{prefix}action:{field}") for field in PLAN_FIELDS},
+                    }
+                card["recommended_steps_ko"] = [ko.get(f"{prefix}plan:{i}") for i, _ in
+                                                enumerate(((run.output or {}).get("recommended_steps") or [])[:10])]
     for a in actions:
         n = by_id.get(f"action:{a.id}")
         if n is None:
@@ -651,5 +691,10 @@ def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, 
                      "changes": _changes(a)}
     out = by_id["outcome"]
     out["at"] = _iso(inc.updated_at)
-    out["card"] = {"kind": "outcome", "status": inc.status, "status_ko": out["label"],
+    handoff_record = next((entry for entry in reversed(audits) if entry.event == "incident_status"
+                           and (entry.detail or {}).get("status") == "handed_off"), None)
+    handoff = inc.handoff if isinstance(inc.handoff, dict) else {}
+    out["card"] = {"handoff_recorded_at": _iso(handoff_record.ts) if handoff_record else None,
+                   "handoff_claimed": bool(handoff.get("claimed_by")), "closed_from": handoff.get("closed_from"),
+                   "kind": "outcome", "status": inc.status, "status_ko": out["label"],
                    "handoff": handoff_view(inc, ko, actions)}

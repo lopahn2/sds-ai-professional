@@ -392,17 +392,19 @@ def test_network_poll_budget_is_bounded_degraded_retryable_and_has_no_late_effec
     import copy
     import threading
     import time
+    from concurrent.futures import wait
     from app import network_signals
     from app.watcher import Watchers
 
-    monkeypatch.setattr(network_signals, "POLL_TIMEOUT_S", 0.04, raising=False)
+    normal_budget = network_signals.POLL_TIMEOUT_S
+    monkeypatch.setattr(network_signals, "POLL_TIMEOUT_S", 0.04)
     _, store, kube, sent, _ = setup_adapter()
     watchers = Watchers(kube, AppConfig(target_namespace="liveprobe-target", ), sent.append, flow_store=store)
     adapter = watchers.network
     assert adapter is not None
     adapter.clock = store.clock
     store.add(records())
-    release, drained = threading.Event(), threading.Event()
+    release = threading.Event()
     calls = []
     original = getattr(kube, method)
     def blocked(*args):
@@ -412,13 +414,6 @@ def test_network_poll_budget_is_bounded_degraded_retryable_and_has_no_late_effec
             raise RuntimeError("late observation failure")
         return original(*args)
     monkeypatch.setattr(kube, method, blocked)
-    targets = adapter._targets
-    def observed_targets(*args, **kwargs):
-        try:
-            return targets(*args, **kwargs)
-        finally:
-            drained.set()
-    monkeypatch.setattr(adapter, "_targets", observed_targets)
     try:
         started = time.monotonic()
         emitted = watchers.poll_network_once()
@@ -433,11 +428,13 @@ def test_network_poll_budget_is_bounded_degraded_retryable_and_has_no_late_effec
         snapshot = copy.deepcopy((adapter.last_errors, adapter._emitted, watchers.status, sent))
     finally:
         release.set()
-    assert drained.wait(1)
-    time.sleep(0.03)
+    assert adapter._observation is not None
+    done, _ = wait([adapter._observation], timeout=1)
+    assert adapter._observation in done
     assert (adapter.last_errors, adapter._emitted, watchers.status, sent) == snapshot
     assert len(calls) == before  # an expired read cannot start more owner/service requests
     monkeypatch.setattr(kube, method, original)
+    monkeypatch.setattr(network_signals, "POLL_TIMEOUT_S", normal_budget)
     assert watchers.poll_network_once() == 1
     assert watchers.status["network_poller"]["state"] == "running"
     assert len(sent) == 1

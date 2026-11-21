@@ -116,7 +116,7 @@ def test_restart_preserves_legacy_failed_status_and_marks_unknown_write_for_requ
     assert action.after_state['old'] is True
     assert action.after_state['reconciliation'] == {'status': 'required', 'write_outcome': 'unknown'}
     assert run.snapshot['write_reconciliation'] == {'action_ids': [8], 'status': 'required'}
-    assert engine.q.empty()
+    assert not engine._scheduled
 
 
 def test_restart_resumes_frozen_read_pipeline_without_recollecting_or_new_run():
@@ -135,7 +135,7 @@ def test_restart_resumes_frozen_read_pipeline_without_recollecting_or_new_run():
         engine.recover_on_startup()
         assert inc.status == 'analyzing'
         assert run.status == 'resume_pending'
-        assert engine.q.get_nowait() == 1
+        assert list(engine._scheduled) == [1]
         engine._process(1)
     assert inc.status == 'handed_off'
     assert run.status == 'succeeded'
@@ -409,4 +409,4 @@ def test_restart_does_not_resume_read_checkpoint_when_any_action_was_already_pro
     with patch.object(E.db, 'session', memory.session):
         engine.recover_on_startup()
     assert inc.status == run.status == 'failed'
-    assert engine.q.empty()
+    assert not engine._scheduled

@@ -180,11 +180,18 @@ class Steer:
     texts: list[str] = field(default_factory=list)
     escalate: bool = False
     reroute: RerouteRequested | None = None
+    # C3 dispatch/v1: ids of the instruction messages whose text is appended to this call's prompt (same order as
+    # `texts`). Escalate requests change the model only and are listed separately; they never enter the prompt.
+    message_ids: list[int] = field(default_factory=list)
+    escalate_message_ids: list[int] = field(default_factory=list)
 
 
-def take(iid: int, role: str, level: str | None) -> Steer:
+def take(iid: int, role: str, level: str | None, call_id: str | None = None) -> Steer:
     """Consume pending chat at the boundary before `role`. A reroute stops consumption: later messages wait for the
-    first agent of the new group. Before routing (level None) a reroute message stays pending."""
+    first agent of the new group. Before routing (level None) a reroute message stays pending.
+
+    `call_id` (C3) is the agent call about to start; it is written on `operator_applied` so a delivered message can be
+    joined to that call's `agent_started.detail.dispatch`. A reroute means that call never starts, so it is not linked."""
     from .models import OperatorMessage
     out, consumed, refused = Steer(), [], []
     targeted: list[str] = []
@@ -217,8 +224,10 @@ def take(iid: int, role: str, level: str | None) -> Steer:
             consumed.append(m.id)
             if intent == "escalate":
                 out.escalate = True
+                out.escalate_message_ids.append(m.id)
             elif intent == "instruction":
                 out.texts.append(m.body)
+                out.message_ids.append(m.id)
             # cluster_change must use dry-run / side-effects / explicit confirmation, never the autonomous path.
     info = role_info(role)
     for mid, target in refused:
@@ -231,6 +240,11 @@ def take(iid: int, role: str, level: str | None) -> Steer:
         if targeted:
             detail["targeted_role"] = targeted[0] if len(set(targeted)) == 1 else targeted
             detail["fallback"] = any(t != role for t in targeted)
+        if call_id and out.reroute is None:
+            detail["call_id"] = call_id
+            detail["prompt_message_ids"] = list(out.message_ids)
+            if out.escalate_message_ids:
+                detail["escalate_message_ids"] = list(out.escalate_message_ids)
         runlog.emit(iid, "operator_applied", f"운영자 메시지 {len(consumed)}건을 {info['role_ko']}({role}) 시작 전에 반영했습니다.",
                     detail)
     return out

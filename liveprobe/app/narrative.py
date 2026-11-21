@@ -1,6 +1,9 @@
 """P15: the incident story for the war room — Korean headline, raw items with readings, flow graph."""
 from __future__ import annotations
 
+import json
+import math
+
 from sqlalchemy import select
 
 from .flowgraph import ACTION_KO, build_flow, signal_ko
@@ -10,7 +13,7 @@ from .interpret import DISPLAY_ONLY_KINDS, incident_items, readings
 from .models import INCIDENT_CLOSED_STATES, Action, AgentRun, Incident, OperatorCommand, RoutingDecision, RunEvent
 from .roles_ko import GROUP_KO, LEVEL_KO, role_info
 
-STAGE_KO = {"routing": "사건 수준 판단 중", "analyzing": "Agent 분석 중", "verifying": "결과 확인 중", "acting": "조치 실행 중",
+STAGE_KO = {"recovery_review": "서비스 복구 관측 · 운영자 소명 확인 대기", "routing": "사건 수준 판단 중", "analyzing": "Agent 분석 중", "verifying": "결과 확인 중", "acting": "조치 실행 중",
             "approval": "운영자 승인 대기", "resolved": "자동 복구 완료", "handed_off": "운영자 인계", "failed": "처리 실패",
             "closed": "운영자 종료", "collecting": "근거 수집 중"}
 
@@ -31,7 +34,7 @@ def stage_of(inc: Incident, routing: list, runs: list, events: list) -> dict:
         key = "verifying" if last_started in ("result_verifier", "group_verifier", "safety_verifier") else "analyzing"
     label = STAGE_KO[key]
     if key == 'resolved' and (inc.handoff or {}).get('observed_recovery'):
-        label = '정상 상태 확인 · 원인 미확정'
+        label = inc.status_reason if (inc.status_reason or '').startswith('정상 ·') else '정상 상태 확인 · 원인 미확정'
     if key in ("analyzing", "verifying"):
         role = next((e.detail.get("role") for e in reversed(events) if e.kind == "agent_started" and isinstance(e.detail, dict)), None)
         if role:
@@ -41,14 +44,23 @@ def stage_of(inc: Incident, routing: list, runs: list, events: list) -> dict:
 
 def _impact(items: list[dict], inc: Incident) -> str:
     parts = []
+    evidence = next((i for i in items if i["ref"] == "E6_metrics" and i.get("observed") is not False), None)
+    if evidence:
+        try:
+            metric = json.loads(evidence["raw"])
+            rate = (metric.get("http_5xx_rate_per_s") or {}).get(inc.workload)
+            if isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0:
+                parts.append(f"{inc.workload}에서 HTTP 5xx 요청 실패가 초당 {rate:g}건 관측되었습니다.")
+        except (ValueError, TypeError, AttributeError):
+            pass
+    svc = next((i for i in items if i["ref"] == "E3_service"), None)
+    if svc and svc.get("ko") and svc.get("severity") == "error":
+        parts.append(svc["ko"])
+        if len(parts) == 1:
+            parts.append("실제 요청 실패는 미확인입니다.")
     dep = next((i for i in items if i["ref"] == "E1_deployment"), None)
     if dep and dep.get("ko"):
         parts.append(dep["ko"])
-    svc = next((i for i in items if i["ref"] == "E3_service"), None)
-    if svc and svc.get("ko") and "0개" in svc["ko"]:
-        parts.append(svc["ko"])
-    if any(i["ref"] == "E7_error_logs" and i.get("ko") and ("503" in i["raw"] or "정상 대상" in i["ko"]) for i in items):
-        parts.append("호출하는 서비스에서 요청 실패(5xx)가 함께 관측되었습니다.")
     if not parts:
         parts.append(f"{inc.namespace}/{inc.workload}에서 이상 신호가 관측되었습니다. 영향 범위는 근거 수집 후 표시됩니다.")
     return " ".join(parts[:3])
@@ -58,7 +70,11 @@ def _next(inc: Incident, actions: list, commands: list) -> str:
     pending_cmd = next((c for c in commands if c.status in ("awaiting_confirmation", "awaiting_secret")), None)
     if pending_cmd:
         return "운영자 지시의 실행 계획과 부작용을 확인하고 진행 여부를 결정하세요."
+    if inc.status == "recovery_review":
+        return "감지와 회복의 소명 근거를 확인하고 최종 결정을 기록하세요."
     if inc.status == "resolved":
+        if (inc.status_reason or "").startswith("정상 ·"):
+            return "복구 소명 기록과 최종 결정 시각을 확인할 수 있습니다."
         if (inc.handoff or {}).get('observed_recovery'):
             return '두 관측에서 증상 해소를 확인했습니다. 원인은 미확정이며 AI가 복구 조치를 실행한 것은 아닙니다.'
         a = next((x for x in reversed(actions) if x.status == "succeeded"), None)
@@ -167,7 +183,9 @@ def build_narrative(s, iid: int, interpret_job: str | None = None) -> dict | Non
                 "recovery_kind": 'observed' if (inc.handoff or {}).get('observed_recovery') else None}
     flow = build_flow(s, iid, items + display_only + row_items)
     outcome = next((n for n in flow["nodes"] if n["id"] == "outcome"), None)
+    from .accountability import view as explanation_view
     return {
+        "accountability": explanation_view(s, inc),
         "incident": incident,
         "headline": {"what": what, "impact": _impact(items, inc), "stage": stage_of(inc, routing, runs, events),
                      "next": _next(inc, actions, commands), "remediation": remediation, "source": "rules"},

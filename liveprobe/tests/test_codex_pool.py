@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -135,6 +137,37 @@ def test_single_account_pool_waits_instead_of_switching():
     with pytest.raises(LLMError) as ei:
         call(p)
     assert ei.value.kind == "quota"
+
+
+def test_parallel_incidents_keep_their_own_account_events(monkeypatch):
+    from app import runlog
+    from app.config import AppConfig, Settings
+    from app.engine import Engine
+
+    entered_spare, release = threading.Event(), threading.Event()
+    emitted = []
+    monkeypatch.setattr(runlog, "emit", lambda iid, kind, msg, detail: emitted.append((iid, kind)))
+
+    class Spare:
+        def complete(self, role, *args):
+            if role == "slow":
+                entered_spare.set()
+                assert release.wait(5)
+            return LLMResult(text="{}", data={}, usage=Usage(), duration_ms=1, provider="fake", model="m")
+
+    provider, _ = pool(Fake(quota(60)), Spare())
+    eng = Engine(AppConfig(), Settings(), None, provider, None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        slow = executor.submit(eng._complete_waiting_for_quota, 1, "slow", "", {}, "m", None)
+        try:
+            assert entered_spare.wait(5)
+            eng._complete_waiting_for_quota(2, "fast", "", {}, "m", None)
+        finally:
+            release.set()
+        slow.result(timeout=5)
+
+    assert sorted(emitted) == [(1, "note"), (2, "account_switched")]
+    assert provider.drain_events() == []
 
 
 def test_empty_pool_is_a_config_error():

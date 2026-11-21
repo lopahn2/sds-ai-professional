@@ -299,7 +299,7 @@ def test_agent_and_verify_cards_and_planned_nodes_accept_steering(db_url):
     assert c["kind"] == "agent" and c["agent_run_id"] == v["agent_run_id"] and v["at"]
     assert c["summary_raw"].startswith("group_verifier:") and c["summary_ko"] is None
     # 영문 원인 후보에 모델 한국어 표기가 없으면 cause_ko는 None이며 영문 원문은 그대로 보존한다.
-    assert c["candidates"] == [{"cause_raw": "pool exhausted", "cause_ko": None, "confidence": 0.65, "verifier": "supported"}]
+    assert c["candidates"] == [{"cause_raw": "pool exhausted", "cause_ko": None, "confidence": 0.65, "verifier": "supported", "evidence_refs": ["E7"]}]
     assert c["verdict"] == "supported" and c["verdict_ko"] == "근거로 지지"
     assert c["next_action"] == "handoff" and c["next_action_ko"] == "운영자 인계"
     assert c["counter_evidence_count"] == 1 and c["error"] is None

@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 
 import httpx
 
+from .observation_sources import adapter_url
 from .config import AppConfig, Settings
 from .incidents import Signal
 from .redact import redact
@@ -85,7 +86,7 @@ def exception_query(namespaces: list[str], apps: list[str] | None = None) -> str
 
 def fetch_exceptions(settings: Settings, namespaces: list[str], start: float, end: float,
                      apps: list[str] | None = None) -> list[dict]:
-    response = httpx.get(settings.loki_url + '/loki/api/v1/query_range', timeout=8, params={
+    response = httpx.get(adapter_url(settings, 'loki') + '/loki/api/v1/query_range', timeout=8, params={
         'query': exception_query(namespaces, apps), 'start': str(int(start * 1e9)), 'end': str(int(end * 1e9)),
         'limit': 1000, 'direction': 'forward'})
     response.raise_for_status()

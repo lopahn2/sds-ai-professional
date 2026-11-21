@@ -159,17 +159,17 @@ def test_normal_runs_coordinator_when_not_confident_and_uses_group_models():
     fake = Fake({"k8s_analyst": good(confidence=0.7), "group_verifier": verifier()})
     res, events, _ = run("NORMAL", fake)
     by_role = {c[0]: (c[1], c[2]) for c in fake.calls}
-    assert by_role["k8s_analyst"] == ("gpt-6-astra", "high")
+    assert by_role["k8s_analyst"] == ("gpt-6.2-astra", "high")
     assert by_role["log_summarizer"] == ("gpt-6-luna", "low")
-    assert by_role["coordinator"] == ("gpt-6.1-sol", "medium")
+    assert by_role["coordinator"] == ("gpt-6.2-sol", "medium")
     assert res["primary_role"] == "coordinator" and res["status"] == "verified"
 
 
 def test_router_selected_model_applies_to_primary_role_only():
     fake = Fake({"group_verifier": verifier()})
-    run("NORMAL", fake, primary="gpt-6.1-sol")
+    run("NORMAL", fake, primary="gpt-6.2-sol")
     by_role = {c[0]: c[1] for c in fake.calls}
-    assert by_role["k8s_analyst"] == "gpt-6.1-sol" and by_role["group_verifier"] == "gpt-6.1-sol"
+    assert by_role["k8s_analyst"] == "gpt-6.2-sol" and by_role["group_verifier"] == "gpt-6.2-sol"
     assert by_role["log_summarizer"] == "gpt-6-luna"
 
 
@@ -179,8 +179,8 @@ def test_forged_citation_escalates_only_that_agent():
     res, events, ctl = run("NORMAL", fake)
     esc = [e for e in events if e["kind"] == "escalated"]
     assert len(esc) == 1 and esc[0]["role"] == "log_summarizer"
-    assert (esc[0]["from_model"], esc[0]["to_model"]) == ("gpt-6-luna", "gpt-6.1-sol")
-    assert [c for c in fake.calls if c[0] == "k8s_analyst"] == [("k8s_analyst", "gpt-6-astra", "high")]
+    assert (esc[0]["from_model"], esc[0]["to_model"]) == ("gpt-6-luna", "gpt-6.2-sol")
+    assert [c for c in fake.calls if c[0] == "k8s_analyst"] == [("k8s_analyst", "gpt-6.2-astra", "high")]
     assert res["status"] == "verified"
 
 
@@ -189,7 +189,7 @@ def test_top_of_ladder_escalates_effort_then_records_unavailable():
     fake = Fake({"k8s_analyst": ungrounded, "coordinator": ungrounded, "group_verifier": verifier()})
     res, events, _ = run("NORMAL", fake)
     esc = [e for e in events if e["kind"] == "escalated" and e["role"] == "k8s_analyst"]
-    assert esc and esc[0]["to_model"] == "gpt-6-astra" and esc[0]["to_effort"] == "xhigh"
+    assert esc and esc[0]["to_model"] == "gpt-6.2-astra" and esc[0]["to_effort"] == "xhigh"
     assert any(e["kind"] == "escalation_unresolved" for e in events)
     assert res["status"] != "verified" and res["root_cause_candidates"] == []
 
@@ -226,8 +226,8 @@ def test_complex_sequence_parallel_challenge_and_verify():
     assert any(e["kind"] == "early_stop" and e["stage"] == "challenge" for e in events)
     assert res["status"] == "verified" and res["recommended_steps"]
     models = {c[0]: c[1] for c in fake.calls}
-    assert models["cause_reasoner"] == "gpt-6-astra" and models["challenger"] == "gpt-6-astra"
-    assert models["recovery_planner"] == "gpt-6.1-sol"
+    assert models["cause_reasoner"] == "gpt-6.2-astra" and models["challenger"] == "gpt-6.2-astra"
+    assert models["recovery_planner"] == "gpt-6.2-sol"
 
 
 def test_complex_challenger_contradiction_revises_reasoner_once_escalated():
@@ -262,11 +262,11 @@ def test_cost_limit_is_checked_before_the_call():
 
 def test_unknown_price_refuses_call():
     cfg = AppConfig()
-    cfg.llm.prices.pop("gpt-6-astra")
+    cfg.llm.prices.pop("gpt-6.2-astra")
     fake = Fake({})
     res, events, _ = run("COMPLEX", fake, cfg=cfg)
     assert res["status"] == "stopped" and res["stop"][0]["kind"] == "cost_unknown"
-    assert all(c[1] != "gpt-6-astra" for c in fake.calls)
+    assert all(c[1] != "gpt-6.2-astra" for c in fake.calls)
 
 
 def test_missing_usage_is_charged_conservatively_not_zero():
@@ -439,3 +439,15 @@ def test_engine_group_budget_stop_hands_off_with_event(db_url, monkeypatch):
     roles = [c[0] for c in prov.calls]
     assert "k8s_analyst" not in roles and "group_verifier" not in roles  # refused before the call
     assert inc.handoff["budget"]["estimated_cost_usd"] <= 0.01
+
+def test_proposed_success_and_rollback_checks_are_display_data_only():
+    from app import proposals
+    from app.interpret import agent_items
+    from app.llm import ActionOut
+    action = ActionOut(type="rollout_restart", target="orders", impact_ko="주문 서비스에만 변경이 적용됩니다.",
+                       success_condition_ko="요청 실패율 감소를 확인합니다.",
+                       rollback_condition_ko="연결 오류가 늘면 변경을 중단합니다.").model_dump()
+    result = {"next_action": "act", "action": action}
+    assert proposals.resolve(result, "orders")["params"] == {}
+    items = {item["id"]: item for item in agent_items([{"id": 8, "role":"recovery_planner","output":result}])}
+    assert all(items[f"agent:8:action:{field}"]["raw"] == action[field] for field in proposals.PLAN_FIELDS)

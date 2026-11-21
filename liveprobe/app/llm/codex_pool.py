@@ -17,7 +17,9 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from .base import LLMError, LLMResult
@@ -71,6 +73,7 @@ class CodexPoolProvider:  # noqa: D101
         self.on_event, self.cooldown_s = on_event, cooldown_s
         self._lock = threading.Lock()
         self._events: list[tuple[str, dict]] = []
+        self._call_events: ContextVar[list | None] = ContextVar("codex_pool_call_events", default=None)
         self.active: str | None = accounts[0].name
 
     # ---- observable state (dashboard / tests)
@@ -86,10 +89,24 @@ class CodexPoolProvider:  # noqa: D101
             out, self._events = self._events, []
         return out
 
+    @contextmanager
+    def capture_events(self):
+        """Collect only this caller's account events, including failed attempts."""
+        events = []
+        token = self._call_events.set(events)
+        try:
+            yield events
+        finally:
+            self._call_events.reset(token)
+
     def _emit(self, kind: str, detail: dict) -> None:
-        with self._lock:
-            self._events.append((kind, detail))
-            del self._events[:-50]
+        events = self._call_events.get()
+        if events is None:
+            with self._lock:
+                self._events.append((kind, detail))
+                del self._events[:-50]
+        else:
+            events.append((kind, detail))
         if self.on_event:
             try:
                 self.on_event(kind, detail)
@@ -115,16 +132,19 @@ class CodexPoolProvider:  # noqa: D101
                     acct.calls += 1
                 res = attempt(acct.provider, role, prompt, schema, model, effort, timeout, account=acct.name)
             except LLMError as e:
-                acct.last_error_kind = e.kind
+                with self._lock:
+                    acct.last_error_kind = e.kind
                 if self._is_quota(e):
                     wait = e.reset_seconds or self.cooldown_s
                     with self._lock:
-                        acct.blocked_until, acct.quota_hits = self.clock() + wait, acct.quota_hits + 1
+                        acct.blocked_until = max(acct.blocked_until, self.clock() + wait)
+                        acct.quota_hits += 1
                     last_quota = e
                     self._emit("account_limited", {"account": acct.name, "blocked_for_s": round(wait)})
                     continue
                 if e.kind == "auth":
-                    acct.auth_failures += 1
+                    with self._lock:
+                        acct.auth_failures += 1
                     self._emit("account_auth_failed", {"account": acct.name})
                     last_quota = None
                     # an auth failure is not a limit: do not silently burn the spare on a bad primary login
@@ -132,10 +152,12 @@ class CodexPoolProvider:  # noqa: D101
                         raise
                     continue
                 raise
-            acct.last_error_kind = None
-            if self.active != acct.name:
-                self._emit("account_switched", {"from": self.active, "to": acct.name})
+            with self._lock:
+                acct.last_error_kind = None
+                previous = self.active
                 self.active = acct.name
+            if previous != acct.name:
+                self._emit("account_switched", {"from": previous, "to": acct.name})
             return res
         # nothing could serve the call
         wait = self.next_available_in()

@@ -150,7 +150,7 @@ class Kube:
         def svc_view(s: dict) -> dict:
             md, sp = s.get("metadata") or {}, s.get("spec") or {}
             return {"metadata": {"namespace": md.get("namespace"), "name": md.get("name"), "labels": md.get("labels") or {}},
-                    "spec": {"clusterIP": sp.get("clusterIP"), "selector": sp.get("selector") or {},
+                    "spec": {"type": sp.get("type"), "clusterIP": sp.get("clusterIP"), "selector": sp.get("selector") or {},
                              "ports": [{"port": x.get("port")} for x in sp.get("ports") or []]}}
         def ep_view(e: dict) -> dict:
             md = e.get("metadata") or {}
@@ -173,6 +173,7 @@ class Kube:
             md, sp, st = d.get("metadata") or {}, d.get("spec") or {}, d.get("status") or {}
             return {"metadata": {"namespace": md.get("namespace"), "name": md.get("name"), "labels": md.get("labels") or {}},
                     "spec": {"replicas": sp.get("replicas")},
+                    "pod_labels": ((sp.get("template") or {}).get("metadata") or {}).get("labels") or {},
                     "status": {"readyReplicas": st.get("readyReplicas", 0)}}
         errors: list[str] = []
         extra = {"ingresses": [], "deployments": [], "namespaces": []}

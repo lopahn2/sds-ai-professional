@@ -43,7 +43,7 @@ def test_agent_finish_requests_interpretation(db_url):
 
 
 @needs_db
-def test_narrative_poll_requests_idle_interpretation(db_url, monkeypatch):
+def test_narrative_poll_never_schedules_interpretation(db_url, monkeypatch):
     from fastapi.testclient import TestClient
     from app import config, main
     from app.models import Incident
@@ -73,9 +73,8 @@ def test_narrative_poll_requests_idle_interpretation(db_url, monkeypatch):
             assert c.get(f"/api/incidents/{quiet_id}/narrative").status_code == 200
         finally:
             main.STATE.pop("interpret", None)
-    assert rec.calls == [(iid, True)]
-    # Every war-room poll marks the incident as watched (live readings follow only watched incidents).
-    assert rec.views == [iid, quiet_id]
+    assert rec.calls == []
+    assert rec.views == []
     config.get_settings.cache_clear()
 
 
@@ -110,14 +109,10 @@ def settle(seconds=0.15):
     time.sleep(seconds)
 
 
-def test_pipeline_progress_does_not_spend_quota_on_unwatched_incidents():
+def test_pipeline_progress_updates_unwatched_incidents():
     fake = FakeInterpreter()
     w = worker(fake)
     try:
-        w.request(7)
-        settle()
-        assert fake.runs == []
-        w.seen(7)
         w.request(7)
         assert fake.ran.wait(2)
         assert fake.runs == [7]

@@ -11,6 +11,7 @@ from . import k8s as K
 from .config import AppConfig
 from .incidents import Signal
 from .flows import FlowStore
+from .service_health import read_backend
 from .network_signals import NetworkSignalAdapter
 
 log = logging.getLogger(__name__)
@@ -178,14 +179,26 @@ class Watchers:
     # --- endpoints -----------------------------------------------------------
     def poll_endpoints_once(self, now: float | None = None) -> None:
         now = now if now is not None else time.monotonic()
-        pods = self.kube.list_pods(self.ns)
-        for svc in self.kube.list_services(self.ns):
+        try:
+            pods = self.kube.list_pods(self.ns)
+            services = self.kube.list_services(self.ns)
+        except Exception:
+            self._empty_since.clear()
+            raise
+        live_services = {s["metadata"]["name"] for s in services}
+        self._empty_since = {n: ts for n, ts in self._empty_since.items() if n in live_services}
+        for svc in services:
             name = svc["metadata"]["name"]
             selector = (svc.get("spec") or {}).get("selector") or {}
-            if not selector:
+            if not selector or (svc.get("spec") or {}).get("type") == "ExternalName":
+                self._empty_since.pop(name, None)
                 continue
-            ready = K.ready_addresses(self.kube.get_endpoints(self.ns, name))
-            if ready > 0:
+            try:
+                backend = read_backend(self.kube, self.ns, svc)
+            except Exception:
+                self._empty_since.pop(name, None)
+                raise
+            if backend["backend_state"] != "missing":
                 self._empty_since.pop(name, None)
                 continue
             first = self._empty_since.setdefault(name, now)

@@ -20,9 +20,92 @@ class RoleModel(BaseModel):
 LLM_PROVIDERS = ("codex_cli", "claude_cli", "openai_api", "anthropic_api")
 
 
-# OpenAI tier lineup (2026-10-18): low = gpt-6-luna, mid = gpt-6.1-sol, high = gpt-6-astra.
-# Before 2026-10-18 the mid/high tiers were gpt-5.6-terra / gpt-6-sol (P10-P13 evaluation runs used those).
-GPT_LOW, GPT_MID, GPT_HIGH = "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"
+# OpenAI tier lineup (2026-11-18): low = gpt-6-luna, mid = gpt-6.2-sol, high = gpt-6.2-astra.
+# 2026-10-18..11-17 the mid/high tiers were gpt-6.1-sol / gpt-6-astra; before 2026-10-18 gpt-5.6-terra / gpt-6-sol
+# (P10-P13 evaluation runs used those). Recorded runs keep the model id they actually used.
+GPT_LOW, GPT_MID, GPT_HIGH = "gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-astra"
+
+# Stored settings / ConfigMaps / env written for the previous lineup are mapped to the current tier for NEW runs only.
+# Stored rows, run snapshots, AgentRun.model and recorded costs are never rewritten.
+LEGACY_MODEL_IDS = {"gpt-6.1-sol": GPT_MID, "gpt-6-astra": GPT_HIGH}
+
+
+def current_model_id(model: str | None) -> str | None:
+    """Map a previous-lineup id to the current tier id; anything else is returned unchanged."""
+    return LEGACY_MODEL_IDS.get(model, model) if isinstance(model, str) else model
+
+
+# OpenAI-side providers whose placements follow the GPT tier lineup. Anthropic placements are never touched.
+_OPENAI_PROVIDERS = ("codex_cli", "openai_api")
+
+
+def _placed(rm: Any) -> Any:
+    """One RoleModel-shaped placement ({model, effort}) with a previous-lineup model id mapped; other data as is."""
+    if isinstance(rm, dict) and rm.get("model") in LEGACY_MODEL_IDS:
+        return {**rm, "model": current_model_id(rm["model"])}
+    return rm
+
+
+def _placed_roles(roles: Any) -> Any:
+    return {name: _placed(rm) for name, rm in roles.items()} if isinstance(roles, dict) else roles
+
+
+def _estimate_keys(table: Any) -> Any:
+    """Per-model estimate table: rename a previous-lineup key unless the current id is already listed."""
+    if not isinstance(table, dict):
+        return table
+    out = {}
+    for key, value in table.items():
+        mapped = current_model_id(key)
+        if mapped != key and mapped in table:
+            continue
+        out[mapped] = value
+    return out
+
+
+def current_lineup(data: Any) -> Any:
+    """Config data (ConfigMap YAML) with previous-lineup model ids mapped to the current tier for NEW runs.
+
+    Only model placement fields change: ``llm.roles.*.model``, ``llm.provider_roles.{codex_cli,openai_api}.*.model``,
+    ``assist.*.model``, ``workflows.group_roles.openai.*.model``, ``workflows.model_ladder.openai`` entries and the
+    ``router.model_quality`` / ``router.model_throughput`` keys. Everything else -- services, namespaces, dependency
+    and action allowlists, other providers, policies and ``llm.prices`` (kept so costs of runs recorded with the
+    previous ids stay estimable at that version's price) -- is returned exactly as given.
+    """
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    llm = out.get("llm")
+    if isinstance(llm, dict):
+        llm = dict(llm)
+        if "roles" in llm:
+            llm["roles"] = _placed_roles(llm["roles"])
+        if isinstance(llm.get("provider_roles"), dict):
+            llm["provider_roles"] = {p: _placed_roles(r) if p in _OPENAI_PROVIDERS else r
+                                     for p, r in llm["provider_roles"].items()}
+        out["llm"] = llm
+    assist = out.get("assist")
+    if isinstance(assist, dict):
+        out["assist"] = {name: _placed(rm) for name, rm in assist.items()}
+    workflows = out.get("workflows")
+    if isinstance(workflows, dict):
+        workflows = dict(workflows)
+        ladder = workflows.get("model_ladder")
+        if isinstance(ladder, dict) and isinstance(ladder.get("openai"), list):
+            mapped = [current_model_id(m) for m in ladder["openai"]]
+            workflows["model_ladder"] = {**ladder, "openai": list(dict.fromkeys(mapped))}
+        groups = workflows.get("group_roles")
+        if isinstance(groups, dict) and "openai" in groups:
+            workflows["group_roles"] = {**groups, "openai": _placed_roles(groups["openai"])}
+        out["workflows"] = workflows
+    router = out.get("router")
+    if isinstance(router, dict):
+        router = dict(router)
+        for table in ("model_quality", "model_throughput"):
+            if table in router:
+                router[table] = _estimate_keys(router[table])
+        out["router"] = router
+    return out
 
 
 def _openai_roles() -> dict[str, RoleModel]:
@@ -51,13 +134,21 @@ def _anthropic_roles() -> dict[str, RoleModel]:
 # Sources fetched 2026-09-26: https://developers.openai.com/api/docs/pricing and
 # https://platform.claude.com/docs/en/about-claude/pricing . Models not listed -> cost unknown (None).
 # gpt-6.1-sol / gpt-6-astra fetched 2026-10-18 from developers.openai.com/api/docs/models/<id>.
+# gpt-6.2-sol / gpt-6.2-astra fetched 2026-11-18 (Standard, short context) from the model pages below.
 # For subscription CLIs (codex_cli / claude_cli) this is an API-equivalent estimate, not a bill.
-PRICES_VERSION = "2026-10-18"
+PRICES_VERSION = "2026-11-18"
+PRICE_SOURCES = {
+    "gpt-6.2-sol": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+    "gpt-6.2-astra": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+}
 
 
 def _default_prices() -> dict[str, dict[str, float]]:
     return {
         "gpt-6-luna": {"input": 0.10, "cached_input": 0.01, "output": 0.50},
+        "gpt-6.2-sol": {"input": 2.00, "cached_input": 0.10, "output": 10.00},
+        "gpt-6.2-astra": {"input": 8.00, "cached_input": 0.40, "output": 40.00},
+        # 2026-10-18 lineup prices (that version's source), kept only to estimate costs of runs recorded with those ids
         "gpt-6.1-sol": {"input": 2.00, "cached_input": 0.10, "output": 10.00},
         "gpt-6-astra": {"input": 10.00, "cached_input": 1.00, "output": 50.00},
         # previous lineup, kept so costs of earlier recorded runs can still be estimated
@@ -375,6 +466,9 @@ class Settings(BaseSettings):
     prometheus_url: str = "http://prometheus.liveprobe-observability.svc:9090"
     loki_url: str = "http://loki.liveprobe-observability.svc:3100"
 
+    # Named deployment-approved alternative origins for the existing read-only adapters.
+    observation_locations: dict[str, dict[str, str]] = Field(default_factory=dict)
+
     background: bool = True  # watcher + worker threads
     kube_in_cluster: bool = True
 
@@ -428,7 +522,8 @@ def load_app_config(path: str | None = None) -> AppConfig:
     data: dict[str, Any] = {}
     if p.exists():
         data = yaml.safe_load(p.read_text()) or {}
-    return AppConfig.model_validate(data)
+    # A ConfigMap written for the previous lineup keeps working: new runs use the current tier ids.
+    return AppConfig.model_validate(current_lineup(data))
 
 
 @functools.lru_cache

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.main import ALERT_KIND, alert_signal
-from conftest import family1_kube
+from conftest import family1_kube, family4_kube
 
 
 @pytest.mark.parametrize("name,labels,expected", [
@@ -20,7 +20,8 @@ from conftest import family1_kube
 def test_each_alert_maps_to_expected_workload(name, labels, expected):
     assert name in ALERT_KIND
     signal = alert_signal({"labels": {"alertname": name, "namespace": "liveprobe-target", **labels}},
-                          SimpleNamespace(target_namespaces=["liveprobe-target"]), family1_kube())
+                          SimpleNamespace(target_namespaces=["liveprobe-target"]),
+                          family4_kube() if name == "TargetServiceNoEndpoints" else family1_kube())
     assert signal is not None
     assert (signal.kind, signal.name) == expected
     assert signal.reason == name

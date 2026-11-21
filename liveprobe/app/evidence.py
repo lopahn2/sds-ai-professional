@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -14,8 +15,10 @@ from typing import Any
 
 import httpx
 
+from .observation_sources import adapter_url
 from . import k8s as K
 from .config import AppConfig, Settings
+from .service_health import read_backend
 from .redact import redact, redact_obj
 
 log = logging.getLogger(__name__)
@@ -68,6 +71,26 @@ class Bundle:
                                        collected_at or utcnow(), supporting))
 
 
+def storage_summary(template: dict) -> dict:
+    """Pod 교체로 사라지는 공간인지 관측한다. 데이터 삭제 허가는 추론하지 않는다."""
+    spec = template.get("spec") or {}
+    volumes = []
+    for v in spec.get("volumes") or []:
+        kinds = [k for k in v if k != "name"]
+        kind = kinds[0] if len(kinds) == 1 else "unknown"
+        entry = {"name": v.get("name"), "kind": kind,
+                 "persists_across_pod_replacement": False if kind == "emptyDir" else
+                     True if kind in ("persistentVolumeClaim", "nfs") else None}
+        if kind == "emptyDir":
+            entry.update(medium=(v[kind] or {}).get("medium", ""),
+                         size_limit=(v[kind] or {}).get("sizeLimit"))
+        volumes.append(entry)
+    mounts = [{"container": c.get("name"), "volume": m.get("name"),
+               "mount_path": m.get("mountPath"), "read_only": bool(m.get("readOnly", False))}
+              for c in spec.get("containers") or [] for m in c.get("volumeMounts") or []]
+    return {"volumes": volumes, "mounts": mounts}
+
+
 def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
     d = kube.get_deployment(ns, name)
     if not d:
@@ -83,6 +106,7 @@ def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
     st = d.get("status") or {}
     cur_rev = K.revision_of(d)
     cur = next((r for r in revs if r["revision"] == cur_rev), None)
+    previous = next((r for r in revs if r["revision"] < cur_rev), None)
     # Kubernetes can reuse an old ReplicaSet when a template is re-applied. Its
     # creation time then predates this rollout; Progressing.lastUpdateTime tracks
     # the current Deployment update instead.
@@ -91,6 +115,16 @@ def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
         cur["created"] if cur else None, progressing.get("lastUpdateTime"))]
     rollout_at = max((t for t in rollout_times if t is not None), default=None)
     return {
+        # Keep the immediate predecessor's observed state available even when long history is abridged.
+        # This is evidence, not a claim that rollback is safe or authorized.
+        "revision_context": {
+            "current_revision": cur_rev,
+            "previous_revision": previous["revision"] if previous else None,
+            "previous_available": previous["available"] if previous else None,
+            "previous_replicas": previous["replicas"] if previous else None,
+            "previous_replicaset": previous["replicaset"] if previous else None,
+            "previous_images": previous["images"] if previous else [],
+        },
         "name": name,
         "selector": (d["spec"].get("selector") or {}).get("matchLabels") or {},
         "configmap_refs": K.configmap_refs(d["spec"]["template"]),
@@ -98,6 +132,7 @@ def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
         "resources": {c.get("name"): {"limits": (c.get("resources") or {}).get("limits") or {},
                                       "requests": (c.get("resources") or {}).get("requests") or {}}
                       for c in (d["spec"]["template"].get("spec") or {}).get("containers") or []},
+        "storage": storage_summary(d["spec"]["template"]),
         "replicas": d["spec"].get("replicas", 1),
         "updated_replicas": st.get("updatedReplicas", 0) or 0,
         "ready_replicas": st.get("readyReplicas", 0) or 0,
@@ -119,17 +154,17 @@ def service_summary(kube: K.Kube, ns: str, name: str, pods: list[dict] | None = 
     selector = (svc.get("spec") or {}).get("selector") or {}
     all_pods = pods if pods is not None else kube.list_pods(ns)
     matching = [p["metadata"]["name"] for p in all_pods if K.labels_match(selector, p["metadata"].get("labels") or {})]
-    ep = kube.get_endpoints(ns, name)
+    backend = read_backend(kube, ns, svc)
     # pods that look like they *should* back this service (label app=<service name>)
     expected = [p["metadata"]["name"] for p in all_pods if (p["metadata"].get("labels") or {}).get("app") == name]
     return {
-        "name": name, "selector": selector, "matching_pods": matching,
-        "pods_labeled_app_eq_service": expected, "ready_endpoints": K.ready_addresses(ep),
+        "name": name, "uid": (svc.get("metadata") or {}).get("uid"), "selector": selector, "matching_pods": matching, **backend,
+        "pods_labeled_app_eq_service": expected,
     }
 
 
 def _prom(settings: Settings, q: str) -> list[dict]:
-    r = httpx.get(f"{settings.prometheus_url}/api/v1/query", params={"query": q}, timeout=8)
+    r = httpx.get(f"{adapter_url(settings, 'prometheus')}/api/v1/query", params={"query": q}, timeout=8)
     r.raise_for_status()
     return r.json()["data"]["result"]
 
@@ -152,7 +187,7 @@ def loki_query(ns: str, apps: list[str]) -> str:
 
 def _loki(settings: Settings, ns: str, apps: list[str], start: datetime, end: datetime,
           limit: int = LOKI_LIMIT) -> list[str]:
-    r = httpx.get(f"{settings.loki_url}/loki/api/v1/query_range", timeout=8, params={
+    r = httpx.get(f"{adapter_url(settings, 'loki')}/loki/api/v1/query_range", timeout=8, params={
         "query": loki_query(ns, apps), "limit": limit, "direction": "backward",
         "start": str(int(start.timestamp() * 1e9)), "end": str(int(end.timestamp() * 1e9)),
     })
@@ -185,10 +220,18 @@ PROM_QUERIES = {
     "pool_max": 'max by (app) (hikaricp_connections_max{namespace="%(ns)s"})',
     "pool_pending": 'max by (app) (hikaricp_connections_pending{namespace="%(ns)s"})',
     "pool_timeouts": 'sum by (app) (increase(hikaricp_connections_timeout_total{namespace="%(ns)s"}[5m]))',
+    # 컨테이너별 지표가 없는 런타임은 파드 cgroup 합계를 사용한다. 둘을 더하지 않는다.
+    "pod_cpu_usage_cores": 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="%(ns)s",container!="",container!="POD"}[1m])) '
+        'or sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="%(ns)s",container="",pod!=""}[1m]))',
+    "pod_memory_working_set_bytes": 'sum by (pod) (container_memory_working_set_bytes{namespace="%(ns)s",container!="",container!="POD"}) '
+        'or sum by (pod) (container_memory_working_set_bytes{namespace="%(ns)s",container="",pod!=""})',
+    "pod_cpu_throttled_ratio": 'sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="%(ns)s",container!="",container!="POD"}[1m])) '
+        '/ sum by (pod) (rate(container_cpu_cfs_periods_total{namespace="%(ns)s",container!="",container!="POD"}[1m]))',
 }
 
 
 CORE_PROM = ("http_5xx", "http_all", "restarts")
+RESOURCE_PROM = ("pod_cpu_usage_cores", "pod_memory_working_set_bytes", "pod_cpu_throttled_ratio")
 
 
 def _err(e: Exception) -> str:
@@ -251,7 +294,8 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
         b.service = service_summary(kube, ns, workload, all_pods)
         if b.service is not None:
             b.add("service", f"{ns}/Service/{workload}", b.service)
-            b.add("endpoints", f"{ns}/Endpoints/{workload}", {"ready_addresses": b.service["ready_endpoints"]})
+            b.add("endpoints", f"{ns}/Endpoints/{workload}", {"ready_addresses": b.service["ready_endpoints"],
+                                                            "backend_state": b.service["backend_state"]})
         else:
             b.add("service", f"{ns}/Service/{workload}", {"exists": False})
     except Exception as e:  # noqa: BLE001
@@ -272,7 +316,7 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
             if n in names or any(n.startswith(f"{w}-") for w in names):
                 evs.append({
                     "last": e.get("lastTimestamp") or e.get("eventTime") or (e.get("metadata") or {}).get("creationTimestamp"),
-                    "type": e.get("type"), "reason": e.get("reason"), "object": f"{io.get('kind')}/{n}",
+                    "type": e.get("type"), "reason": e.get("reason"), "object": f"{io.get('kind')}/{n}", "uid": io.get("uid"),
                     "message": e.get("message") or "", "count": e.get("count") or (e.get("series") or {}).get("count") or 1,
                 })
         evs.sort(key=lambda x: str(x["last"] or ""), reverse=True)
@@ -309,6 +353,8 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
             meta = kube.configmap_meta(ns, name)
             if meta is not None:
                 approved = cfg.safe_actions.configmap_versions.get(name) or []
+                # 복원 가능한 버전의 식별자와 지문만 전달하며 설정 값은 노출하지 않는다.
+                meta["approved_versions"] = [{"name": v.name, "sha256": v.sha256} for v in approved]
                 meta["approved_version_matches"] = (not meta["binary_keys"] and any(v.sha256 == meta["data_sha256"] for v in approved)
                                                      if approved else None)
                 b.configs.append(meta)
@@ -331,17 +377,20 @@ def _collect_prom(settings: Settings, ns: str, workload: str, apps: list[str], d
     try:
         evaluated_at = utcnow()
         res = {k: query(q) for k, q in queries.items() if k in CORE_PROM}
+        resource_errors = []
         for k, q in queries.items():          # optional series: a failure here must not hide the core metrics
             if k not in CORE_PROM:
                 try:
                     res[k] = query(q)
-                except Exception:  # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
                     res[k] = []
+                    if k in RESOURCE_PROM:
+                        resource_errors.append(f"{k}: {type(e).__name__}")
         m5 = {r["metric"].get("app", "?"): round(float(r["value"][1]), 4) for r in res["http_5xx"]}
         ma = {r["metric"].get("app", "?"): round(float(r["value"][1]), 4) for r in res["http_all"]}
         b.metrics = {
-            "http_5xx_rate_per_s": {a: m5.get(a, 0.0) for a in apps},
-            "http_rate_per_s": {a: ma.get(a, 0.0) for a in apps},
+            "http_5xx_rate_per_s": {a: m5[a] for a in apps if a in m5},
+            "http_rate_per_s": {a: ma[a] for a in apps if a in ma},
             "restarts": {r["metric"].get("pod", "?"): int(float(r["value"][1])) for r in res["restarts"]
                          if r["metric"].get("pod", "").startswith(tuple(apps))},
         }
@@ -354,6 +403,23 @@ def _collect_prom(settings: Settings, ns: str, workload: str, apps: list[str], d
                 if a in apps and v == v:          # skip NaN (0/0 latency when there is no traffic)
                     vals[a] = round(v, 1)
             b.metrics[out] = vals
+        for key in RESOURCE_PROM:
+            vals = {}
+            for row in res.get(key) or []:
+                try:
+                    pod = row["metric"].get("pod", "")
+                    value = float(row["value"][1])
+                    if not isinstance(pod, str):
+                        raise ValueError("invalid pod label")
+                except (KeyError, TypeError, ValueError, IndexError, OverflowError, AttributeError):
+                    code = f"{key}: InvalidSample"
+                    if code not in resource_errors:
+                        resource_errors.append(code)
+                    continue
+                if pod.startswith(tuple(a + "-" for a in apps)) and math.isfinite(value) and value >= 0:
+                    vals[pod] = round(value, 6)
+            b.metrics[key] = vals
+        b.metrics["pod_resource_collection_errors"] = resource_errors
         b.add("prometheus", f"{ns}/{','.join(apps)}",
               {**b.metrics, "_query": {"evaluated_at": evaluated_at.isoformat(), "range": "1m",
                                        "promql": queries}})
@@ -481,6 +547,11 @@ def collect(kube: K.Kube, cfg: AppConfig, settings: Settings, ns: str, workload:
 def compact_summary(b: Bundle) -> dict:
     """Compact, LLM-friendly view of the bundle with stable evidence reference ids.
     Redacted again because this is what is embedded into LLM prompts."""
+    # 삭제된 파드의 cAdvisor 시계열은 잠시 남는다. 현재 수집한 파드만 모델에 전달한다.
+    current_pods = {p.get("name") for p in b.pods}
+    metrics = {k: ({pod: value for pod, value in v.items() if pod in current_pods}
+                   if k in RESOURCE_PROM and isinstance(v, dict) else v)
+               for k, v in b.metrics.items()}
     return redact_obj({
         "note": UNTRUSTED_NOTE,
         "E1_deployment": b.deployment,
@@ -488,7 +559,7 @@ def compact_summary(b: Bundle) -> dict:
         "E3_service": b.service,
         "E4_callers": b.callers,
         "E5_recent_events": b.events[:12],
-        "E6_metrics": b.metrics,
+        "E6_metrics": metrics,
         "E7_error_logs": b.logs[:15],
         "E8_node": b.nodes,
         "E9_config": b.configs,

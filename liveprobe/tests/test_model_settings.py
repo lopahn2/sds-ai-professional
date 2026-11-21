@@ -27,8 +27,8 @@ def test_model_settings_defaults_and_save_survive_fresh_read(client):
 @pytest.mark.parametrize('level,role,model,effort,mode', [
     ('SIMPLE', 'result_verifier', 'gpt-6-luna', 'low', 'router'),
     ('NORMAL', 'group_verifier', 'gpt-6-luna', 'medium', 'router'),
-    ('COMPLEX', 'challenger', 'gpt-6.1-sol', 'high', 'router'),
-    ('HIGH_RISK', 'safety_verifier', 'gpt-6-astra', 'low', 'router'),
+    ('COMPLEX', 'challenger', 'gpt-6.2-sol', 'high', 'router'),
+    ('HIGH_RISK', 'safety_verifier', 'gpt-6.2-astra', 'low', 'router'),
     ('NORMAL', 'k8s_analyst', 'gpt-6-luna', 'low', 'fixed'),
 ])
 def test_rejects_reduced_verification_or_below_floor_primary(client, level, role, model, effort, mode):
@@ -65,19 +65,19 @@ def test_snapshot_separates_group_roles_and_freezes_revision(client):
     body['groups']['NORMAL']['roles']['group_verifier']['effort'] = 'high'
     body['groups']['COMPLEX']['roles']['group_verifier']['effort'] = 'xhigh'
     body['groups']['NORMAL']['primary_mode'] = 'fixed'
-    body['groups']['NORMAL']['roles']['k8s_analyst']['model'] = 'gpt-6.1-sol'
+    body['groups']['NORMAL']['roles']['k8s_analyst']['model'] = 'gpt-6.2-sol'
     assert client.put('/api/model-settings', json=body).status_code == 200
     with db.session() as s:
         frozen, snapshot = M.snapshot_config(s, cfg)
-    policy = {'selected_model': 'gpt-6-astra', 'candidates': []}
+    policy = {'selected_model': 'gpt-6.2-astra', 'candidates': []}
     normal, np = M.apply_group(frozen, snapshot, 'NORMAL', policy)
     complex_, cp = M.apply_group(frozen, snapshot, 'COMPLEX', policy)
     assert normal.llm.roles['group_verifier'].effort == 'high'
     assert complex_.llm.roles['group_verifier'].effort == 'xhigh'
-    assert np['selected_model'] == 'gpt-6.1-sol'
+    assert np['selected_model'] == 'gpt-6.2-sol'
     assert np['model_settings']['primary_mode'] == 'fixed'
-    assert cp['selected_model'] == 'gpt-6-astra'
-    assert cp['model_settings']['roles']['cause_reasoner']['model'] == 'gpt-6-astra'
+    assert cp['selected_model'] == 'gpt-6.2-astra'
+    assert cp['model_settings']['roles']['cause_reasoner']['model'] == 'gpt-6.2-astra'
     body['expected_revision'] = 1
     body['groups']['NORMAL']['roles']['group_verifier']['effort'] = 'medium'
     assert client.put('/api/model-settings', json=body).status_code == 200
@@ -145,7 +145,7 @@ def test_default_revision_zero_is_captured_and_recorded_before_first_save(db_url
     active, policy = M.apply_group(frozen, snapshot, 'SIMPLE', {'selected_model': 'gpt-6-luna'})
     assert policy['model_settings']['revision'] == 0
     assert policy['model_settings']['roles']['signal_analyst']['model'] == 'gpt-6-luna'
-    assert active.llm.roles['result_verifier'].model == 'gpt-6.1-sol'
+    assert active.llm.roles['result_verifier'].model == 'gpt-6.2-sol'
 
 
 def test_router_only_model_requires_known_price():
@@ -157,7 +157,7 @@ def test_router_only_model_requires_known_price():
     for group in value['groups'].values():
         for placement in group['roles'].values():
             if placement['model'] == 'gpt-6-luna':
-                placement['model'] = 'gpt-6.1-sol'
+                placement['model'] = 'gpt-6.2-sol'
     cfg.llm.prices.pop('gpt-6-luna')
     body = M.ModelSettingsIn(expected_revision=0, **value)
     with pytest.raises(ValueError, match='가격'):
@@ -168,7 +168,7 @@ def test_registered_model_missing_from_escalation_ladder_is_rejected():
     from app import model_settings as M
     from app.config import AppConfig
     cfg = AppConfig()
-    cfg.workflows.model_ladder['openai'] = ['gpt-6-luna', 'gpt-6-astra']
+    cfg.workflows.model_ladder['openai'] = ['gpt-6-luna', 'gpt-6.2-astra']
     body = M.ModelSettingsIn(expected_revision=0, **M.defaults(cfg))
     with pytest.raises(ValueError, match='승격'):
         M.validate_settings(cfg, body)
@@ -189,3 +189,50 @@ def test_concurrent_first_save_has_one_winner(client):
             return 'conflict'
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(attempt, range(2))) == ['conflict', 'saved']
+
+
+def test_previous_lineup_row_runs_on_current_ids_without_rewriting_the_row(client):
+    """2026-11-18: a row saved with gpt-6.1-sol / gpt-6-astra is shown and run with the current ids; the row stays."""
+    import copy
+    from app import db, model_settings as M
+    from app.config import AppConfig
+    from app.models import Setting
+    initial = client.get('/api/model-settings').json()
+    body = {'expected_revision': 0, 'router': initial['router'], 'groups': initial['groups']}
+    assert client.put('/api/model-settings', json=body).status_code == 200
+    with db.session() as s:
+        row = s.get(Setting, M.KEY)
+        value = copy.deepcopy(row.value)
+        for group in value['groups'].values():
+            for placement in group['roles'].values():
+                placement['model'] = {'gpt-6.2-sol': 'gpt-6.1-sol', 'gpt-6.2-astra': 'gpt-6-astra'}.get(placement['model'], placement['model'])
+        value['assist'] = {'code_fixer': {'model': 'gpt-6.1-sol', 'effort': 'high'}}
+        row.value = value
+        stored = copy.deepcopy(value)
+    shown = client.get('/api/model-settings').json()
+    assert shown['legacy_normalized'] is True
+    assert shown['groups']['HIGH_RISK']['roles']['safety_verifier']['model'] == 'gpt-6.2-astra'
+    assert shown['assist']['code_fixer']['model'] == 'gpt-6.2-sol'
+    assert {c['model'] for c in shown['catalog']} == {'gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra'}
+    assert next(c for c in shown['catalog'] if c['model'] == 'gpt-6.2-astra')['price'] == {'input': 8.0, 'cached_input': 0.4, 'output': 40.0}
+    assert shown['prices_version'] == '2026-11-18'
+    with db.session() as s:
+        frozen, snapshot = M.snapshot_config(s, AppConfig())
+        assert s.get(Setting, M.KEY).value == stored, 'reading must not rewrite the stored row'
+    models = {rm['model'] for g in snapshot['groups'].values() for rm in g['roles'].values()}
+    assert models <= {'gpt-6-luna', 'gpt-6.2-sol', 'gpt-6.2-astra'}
+    # A save from the screen (current ids, same revision) succeeds and then records the current ids.
+    saved = client.put('/api/model-settings', json={'expected_revision': shown['revision'], 'router': shown['router'],
+                                                     'groups': shown['groups'], 'assist': shown['assist']})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['legacy_normalized'] is False
+
+
+def test_recorded_previous_lineup_costs_stay_estimable():
+    from app.config import AppConfig
+    from app.llm import estimate_cost
+    from app.llm.base import Usage
+    cfg = AppConfig()
+    # Runs recorded with the previous ids keep that version's price; the new ids carry the 2026-11-18 price.
+    assert estimate_cost(cfg, 'gpt-6-astra', Usage(input_tokens=1_000_000, output_tokens=0)) == pytest.approx(10.0)
+    assert estimate_cost(cfg, 'gpt-6.2-astra', Usage(input_tokens=1_000_000, output_tokens=0)) == pytest.approx(8.0)

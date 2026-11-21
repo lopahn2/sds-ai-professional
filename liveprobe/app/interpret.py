@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any
 
+from .proposals import PLAN_FIELDS
 from .redact import redact
 
 SOURCE_OF = {"E1": "kubernetes", "E2": "kubernetes", "E3": "kubernetes", "E4": "prometheus", "E5": "kubernetes",
@@ -64,7 +65,8 @@ def raw_items(bundle: dict) -> list[dict]:
 
     svc = b.get("E3_service")
     if svc:
-        sev = "error" if svc.get("ready_endpoints") == 0 or svc.get("exists") is False else "info"
+        from .service_health import service_state
+        sev = "error" if service_state(svc) == "missing" else "info"
         out.append(_item("E3_service#0", "E3_service", _dump(svc), severity=sev))
 
     callers = b.get("E4_callers")
@@ -133,6 +135,22 @@ def agent_items(runs: list[dict]) -> list[dict]:
             cause = c.get("cause") or c.get("statement") or ""
             if cause:
                 text += f"\n- {cause} (confidence {c.get('confidence')})"
+        parts = [(f"cause:{i}", c.get("cause") or c.get("statement"), c.get("cause_ko"))
+                 for i, c in enumerate(cands[:3]) if isinstance(c, dict)]
+        parts += [(f"counter:{i}", value, None) for i, value in enumerate((o.get("counter_evidence") or [])[:12])]
+        parts += [(f"verdict:{i}", row.get("reason"), row.get("reason_ko"))
+                  for i, row in enumerate((o.get("candidate_verdicts") or [])[:12]) if isinstance(row, dict)]
+        parts += [(f"plan:{i}", value, None) for i, value in enumerate((o.get("recommended_steps") or [])[:10])]
+        action = o.get("action")
+        if isinstance(action, dict):
+            parts.extend((f"action:{field}", action.get(field), None) for field in PLAN_FIELDS)
+        for key, raw, hint in parts:
+            if isinstance(raw, str) and raw.strip():
+                part = _item(f"agent:{r.get('id')}:{key}", "decision", raw, kind="agent_detail",
+                             at=r.get("created_at"), source=f"agent:{r.get('role')}")
+                if hint:
+                    part["ko_hint"] = hint
+                out.append(part)
         if not text.strip():
             continue
         item = _item(f"agent:{r.get('id')}", f"agent:{r.get('role')}", text, at=r.get("created_at"),
@@ -235,10 +253,17 @@ def _status_ko(item: dict) -> str | None:
     ref = item.get("ref", "")
     if ref in ("code_refs", "E8_code_refs") and isinstance(v, dict):
         return _code_refs_ko(v)
+    if ref == "E3_service" and isinstance(v, dict):
+        descriptions = {"manual": "선택자가 없는 Service입니다. 연결 대상은 별도로 관리합니다.",
+                        "external_name": "외부 DNS 이름으로 연결하는 Service입니다.",
+                        "scaled_down": "연결된 Deployment의 목표 Pod 수가 0개입니다.",
+                        "unknown": "준비된 연결 대상 수를 관측하지 못했습니다."}
+        if v.get("backend_state") in descriptions:
+            return descriptions[v["backend_state"]]
     if ref == "E3_service" and isinstance(v, dict) and "ready_addresses" in v and "ready_endpoints" not in v:
         n = v.get("ready_addresses")
         if n == 0:
-            return "엔드포인트에 준비된 주소가 0개라 요청을 받을 Pod가 없습니다."
+            return "준비된 엔드포인트 주소가 0개입니다."
         if isinstance(n, int):
             return f"엔드포인트에 준비된 주소가 {n}개 등록되어 있습니다."
     if ref == "E3_service" and isinstance(v, dict):
@@ -246,9 +271,9 @@ def _status_ko(item: dict) -> str | None:
             return "이 이름의 Service가 없습니다."
         n = v.get("ready_endpoints")
         if n == 0:
-            return "Service에 연결 대상(엔드포인트)이 0개라 요청을 받을 Pod가 없습니다."
+            return "Service에 준비된 연결 대상(엔드포인트)이 0개입니다."
         if isinstance(n, int):
-            return f"Service가 정상 연결 대상(엔드포인트) {n}개로 요청을 받고 있습니다."
+            return f"Service에 준비된 연결 대상(엔드포인트)이 {n}개입니다."
     if ref == "E1_deployment" and isinstance(v, dict):
         ready, want = v.get("ready_replicas"), v.get("replicas")
         if want is not None:
@@ -307,7 +332,7 @@ def rule_ko(item: dict) -> str | None:
     raw = item.get("raw") or ""
     # agent conclusions, routing decisions and hand-off texts: Korean text is its own reading; known decision
     # sentences have fixed readings; everything else is read whole by the interpreter, never by pattern.
-    if kind in ("agent", "decision", "handoff"):
+    if kind in ("agent", "decision", "handoff", "agent_detail"):
         return korean_self_ko(raw) or (status_reason_ko(raw) if kind in ("decision", "handoff") else None)
     if kind == "metric":
         return None
@@ -345,7 +370,7 @@ def bundle_from_evidence(evidence: list[Any]) -> dict:
     return b
 
 
-DISPLAY_ONLY_KINDS = ("decision", "handoff")     # P18 W6: card/handoff text only, never listed as evidence
+DISPLAY_ONLY_KINDS = ("decision", "handoff", "agent_detail")     # P18 W6: card/handoff text only, never listed as evidence
 
 
 def decision_items(routing: list[Any], runs: list[Any]) -> list[dict]:
@@ -426,6 +451,7 @@ class Interpreter:
 
     def __init__(self, cfg, provider):
         self.cfg, self.provider = cfg, provider
+        self.has_more = False
 
     def wait_s(self) -> float:
         """Seconds until any account can take a call (0 when one is available or the provider cannot tell)."""
@@ -442,6 +468,7 @@ class Interpreter:
         from .llm import estimate_cost
         from .llm.base import Usage
         from .models import AgentRun, Interpretation
+        self.has_more = False
         a = self.cfg.assist
         if not a.interpret_enabled:
             return 0
@@ -450,7 +477,27 @@ class Interpreter:
             return 0
         with db.session() as s:
             items = incident_items(s, iid)
-            have = {(r.item_key, r.raw_sha256) for r in s.scalars(select(Interpretation).where(Interpretation.incident_id == iid))}
+            have = {(r.item_key, r.raw_sha256): r for r in s.scalars(
+                select(Interpretation).where(Interpretation.incident_id == iid))}
+            by_content = {}
+            for item in items:
+                digest = sha(item["raw"])
+                row = have.get((item["id"], digest))
+                if row is not None:
+                    by_content[(item["kind"], digest)] = row
+            reused = 0
+            for item in items:
+                digest = sha(item["raw"])
+                prior = by_content.get((item["kind"], digest))
+                key = (item["id"], digest)
+                if item.get("observed") is False or prior is None or key in have:
+                    continue
+                # Preserve each citation's item key and the original paid call provenance.
+                alias = Interpretation(incident_id=iid, item_key=item["id"], raw_sha256=digest, ko=prior.ko,
+                                       source=prior.source, agent_run_id=prior.agent_run_id)
+                s.add(alias)
+                have[key] = alias
+                reused += 1
         todo = []
         for it in items:
             if it.get("observed") is False or it["kind"] == "metric" or rule_ko(it) is not None or (it["id"], sha(it["raw"])) in have:
@@ -468,8 +515,9 @@ class Interpreter:
         peers = {batch[0]["id"]: batch for batch in batches}
         todo = [batch[0] for batch in batches]
         if not todo:
-            return 0
+            return reused
         payload = [{"id": it["id"], "text": it["raw"][: a.interpret_max_chars]} for it in todo]
+        signatures = {it["id"]: sha(it["raw"]) for group in peers.values() for it in group}
         prompt = INTERPRET_PROMPT + json.dumps(payload, ensure_ascii=False)
         rm = a.interpreter
         try:
@@ -484,7 +532,7 @@ class Interpreter:
                                input_tokens=getattr(usage, "input_tokens", None),
                                output_tokens=getattr(usage, "output_tokens", None),
                                estimated_cost_usd=estimate_cost(self.cfg, rm.model, usage) if usage else None,
-                               duration_ms=getattr(e, "duration_ms", None), status="failed", attempts=getattr(e, 'provider_attempts', None) or 0,
+                               duration_ms=getattr(e, "duration_ms", None), status="failed", output={"unread": signatures}, attempts=getattr(e, 'provider_attempts', None) or 0,
                                error=redact(f"{getattr(e, 'kind', type(e).__name__)}: {e}")[:300]))
             return 0
         wanted = {it["id"]: it for it in todo}
@@ -500,7 +548,7 @@ class Interpreter:
             run = AgentRun(incident_id=iid, role="interpreter", provider=getattr(self.provider, "name", "codex_cli"),
                            model=rm.model, reasoning_effort=rm.effort, input_tokens=usage.input_tokens,
                            output_tokens=usage.output_tokens, estimated_cost_usd=cost, duration_ms=res.duration_ms,
-                           status="succeeded", attempts=res.provider_attempts or 0, output={"items": len(got), "cached_items": stored})
+                           status="succeeded", attempts=res.provider_attempts or 0, output={"items": len(got), "cached_items": stored, "unread": {it["id"]: signatures[it["id"]] for rid, group in peers.items() if rid not in got for it in group}})
             s.add(run)
             s.flush()
             for rid, ko in got.items():
@@ -508,13 +556,17 @@ class Interpreter:
                 for item in peers[rid]:
                     s.add(Interpretation(incident_id=iid, item_key=item["id"], raw_sha256=sha(item["raw"]), ko=ko,
                                          source="llm", agent_run_id=run.id))
-        return stored
+        self.has_more = bool(stored and len(groups) > len(batches))
+        return stored + reused
 
 
 def readings(s, iid: int, items: list[dict]) -> list[dict]:
     """Attach `ko`/`ko_source` (cached LLM reading wins over the rule reading only when the rule has none)."""
     from sqlalchemy import select
-    from .models import Interpretation
+    from .models import AgentRun, Interpretation
+    attempted = set()
+    for output in s.scalars(select(AgentRun.output).where(AgentRun.incident_id == iid, AgentRun.role == "interpreter")):
+        attempted.update(((output or {}).get("unread") or {}).items())
     cache = {(r.item_key, r.raw_sha256): r.ko for r in s.scalars(select(Interpretation).where(Interpretation.incident_id == iid))}
     out = []
     for it in items:
@@ -522,7 +574,9 @@ def readings(s, iid: int, items: list[dict]) -> list[dict]:
         if ko is None and it.get("observed") is not False:
             ko = cache.get((it["id"], sha(it["raw"])))
             src = "llm" if ko else None
-        out.append({**it, "ko": ko, "ko_source": src if ko else None})
+        out.append({**it, "ko": ko, "ko_source": src if ko else None,
+                    "reading_state": "ready" if ko else "unobserved" if it.get("observed") is False else
+                    "failed" if (it["id"], sha(it["raw"])) in attempted else "missing"})
     return out
 
 
@@ -530,7 +584,7 @@ class InterpretWorker:
     """One background thread for display-only Korean readings.
 
     Quota rules (P15 live run: readings used 4x the router's tokens and exhausted both accounts):
-    * pipeline progress only refreshes incidents someone is watching (war-room poll within `view_ttl_s`);
+    * pipeline progress queues changed incidents independently of an open browser;
     * a watched incident is refreshed at most once per `min_interval_s` (requests are coalesced, not dropped);
     * a page poll runs only if nothing was tried within `retry_after_s`;
     * while every account is limited, work is deferred without calling the model.
@@ -542,6 +596,7 @@ class InterpretWorker:
         self.retry_after_s, self.min_interval_s, self.view_ttl_s = retry_after_s, min_interval_s, view_ttl_s
         self._cv = threading.Condition()
         self._due: dict[int, float] = {}
+        self._pipeline: set[int] = set()
         self._running: int | None = None
         self._last: dict[int, float] = {}
         self._seen: dict[int, float] = {}
@@ -595,7 +650,7 @@ class InterpretWorker:
             if iid in self._due:
                 return "queued"
             self._prune(now)
-            self._seen[iid] = now
+            self._pipeline.add(iid)
             self._due[iid] = now
             self._cv.notify()
             return "accepted"
@@ -614,8 +669,7 @@ class InterpretWorker:
                     return
                 due = now
             else:
-                if not self._watched(iid, now):
-                    return
+                self._pipeline.add(iid)
                 due = max(now, self._last.get(iid, -1e9) + self.min_interval_s)
             if iid in self._due:
                 self._due[iid] = min(self._due[iid], due)
@@ -640,7 +694,7 @@ class InterpretWorker:
                 iid = min(ready, key=lambda i: self._due[i])
             wait = self.interpreter.wait_s() if hasattr(self.interpreter, "wait_s") else 0.0
             with self._cv:
-                if not self._watched(iid, time.monotonic()):
+                if iid not in self._pipeline and not self._watched(iid, time.monotonic()):
                     # Nobody is looking any more (e.g. the view ended while quota was exhausted): drop, don't spend.
                     self._due.pop(iid, None)
                     continue
@@ -648,10 +702,13 @@ class InterpretWorker:
                     self._due[iid] = time.monotonic() + min(wait, 600.0)
                     continue
                 self._due.pop(iid, None)
+                self._pipeline.discard(iid)
                 self._running = iid
                 self._last[iid] = time.monotonic()
             try:
                 self.interpreter.run(iid)
+                if getattr(self.interpreter, "has_more", False):
+                    self.request(iid)  # Drain the next bounded batch, even after the final stage.
             except Exception as e:  # noqa: BLE001
                 logging.getLogger(__name__).warning("interpretation failed for incident %s: %s", iid, type(e).__name__)
             with self._cv:

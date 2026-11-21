@@ -111,7 +111,7 @@ def test_repeated_views_of_a_closed_incident_schedule_nothing_and_write_nothing(
         main.STATE.pop("interpret", None)
 
 
-def test_active_incident_view_only_registers_in_memory_and_keeps_pipeline_readings(k8s):
+def test_active_incident_view_leaves_scheduling_to_pipeline(k8s):
     iid = _seed("analyzing", [0.1])
     main, c = _client()
     rec = Recorder()
@@ -120,7 +120,7 @@ def test_active_incident_view_only_registers_in_memory_and_keeps_pipeline_readin
         before = table_counts()
         d = c.get(f"/api/incidents/{iid}/narrative").json()
         assert table_counts() == before
-        assert rec.views == [iid] and rec.requests == []        # watched for pipeline readings, no job created
+        assert rec.views == [] and rec.requests == []
         assert d["interpret_state"]["status"] == "pipeline"
         rec.jobs[iid] = "running"
         d2 = c.get(f"/api/incidents/{iid}/narrative").json()
@@ -129,7 +129,7 @@ def test_active_incident_view_only_registers_in_memory_and_keeps_pipeline_readin
         main.STATE.pop("interpret", None)
 
 
-def test_explicit_interpretation_requires_confirmation_and_is_not_duplicated(k8s):
+def test_explicit_interpretation_requires_confirmation_and_is_not_duplicated(k8s, operator_gateway):
     iid = _seed("resolved", [None], fingerprint="eval/c1/a1/1")
     main, c = _client()
     rec = Recorder()
