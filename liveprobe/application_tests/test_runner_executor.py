@@ -38,6 +38,15 @@ class ExecutorTests(unittest.TestCase):
             target=summarize(doc,'dev','payment',registry)
             out=executor.execute({'kind':'source','payload':{'target':target,'profile_id':p['id']}})
             self.assertTrue(out['source_snapshot']['provenance_verified'])
+            # The same deployed manifest and verified file hash bind this read-only K8s question.
+            reader=Executor(registry,Kube(),Host(),root/'state',{'provenance_dir':str(provenance),'runner_role':'source'})
+            observations=[]
+            reader.observe=lambda phase, file=None: observations.append((phase,file))
+            question={'image':image,'profile_id':p['id'],'service':'payment','environment':'dev',
+                      'frames':[{'file':p['runtime_root']+'/app.py','line':1}]}
+            findings=reader.execute({'kind':'investigate','payload':question})['findings']
+            self.assertEqual(findings,[{'file':'app.py','line':1,'file_sha256':proof['file_sha256']['app.py'],'excerpt':'value = 1'}])
+            self.assertEqual(observations,[('pin_source',None),('read_file','app.py')])
             (sources/'app.py').write_text('value = 2\n')
             with self.assertRaises(ValueError):executor.execute({'kind':'source','payload':{'target':target,'profile_id':p['id']}})
             state=root/'dry-state'

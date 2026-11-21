@@ -157,7 +157,7 @@ def parse_patch(diff, root, test_root):
     return changes
 
 
-def apply_changes(root, changes, tests_only, test_root):
+def apply_changes(root, changes, tests_only, test_root, on_write=None):
     for name,text in changes.items():
         is_test = name.startswith(test_root+'/')
         if tests_only != is_test:
@@ -165,3 +165,5 @@ def apply_changes(root, changes, tests_only, test_root):
         path = safe_path(root,name)
         path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text(text)
+        if on_write:
+            on_write(name)

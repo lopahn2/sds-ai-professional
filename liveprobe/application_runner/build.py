@@ -70,6 +70,7 @@ class Builder:
         self.workspace_root=Path(workspace_root)
         self.provenance_root=Path(provenance_root) if provenance_root else self.workspace_root/'provenance'
         self.transport=transport
+        self.observe=lambda phase,file=None: None
 
     def run(self, source, patch, profile):
         from .worker import durable_write
@@ -127,6 +128,7 @@ class Builder:
         apply_changes(workspace,changes,True,profile['test_root'])
         expected_before={**source['files'],**{p:t for p,t in changes.items() if p.startswith(profile['test_root']+'/')}}
         self.assert_tree(workspace,expected_before)
+        self.observe('reproduce')
         before=[]
         for mode in modes:
             selected={**profile,'mode':mode} if mode else profile
@@ -139,9 +141,10 @@ class Builder:
         # collection/config failures have no matching rows and fail validation.
         if not all(r['exit_code']==1 and r['failed']+r.get('errors',0)>0 for r in before):
             raise ValueError('before_not_reproduced')
-        apply_changes(workspace,changes,False,profile['test_root'])
+        apply_changes(workspace,changes,False,profile['test_root'],on_write=lambda path:self.observe('edit_file',path))
         expected_after={**source['files'],**changes}
         self.assert_tree(workspace,expected_after)
+        self.observe('regression')
         after=[]
         for mode in modes:
             selected={**profile,'mode':mode} if mode else profile
@@ -155,6 +158,7 @@ class Builder:
         self.assert_tree(workspace,expected_after)
         files=expected_after
         tree=digest({p:digest(t.encode()) for p,t in files.items()})
+        self.observe('build')
         receipt=self.transport.build(workspace,profile,tree)
         self.assert_tree(workspace,expected_after)
         manifest_image(receipt['image'],profile['image_repository'])

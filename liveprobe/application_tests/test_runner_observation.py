@@ -54,6 +54,34 @@ class ObservationTests(unittest.TestCase):
             result=Executor(api.registry,KubeTransport(api),object(),tmp,{}).collect({'environment':'dev','service':'catalog','catalog_sha256':api.registry.catalog_sha256,'since':'2026-11-02T00:00:00Z'})
             self.assertEqual(result['logs'],[])
             self.assertEqual({r['source'] for r in result['evidence']},{'deployment'})
+
+    def test_separate_runners_share_only_the_exact_tested_artifact(self):
+        from liveprobe.application_runner.worker import durable_write
+
+        api = KubeHTTP()
+        payload = api.payload()
+        artifact = payload['artifact']
+        artifact.update({k: 'a' * 64 for k in
+                         ('source_snapshot_id', 'diff_sha256', 'source_tree_sha256', 'build_receipt_sha256')})
+        job = {'kind': 'deploy', 'payload': payload, 'fencing_token': 3}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = {'artifact_receipts_dir': root / 'exchange'}
+            host = type('Host', (), {})()
+            source = Executor(api.registry, api.transport(), host, root / 'source', dict(config, runner_role='source'))
+            cluster = Executor(api.registry, api.transport(), host, root / 'cluster', dict(config, runner_role='cluster'))
+            receipt = source.artifact_receipt(source.artifact_key(artifact))
+            durable_write(receipt, {'ok': True, 'artifact': dict(artifact, diff_sha256='b' * 64)})
+            with self.assertRaisesRegex(ValueError, 'tested_artifact_receipt_mismatch'):
+                cluster.execute(job)
+            durable_write(receipt, {'ok': True, 'artifact': artifact})
+            receipt.chmod(0o666)
+            with self.assertRaisesRegex(ValueError, 'tested_artifact_receipt_untrusted'):
+                cluster.execute(job)
+            self.assertFalse(api.patches)
+            receipt.chmod(0o600)
+            self.assertTrue(cluster.execute(job)['ok'])
+
     def test_executor_verify_gate_and_reconcile_original_payload_no_redeploy(self):
         from liveprobe.application_runner.worker import durable_write
         from liveprobe.application_runner.deploy import Deployer

@@ -4,11 +4,12 @@ from datetime import datetime, timezone
 import re
 import uuid
 from sqlalchemy import select
-from ..environments import RELEASE_PROTOCOL, release_protocol
+from ..environments import ACTIVE_RELEASE_PROTOCOLS, QA_RELEASE_PROTOCOL, RELEASE_PROTOCOL, release_protocol
 from .contracts import Target
 from .safety import fail, sha, test_file
 from .storage import Job
 from .result_evidence import error_code, tests_evidence, target_rows, verification_rows, OUTCOMES
+from .qa_release import QAReleaseControl
 
 HEX = re.compile(r'^[a-f0-9]{64}$')
 IMAGE = re.compile(r'^\S+@sha256:[a-f0-9]{64}$')
@@ -18,13 +19,20 @@ def identifier():
     return uuid.uuid4().hex
 
 
-class ReleaseControl:
+class ReleaseControl(QAReleaseControl):
     def release_fingerprint(self, release):
         fields = {'release_id': release['release_id'], 'artifact_sha256': release['artifact_sha256'],
                     'targets': release['targets'], 'affected_services': release['affected_services']}
         if 'protocol' in release:
             fields['protocol'] = release['protocol']
+        if release.get('risk_sha256') is not None:
+            # v3: the approved prd plan includes the exact risk picture the operator reviewed.
+            fields['risk_sha256'] = release['risk_sha256']
         return sha(fields)
+
+    def new_release_protocol(self):
+        settings = self.settings
+        return QA_RELEASE_PROTOCOL if (getattr(settings, 'qa_required', False) or settings.unified_mode) else RELEASE_PROTOCOL
 
     def release_get(self, incident_id):
         detail = self.detail(incident_id)
@@ -139,12 +147,15 @@ class ReleaseControl:
         self.data(incident, 'test_build', record)
         tests = record['tests']
         artifact = {k: artifact[k] for k in required}
-        release = {'protocol': RELEASE_PROTOCOL, 'release_id': identifier(), 'artifact': artifact, 'artifact_sha256': sha(artifact),
+        release = {'protocol': self.new_release_protocol(), 'release_id': identifier(), 'artifact': artifact, 'artifact_sha256': sha(artifact),
             'affected_services': source['affected_services'], 'targets': {}, 'plan_sha256': None,
             'valid': True, 'user_test': None, 'approval': None, 'stage_results': {},
             'summary_ko': patch['summary_ko'], 'risk_ko': patch['risk_ko'],
             'rollback_ko': '각 대상의 이전 image digest로 UID/RV·현재 이미지·구성 지문을 다시 확인한 뒤 같은 CAS 교체를 수행합니다. 데이터 안전성을 확인할 수 없으면 자동 원복하지 않고 이관합니다.',
             'tests': {k: tests[k] for k in ('before_failed', 'after_passed', 'regression_executed', 'total', 'failed', 'executed_tests', 'report_sha256')}}
+        if self.qa_protocol(release):
+            # Fixed per release from server data only; the coordinator reports, it never chooses the gate.
+            release['infra_gate'] = self.infra_gate_for(incident.document['data'])
         self.data(incident, 'release', release)
         self.transition(session, incident, 'test_build_passed', {'artifact_sha256': release['artifact_sha256']})
         self.collect_release_targets(session, incident, 'dev')
@@ -183,7 +194,9 @@ class ReleaseControl:
         self.data(incident, 'release', release)
         if len(targets) != len(release['affected_services']):
             return
-        if stage == 'prd':
+        if stage == 'prd' and self.qa_protocol(release):
+            self.finish_prd_plan(session, incident, release)
+        elif stage == 'prd':
             release['plan_sha256'] = self.release_fingerprint(release)
             self.data(incident, 'release', release)
             self.transition(session, incident, 'awaiting_user_test')
@@ -191,7 +204,8 @@ class ReleaseControl:
             self.queue_deploy(session, incident, stage)
 
     def unified_prd_gate(self, incident):
-        if incident.document.get('data', {}).get('unified_origin'):
+        # A unified installation never lets a standalone document skip the human PR merge gate.
+        if incident.document.get('data', {}).get('unified_origin') or self.settings.unified_mode:
             # Re-observe through a server-owned transport; request metadata is never proof.
             try:
                 return self.merge_authorized(incident.document) is True
@@ -201,6 +215,18 @@ class ReleaseControl:
 
     def prd_authorized(self, release, consumed_by=None):
         approval, test = release.get('approval') or {}, release.get('user_test') or {}
+        if self.qa_protocol(release):
+            qa = release.get('qa') or {}
+            return bool(release.get('valid') is True and release.get('plan_sha256') == self.release_fingerprint(release) and
+                sha(release['artifact']) == release.get('artifact_sha256') and
+                release.get('stage_results', {}).get('dev', {}).get('verified') is True and
+                self.v3_approval_ready(release) is None and
+                approval.get('kind') == 'human' and approval.get('invalidated') is False and
+                approval.get('consumed_by_job_id') == consumed_by and approval.get('expires_at', 0) > self.clock() and
+                self.human_authorized(approval.get('subject'), 'prd-approver') and
+                approval.get('artifact_sha256') == release['artifact_sha256'] and
+                approval.get('plan_sha256') == release['plan_sha256'] and approval.get('qa_receipt_id') == qa.get('receipt_id') and
+                approval.get('risk_sha256') == release.get('risk_sha256'))
         return bool(release_protocol(release) == RELEASE_PROTOCOL and release.get('valid') is True and
             release.get('plan_sha256') == self.release_fingerprint(release) and
             sha(release['artifact']) == release.get('artifact_sha256') and
@@ -231,7 +257,7 @@ class ReleaseControl:
                 return self.stop(session, incident, 'target_owned_by_other_release')
         attempt = identifier()
         payload = {'stage': stage, 'targets': targets, 'artifact': release['artifact'],
-            'authorization_kind': 'user_prd' if stage == 'prd' else 'auto_dev', 'protocol': RELEASE_PROTOCOL,
+            'authorization_kind': 'user_prd' if stage == 'prd' else 'auto_dev', 'protocol': release_protocol(release),
             'release_id': release['release_id'], 'attempt_id': attempt,
             'idempotency_key': 'application-release:' + release['release_id'] + ':' + stage + ':' + attempt,
             'profile_id': incident.document['data']['source_snapshot']['profile_id'],
@@ -248,7 +274,7 @@ class ReleaseControl:
         stage = job.payload['stage']
         if not self.job_phase_valid(incident, job):
             return False
-        valid = (release_protocol(release) == RELEASE_PROTOCOL and stage in ('dev', 'prd') and release.get('valid') is True and release.get('release_id') == job.payload['release_id'] and
+        valid = (release_protocol(release) in ACTIVE_RELEASE_PROTOCOLS and stage in ('dev', 'prd') and release.get('valid') is True and release.get('release_id') == job.payload['release_id'] and
                  release.get('artifact') == job.payload['artifact'] and sha(release['artifact']) == release['artifact_sha256'] and
                  release['artifact_sha256'] == job.payload['artifact_sha256'] and
                  release.get('targets', {}).get(stage) == job.payload['targets'])
@@ -353,9 +379,13 @@ class ReleaseControl:
         self.data(incident, 'release', release)
         self.transition(session, incident, stage + '_verified')
         if stage == 'dev':
-            self.collect_release_targets(session, incident, 'prd')
+            self.after_dev_verified(session, incident)
+        elif self.qa_protocol(release):
+            # A successful prd rollout is not recovery. Observe the original business path first.
+            self.queue_recovery(session, incident)
         else:
-            self.transition(session, incident, 'completed')
+            from .accountability import conclude
+            conclude(self,session,incident)
 
     def reconcile_result(self, session, incident, job, result):
         payload = job.payload['original_payload']
@@ -379,7 +409,7 @@ class ReleaseControl:
             stage == 'prd' and not self.prd_authorized(release, job.payload['original_job_id'])):
             return self.stop(session, incident, 'release_invalidated_during_write')
         if not confirmed:
-            if (stage == 'dev' and release.get('protocol') == RELEASE_PROTOCOL and original and
+            if (stage == 'dev' and release.get('protocol') in ACTIVE_RELEASE_PROTOCOLS and original and
                 payload.get('release_id') == release['release_id'] and
                 job.payload.get('confirm_metadata_only') is True and result.get('error') == 'metadata_only_released' and
                 result.get('write_outcome') == 'not_written' and not release.get('metadata_retry') and
@@ -418,7 +448,7 @@ class ReleaseControl:
             incident=self.get(session,incident_id)
             release=incident.document.get('data',{}).get('release') or {}
             stage=release.get('stage_results',{}).get('dev',{})
-            if (incident.state!='handoff' or release.get('protocol')!=RELEASE_PROTOCOL or not release.get('valid')
+            if (incident.state!='handoff' or release.get('protocol') not in ACTIVE_RELEASE_PROTOCOLS or not release.get('valid')
                 or release.get('metadata_retry') or stage.get('error_code')!='metadata_only_observed'):
                 fail(409,'metadata_review_unavailable')
             original=session.get(Job,stage['deploy_job_id'])
@@ -445,6 +475,8 @@ class ReleaseControl:
             if incident.state != 'awaiting_user_test':
                 fail(409, 'user_test_state_conflict', 'dev 사용자 시험 대기 상태가 아닙니다.')
             release = self.matching_release(incident, body)
+            if self.qa_protocol(release):
+                fail(409, 'user_test_not_applicable', '이 버전은 실제 dev 화면 QA 영수증으로 확인합니다.')
             if release_protocol(release) != RELEASE_PROTOCOL:
                 fail(409, 'legacy_release_read_only')
             if not release['stage_results'].get('dev', {}).get('verified'):
@@ -466,19 +498,34 @@ class ReleaseControl:
         self.require_store()
         with self.store.transaction() as session:
             incident = self.get(session, incident_id)
+            from .current_version import pending
+            if pending(session, incident, self.clock()):
+                fail(409, 'current_version_check_pending', '현재 버전 재검증이 진행 중입니다.')
             if not self.unified_prd_gate(incident):
                 fail(409, 'pull_request_merge_unobserved', '시험한 소스의 PR·사람 병합 확인이 필요합니다.')
             if incident.state != 'awaiting_prd_approval':
                 fail(409, 'approval_state_conflict', '사용자 시험 후 명시 승인이 필요합니다.')
             release = self.matching_release(incident, body)
-            test = release.get('user_test') or {}
-            if (test.get('id') != body.user_test_id or test.get('invalidated') is not False or
-                test.get('kind') != 'human' or test.get('passed') is not True or test.get('expires_at', 0) <= self.clock()):
-                fail(409, 'user_test_invalid_or_expired')
-            approval = {'id': identifier(), 'subject': actor['subject'], 'kind': 'human', 'user_test_id': test['id'],
-                'occurred_at': self.clock(), 'expires_at': min(test['expires_at'], self.clock() + self.settings.approval_seconds),
-                'artifact_sha256': release['artifact_sha256'], 'plan_sha256': release['plan_sha256'], 'invalidated': False,
-                'consumed_by_job_id': None}
+            if self.qa_protocol(release):
+                blocked = self.v3_approval_ready(release, body)
+                if blocked:
+                    fail(409, blocked, {'qa_receipt_required': '현재 버전의 통과한 dev 화면 QA 영수증이 필요합니다.',
+                        'destructive_change_evidence_missing': '데이터를 바꾸는 변경의 보존·복원 근거가 없어 승인할 수 없습니다.',
+                        'risk_picture_invalid': 'prd 위험 그림을 다시 계산해야 합니다.'}.get(blocked, '확인한 QA·위험 근거가 현재 버전과 다릅니다.'))
+                approval = {'id': identifier(), 'subject': actor['subject'], 'kind': 'human', 'user_test_id': None,
+                    'qa_receipt_id': release['qa']['receipt_id'], 'risk_sha256': release['risk_sha256'],
+                    'occurred_at': self.clock(), 'expires_at': self.clock() + self.settings.approval_seconds,
+                    'artifact_sha256': release['artifact_sha256'], 'plan_sha256': release['plan_sha256'], 'invalidated': False,
+                    'consumed_by_job_id': None}
+            else:
+                test = release.get('user_test') or {}
+                if (test.get('id') != body.user_test_id or test.get('invalidated') is not False or
+                    test.get('kind') != 'human' or test.get('passed') is not True or test.get('expires_at', 0) <= self.clock()):
+                    fail(409, 'user_test_invalid_or_expired')
+                approval = {'id': identifier(), 'subject': actor['subject'], 'kind': 'human', 'user_test_id': test['id'],
+                    'occurred_at': self.clock(), 'expires_at': min(test['expires_at'], self.clock() + self.settings.approval_seconds),
+                    'artifact_sha256': release['artifact_sha256'], 'plan_sha256': release['plan_sha256'], 'invalidated': False,
+                    'consumed_by_job_id': None}
             release['approval'] = approval
             self.data(incident, 'release', release)
             self.event(session, incident, 'human_prd_approved', {'approval_id': approval['id'], 'subject': actor['subject']})

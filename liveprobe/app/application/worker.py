@@ -11,6 +11,7 @@ from .analysis_schema import CLASSIFIER, ANALYSIS, REVIEW, PATCH
 from .control import SERVICE_SYSTEMS
 from .safety import scrub, sha, text_sha, safe_source_path, test_file
 from .storage import Incident
+from . import evidence_inquiry
 
 APP_PREAMBLE = (
     'You are LiveProbe for Application, an application source-code incident-analysis component. '
@@ -20,6 +21,16 @@ APP_PREAMBLE = (
     'Cite exact ref and quote; distinguish hypotheses, counterevidence and unresolved facts. '
     'High risk, destructive migrations, authorization changes or missing provenance require handoff. '
 )
+
+
+PUBLIC_TASK = {
+    'classifier': '장애 신호와 영향 범위를 대조해 사건 수준과 결정 근거를 제시하세요.',
+    'analyst': '관측 사실과 배포 소스를 대조해 원인 후보와 인용 근거를 제시하세요.',
+    'specialist': '여러 증상이 같은 원인으로 설명되는지 검토하고 부족한 근거를 명시하세요.',
+    'critic': '새 근거로 후보를 반박하고 여전히 설명할 수 있는 후보를 제시하세요.',
+    'verifier': '원인과 근거의 일치를 독립적으로 검증하고 수정 가능 여부를 판정하세요.',
+    'patch': '검증한 원인을 수정하는 파일 변경과 재현·회귀 시험을 제시하세요.',
+}
 
 
 class AnalysisBlocked(Exception):
@@ -48,13 +59,21 @@ class AnalysisWorker:
         if not c.store.ready():
             return None
         with c.store.transaction() as session:
+            evidence_inquiry.expire(c, session)
             rows = session.scalars(select(Incident).where(Incident.state.in_(['analysis_queued', 'analyzing'])).order_by(Incident.created_at))
             for incident in rows:
                 lease = incident.document.get('data', {}).get('analysis_lease', {})
                 if incident.state == 'analyzing' and lease.get('until', 0) > c.clock():
                     continue
                 owner = secrets.token_hex(16)
-                c.data(incident, 'analysis_lease', {'owner': owner, 'until': c.clock() + 900})
+                inquiry = incident.document.get('data', {}).get('evidence_inquiry') or {}
+                continuing = inquiry.get('state') == 'reviewing'
+                deadline = inquiry['deadline'] if continuing else c.clock() + 900
+                if deadline <= c.clock():
+                    evidence_inquiry.finish(c, session, incident, inquiry, [], '추가 검증 전에 조사 기한이 만료됐습니다.')
+                    continue
+                c.data(incident, 'analysis_lease', {'owner': owner, 'until': deadline,
+                    'calls': lease.get('calls', 0) if continuing else 0})
                 c.transition(session, incident, 'analyzing')
                 return incident.id, owner, copy.deepcopy(incident.document)
         return None
@@ -66,17 +85,26 @@ class AnalysisWorker:
             raise AnalysisBlocked('analysis_fence_conflict')
         return incident
 
-    def _record(self, incident_id, owner, role, result, data):
+    def _record(self, incident_id, owner, role, result, data, call_id=None):
         c = self.control
         with c.store.transaction() as session:
             incident = self._owned(session, incident_id, owner)
             analysis = copy.deepcopy(incident.document['data'].get('analysis', {'roles': []}))
-            analysis['roles'].append({'role': role, 'model': result.model, 'effort': result.effort,
+            analysis['roles'].append({'call_id':call_id,'role': role, 'model': result.model, 'effort': result.effort,
                 'provider': result.provider, 'usage': asdict(result.usage), 'occurred_at': c.clock(),
                 'result': scrub(data), 'output_sha256': sha(data)})
             c.data(incident, 'analysis', analysis)
-            c.event(session, incident, 'role_completed', {'role': role, 'model': result.model,
+            c.event(session, incident, 'role_completed', {'call_id':call_id,'role': role, 'model': result.model,
                 'confidence': data.get('confidence'), 'output_sha256': sha(data)})
+
+    def _original_signal(self, document):
+        signal = document['data'].get('signal') or {}
+        sample = signal.get('sample')
+        if (isinstance(sample, str) and sample and signal.get('observed_at')
+                and signal.get('sha256') == text_sha(sample)):
+            return {'ref': 'original:signal', 'observed_at': signal['observed_at'],
+                    'source': signal.get('source'), 'text': sample}
+        return None
 
     def _evidence(self, document):
         c = self.control
@@ -100,6 +128,10 @@ class AnalysisWorker:
                 raise AnalysisBlocked('evidence_quality_or_freshness_insufficient') from None
         if not evidence:
             raise AnalysisBlocked('evidence_missing')
+        if document['data'].get('round_request'):
+            original = self._original_signal(document)
+            if original:
+                evidence[original['ref']] = original['text']
         for path, body in document['data']['source_snapshot']['files'].items():
             evidence['source:' + path] = body
             evidence['file_sha256:' + path] = document['data']['source_snapshot']['file_sha256'][path]
@@ -116,8 +148,7 @@ class AnalysisWorker:
                 raise AnalysisBlocked('citation_not_grounded')
 
     def _call(self, incident_id, owner, role, context, schema, effort, evidence=None):
-        recoverable = {'citation_not_grounded', 'citations_missing', 'model_output_invalid',
-                       'analysis_unresolved_or_low_confidence'}
+        recoverable = {'citation_not_grounded', 'citations_missing', 'model_output_invalid'}
         for attempt in range(2):
             try:
                 return self._call_once(incident_id, owner, role, context, schema, effort, evidence)
@@ -158,19 +189,50 @@ class AnalysisWorker:
             prompt += ('\nFor citations, use an exact evidence id or source:<relative path> and a verbatim '
                        'substring of at least eight characters. Distinguish evidence gaps that block this '
                        'specific correction from optional follow-up observations.')
+        instruction = PUBLIC_TASK[role]
+        prompt += '\n' + instruction
         if len(prompt) > 150000:
             raise AnalysisBlocked('analysis_context_limit')
-        result = provider.complete(role=role, prompt=prompt, schema=schema, model=self.control.settings.model_for(role),
-                                   effort=self.control.settings.effort_for(role), timeout=120)
+        from ..llm.progress import observe, provider_attempt
+        call_id=secrets.token_hex(16)
+        model=self.control.settings.model_for(role)
+        def record(kind, details):
+            with self.control.store.transaction() as session:
+                incident=self._owned(session,incident_id,owner)
+                lease = incident.document['data']['analysis_lease']
+                if kind == 'role_started':
+                    # Six roles, each with its existing correction opportunity, plus two patch-contract retries.
+                    if lease.get('calls', 0) >= 14:
+                        raise AnalysisBlocked('analysis_call_budget_exhausted')
+                    self.control.data(incident, 'analysis_lease', {**lease, 'calls': lease.get('calls', 0) + 1})
+                self.control.event(session,incident,kind,{'role':role,'call_id':call_id,'model':model,**details})
+                return max(1, min(120, int(lease['until'] - self.control.clock())))
+
+        timeout = record('role_started',{'effort':self.control.settings.effort_for(role), 'request_ko':instruction,
+            'attempt':2 if context.get('prior_review') else 1,
+            'evidence_refs':list((evidence or {}).keys())[:30]})
+        # Capture only already-sanitized public fields from the CLI's progress observer.
+        def progress(_message, d):
+            record('role_progress',{k:d[k] for k in ('phase','text','attempt_id') if k in d})
+        with observe(progress), provider_attempt(role,model,'application'):
+            result = provider.complete(role=role, prompt=prompt, schema=schema, model=model,
+                                       effort=self.control.settings.effort_for(role),timeout=timeout)
         data = result.data
         try:
             Draft202012Validator(schema).validate(data)
         except Exception:
             raise AnalysisBlocked('model_output_invalid') from None
-        self._record(incident_id, owner, role, result, data)
+        self._record(incident_id, owner, role, result, data, call_id)
         if evidence is not None:
             self._citations(data, evidence)
-            if data.get('confidence', 0) < .8 or data.get('unresolved') or data.get('accepted') is False or data.get('fixable') is False:
+            if role == 'classifier' and (data.get('risk') == 'high' or data.get('level', 0) >= 3):
+                raise AnalysisBlocked('high_risk_handoff')
+            if data.get('fixable') is False:
+                raise AnalysisBlocked('application_fix_not_supported')
+            refs = context.get('review_evidence', {}).get('evidence_refs') or []
+            if refs and role in ('analyst', 'verifier') and not any(q['ref'] in refs for q in data.get('citations', [])):
+                raise AnalysisBlocked('analysis_unresolved_or_low_confidence')
+            if data.get('confidence', 0) < .8 or data.get('unresolved') or data.get('accepted') is False:
                 raise AnalysisBlocked('analysis_unresolved_or_low_confidence')
         return data
 
@@ -211,7 +273,38 @@ class AnalysisWorker:
                 'meaning': 'Source and manifest were hash-checked on the host before acceptance. '
                            'An absent git commit is normal for a locally built archive.',
             }
+            inquiry = document['data'].get('evidence_inquiry') or {}
+            if inquiry.get('state') == 'reviewing':
+                context['review_evidence'] = {'question': inquiry['question'], 'evidence_refs': inquiry['evidence_refs'],
+                    'instruction': 'Re-examine the previous open question. The analyst and independent verifier must cite '
+                                   'the additional observation if it resolves the uncertainty. Keep unresolved otherwise.'}
             context['citation_guide'] = 'source:<path> quotes file contents only. file_sha256:<path> quotes its observed hash.'
+            # Operator supplements and the previous round's QA outcome are data for this round, not instructions to tools.
+            if document['data'].get('round_request'):
+                context['round_request'] = document['data']['round_request']
+                context['previous_patch'] = document['data'].get('patch')
+                context['original_signal'] = self._original_signal(document)
+                context['observation_guidance'] = (
+                    'original:signal is historical evidence of the original failure. Its timestamp is independent '
+                    'of this collection. An empty logs array means the queried window returned no log text. '
+                    'It proves neither recovery nor that the current version still has the original defect. '
+                    'Verify a proposed change against the newly pinned source and current observations.')
+            if document['data'].get('operator_notes'):
+                context['operator_notes'] = [n.get('note_ko') for n in document['data']['operator_notes'][-5:]]
+            if (document['data'].get('round_request') or {}).get('reason') == 'qa_tests_missing':
+                requirement = c.catalog.missing_controller_test(document['service'])
+                if not requirement or requirement['profile_id'] != context['source_snapshot'].get('profile_id'):
+                    raise AnalysisBlocked('registered_controller_test_unavailable')
+                recorded = context['round_request'].get('qa_requirement')
+                if recorded is not None and recorded != requirement:
+                    raise AnalysisBlocked('registered_controller_test_changed')
+                # Read older pending rounds from the same catalog. Runner receipt text and paths never direct source edits.
+                qa = context['round_request'].get('qa') or {}
+                context['round_request'] = {'round': context['round_request'].get('round'),
+                    'reason': 'qa_tests_missing', 'qa_requirement': requirement,
+                    'qa': {'outcome': 'tests_missing', 'reason': 'required_controller_test_missing',
+                           'receipt_id': qa.get('receipt_id')}}
+                context['qa_requirement'] = requirement
             prior = document['data'].get('patch_revisions', [])
             if prior:
                 context['prior_reviews'] = document['data']['analysis']['roles']
@@ -263,6 +356,8 @@ class AnalysisWorker:
 
             with c.store.transaction() as session:
                 incident = self._owned(session, incident_id, owner)
+                if inquiry.get('state') == 'reviewing':
+                    c.data(incident, 'evidence_inquiry', {**inquiry, 'state': 'reviewed'})
                 c.data(incident, 'patch', patch)
                 c.transition(session, incident, 'patch_proposed', {'diff_sha256': patch['diff_sha256']})
                 c.enqueue(session, incident, 'test_build', {'source_snapshot': document['data']['source_snapshot'],
@@ -273,5 +368,7 @@ class AnalysisWorker:
             with c.store.transaction() as session:
                 incident = c.get(session, incident_id)
                 if incident.document['data'].get('analysis_lease', {}).get('owner') == owner and incident.state == 'analyzing':
+                    if code == 'analysis_unresolved_or_low_confidence' and evidence_inquiry.queue(c, session, incident):
+                        return True
                     c.stop(session, incident, code)
         return True

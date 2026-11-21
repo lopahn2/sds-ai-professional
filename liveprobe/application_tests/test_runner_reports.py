@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
-from liveprobe.application_runner.build import Builder,test_command
+from liveprobe.application_runner.build import Builder, test_command as build_test_command
 from liveprobe.application_runner.profiles import Registry,digest
 
 class ReportTests(unittest.TestCase):

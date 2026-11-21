@@ -14,8 +14,9 @@ import urllib.request
 import uuid
 from .profiles import digest
 
-KINDS=['collect','source','test_build','deploy','verify','reconcile']
-ROLE_KINDS={'source':['source','test_build'], 'cluster':['collect','deploy','verify','reconcile'], 'legacy':KINDS}
+KINDS=['collect','source','test_build','deploy','verify','reconcile','qa','recovery']
+# qa: browser + read-only dev reads only. recovery: read-only prd observation, so it stays with the cluster identity.
+ROLE_KINDS={'source':['source','test_build','investigate'], 'cluster':['collect','deploy','verify','reconcile','recovery','current_version_check'], 'qa':['qa'], 'legacy':KINDS}
 
 
 def redact(text):
@@ -62,7 +63,7 @@ class API:
         self.opener=urllib.request.build_opener(NoRedirect())
 
     def post(self,path,body,timeout=20):
-        if not (path in ('/runner/claim','/incidents') or re.fullmatch(r'/runner/jobs/[A-Za-z0-9_-]+/(heartbeat|result)',path)):
+        if not (path in ('/runner/claim','/incidents') or re.fullmatch(r'/runner/jobs/[A-Za-z0-9_-]+/(heartbeat|progress|result)',path)):
             raise ValueError('machine_endpoint_forbidden')
         req=urllib.request.Request(self.url+path,data=json.dumps(body).encode(),method='POST',
                 headers={'Authorization':'Bearer '+read_token(self.token_file),'Content-Type':'application/json'})
@@ -162,12 +163,27 @@ class Worker:
         def pulse():
             while not stopped.wait(self.heartbeat_seconds):
                 if not guard.refresh():return
+        seq=0
+        def observe(phase, file=None):
+            nonlocal seq
+            guard()
+            seq+=1
+            # Telemetry is advisory; losing a progress packet cannot replay a mutation.
+            try:
+                self.api.post('/runner/jobs/'+job['id']+'/progress',{**auth,'seq':seq,'phase':phase,'file':file},timeout=3)
+            except Exception:
+                return
+        self.executor.observe=observe
         self.executor.guard=guard
         self.executor.write_guard=guard.confirm_write
         thread=threading.Thread(target=pulse,daemon=True);thread.start()
         try:
             self.state_root.mkdir(mode=0o700,parents=True,exist_ok=True)
-            key=digest(job['idempotency_key']);path=self.state_root/(key+'.json')
+            key=digest(job['idempotency_key'])
+            # A fresh lease must re-observe the currently serving version. Never reuse a prior attempt's proof.
+            if job['kind']=='current_version_check':
+                key += '-'+str(job['fencing_token'])
+            path=self.state_root/(key+'.json')
             fd=os.open(self.state_root/(key+'.lock'),os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
             with os.fdopen(fd,'a+') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX)

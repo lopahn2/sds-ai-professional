@@ -7,10 +7,12 @@ import uuid
 from sqlalchemy import select
 from pydantic import ValidationError
 from .contracts import Target
+from ..environments import ACTIVE_RELEASE_PROTOCOLS
 from .safety import fail, scrub, sha, text_sha, safe_source_path
 from .storage import Incident, Event, Job, RunnerObservation
 from .releases import ReleaseControl
 from .catalog import Catalog
+from . import evidence_inquiry
 
 SERVICE_SYSTEMS = {
     'order': 'samsung-trade', 'inventory': 'samsung-trade', 'catalog': 'samsung-trade',
@@ -38,6 +40,9 @@ class ControlPlane(ReleaseControl):
             fail(503, 'database_unconfigured', '독립 저장소 초기화가 필요합니다.')
 
     def event(self, session, incident, kind, data=None):
+        if kind not in ("role_progress", "runner_progress", "job_queued", "job_claimed", "job_cancelled"):
+            from .display_readings import schedule
+            schedule(session, incident, self.clock())
         session.add(Event(incident_id=incident.id, occurred_at=self.clock(), kind=kind,
                           document=scrub(data or {})))
 
@@ -62,7 +67,7 @@ class ControlPlane(ReleaseControl):
                         for r in data.get('patch_revisions', [])]
             attempts.extend({'kind': 'role_review', 'role': r.get('role')}
                             for r in (data.get('analysis') or {}).get('roles', []))
-            exhausted = {'analysis_unresolved_or_low_confidence', 'citation_not_grounded',
+            exhausted = {'analysis_unresolved_or_low_confidence', 'analysis_call_budget_exhausted', evidence_inquiry.EXHAUSTED, 'citation_not_grounded',
                          'citations_missing', 'model_output_invalid', 'patch_paths_invalid',
                          'patch_tests_missing', 'patch_code_reference_invalid', 'test_build_evidence_invalid'}
             # Missing proof, identity, and any uncertain write default to the authority boundary.
@@ -83,8 +88,7 @@ class ControlPlane(ReleaseControl):
         self.event(session, incident, 'job_queued', {'job_id': job_id, 'kind': kind})
         return job
 
-    def create(self, request, actor):
-        self.require_store()
+    def validate_intake(self, request):
         if request.service not in SERVICE_SYSTEMS:
             fail(422, 'service_unknown', '등록된 서비스가 아닙니다.')
         if not self.catalog.configured:
@@ -92,6 +96,10 @@ class ControlPlane(ReleaseControl):
         if request.reproduction is not None:
             # 현재 계약에 등록된 읽기 요청이 없으므로 자유 재현 명령은 받지 않는다.
             fail(422, 'reproduction_unregistered', '등록된 읽기 재현 요청만 허용합니다.')
+
+    def create(self, request, actor):
+        self.require_store()
+        self.validate_intake(request)
         now = self.clock()
         reason = scrub(request.reason)
         signal = None
@@ -124,11 +132,12 @@ class ControlPlane(ReleaseControl):
             result = self.serialize(incident)
         return result
 
-    def create_linked(self, request, actor, *, origin, application_id=None, request_sha256=None):
+    def create_linked(self, request, actor, *, origin, application_id=None, request_sha256=None, mixed_required=False):
         """Create exactly one code-action execution for the durable core reservation.
 
         The core owns authorization/eligibility. This method owns atomic idempotence under
         the Application mutex. Existing unrelated documents are never rebound or merged.
+        `mixed_required` is derived by the core from the verified root cause (code+infra), never from a client.
         """
         import re
         self.require_store()
@@ -144,19 +153,15 @@ class ControlPlane(ReleaseControl):
             fail(409, 'unified_application_id_conflict')
         if request_sha256 is not None and request_sha256 != origin['request_sha256']:
             fail(409, 'unified_request_conflict')
-        if request.service not in SERVICE_SYSTEMS or request.environment not in ('dev', 'prd'):
-            fail(422, 'service_unknown')
-        if not self.catalog.configured:
-            fail(503, 'profiles_unconfigured')
-        if request.reproduction is not None:
-            fail(422, 'reproduction_unregistered')
+        self.validate_intake(request)
         request_fingerprint = sha(request.model_dump(mode='json'))
         with self.store.transaction() as session:
             existing = session.get(Incident, expected_id)
             if existing is not None:
                 data = existing.document.get('data', {})
                 if (data.get('unified_origin') != origin or
-                    data.get('unified_request_fingerprint') != request_fingerprint):
+                    data.get('unified_request_fingerprint') != request_fingerprint or
+                    bool(data.get('mixed_required')) != bool(mixed_required)):
                     fail(409, 'unified_request_conflict')
                 return self.serialize(existing)
             now = self.clock()
@@ -164,7 +169,8 @@ class ControlPlane(ReleaseControl):
                 'environment': request.environment, 'service': request.service,
                 'system': SERVICE_SYSTEMS[request.service], 'reason': scrub(request.reason),
                 'stages': [], 'error': None, 'data': {'catalog_sha256': self.catalog.sha256,
-                    'unified_origin': copy.deepcopy(origin), 'unified_request_fingerprint': request_fingerprint}})
+                    'unified_origin': copy.deepcopy(origin), 'unified_request_fingerprint': request_fingerprint,
+                    **({'mixed_required': True} if mixed_required is True else {})}})
             session.add(incident)
             if request.signal is not None:
                 signal = scrub(request.signal.model_dump(mode='json'))
@@ -199,22 +205,33 @@ class ControlPlane(ReleaseControl):
         with self.store.read() as session:
             return self.serialize(self.get(session, incident_id))
 
+    def operator_detail(self, incident_id):
+        self.require_store()
+        with self.store.read() as session:
+            from .display_readings import projection
+            incident = self.get(session, incident_id)
+            result = self.serialize(incident)
+            result.setdefault("data", {})["display_readings"] = projection(session, incident)
+            return result
+
     LIST_STATE_GROUPS = {
-        'automatic': ('detected', 'collecting', 'source_pinning', 'analysis_queued', 'analyzing', 'patch_proposed',
+        'automatic': ('source_queued', 'detected', 'collecting', 'source_pinning', 'analysis_queued', 'analyzing', 'patch_proposed',
                       'test_build_queued', 'test_build_passed', 'reconciliation_required',
+                      'dev_infra_pending', 'dev_infra_verified', 'qa_queued', 'qa_passed', 'awaiting_recovery',
                       *(env + suffix for env in ('dev', 'stg', 'prd')
                         for suffix in ('_targets_collecting', '_deploy_queued', '_verifying', '_verified'))),
-        'waiting_people': ('awaiting_user_test', 'awaiting_prd_approval'),
+        'waiting_people': ('awaiting_user_test', 'awaiting_prd_approval', 'qa_failed', 'recovery_review', 'awaiting_merge'),
         'handoff': ('handoff',),
         'closed': ('completed', 'failed'),
     }
 
-    def list_incidents(self, *, environment=None, service=None, system=None, state=None, group=None, search=None,
+    def list_incidents(self, *, environment=None, service=None, system=None, state=None, group=None, work=None, search=None,
                        limit=200, offset=0, as_of=None, lower=None, upper=None):
         """정돈-04: 필터를 DB에서 먼저 적용한 뒤 총건수·페이지를 같은 조건으로 계산한다(최신 200건 고정 아님).
 
         as_of(첫 페이지의 최신 created_at)를 넘기면 이후 페이지가 새 사건 유입에 밀리지 않는다. 조회 전용 세션."""
         from sqlalchemy import func, or_
+        from .qa_release import WORK_STATES
         self.require_store()
         scope = []                      # environment·service·system·search: the range the user is looking at
         if lower is not None:
@@ -233,6 +250,8 @@ class ControlPlane(ReleaseControl):
             status.append(Incident.state == state)
         if group:
             status.append(Incident.state.in_(self.LIST_STATE_GROUPS[group]))
+        if work:
+            status.append(Incident.state.in_(WORK_STATES[work]))
         with self.store.read() as session:
             newest = session.scalar(select(func.max(Incident.created_at)))
             anchor = newest if as_of is None or newest is None else min(float(as_of), newest)
@@ -247,10 +266,11 @@ class ControlPlane(ReleaseControl):
             newer = (session.scalar(select(func.count()).select_from(Incident).where(Incident.created_at > anchor)) or 0
                      if anchor is not None else 0)
         groups = {name: sum(by_state.get(s, 0) for s in members) for name, members in self.LIST_STATE_GROUPS.items()}
+        by_work = {name: sum(by_state.get(s, 0) for s in members) for name, members in WORK_STATES.items()}
         return {'incidents': items, 'total': total, 'limit': limit, 'offset': offset, 'as_of': anchor,
-                'newer_since_as_of': newer, 'by_state': by_state, 'by_group': groups,
+                'newer_since_as_of': newer, 'by_state': by_state, 'by_group': groups, 'by_work': by_work,
                 'filters': {'environment': environment or None, 'service': service or None, 'system': system or None,
-                            'state': state or None, 'group': group or None,
+                            'state': state or None, 'group': group or None, 'work': work or None,
                             'search': (search or '').strip() or None}}
 
     def events(self, incident_id, after=0):
@@ -262,6 +282,9 @@ class ControlPlane(ReleaseControl):
                      'kind': row.kind, 'data': row.document} for row in rows]
 
     def expire(self, session):
+        from . import current_version
+        current_version.expire(self, session)
+        evidence_inquiry.expire(self, session)
         for job in list(session.scalars(select(Job).where(Job.status == 'leased', Job.lease_until <= self.clock()))):
             incident = self.get(session, job.incident_id)
             if job.kind == 'deploy':
@@ -293,8 +316,26 @@ class ControlPlane(ReleaseControl):
         incident.document = document
         self.preserve_unknown_write(session, incident, job, reason)
 
+    def requires_runner_roles(self, document, job_kind=None):
+        data = document.get('data', {})
+        release = data.get('release')
+        if (self.settings.unified_mode or data.get('unified_origin') or job_kind in ('qa', 'recovery', 'current_version_check')
+                or self.qa_protocol(release)):
+            return True
+        if any(self.qa_protocol(row.get('release')) for row in data.get('rounds') or []):
+            return True
+        # A standalone upgrade can host v2 and v3 concurrently. Keep an existing release's protocol.
+        return not release and self.settings.qa_required
+
     def job_phase_valid(self, incident, job):
-        if not incident.document.get('data', {}).get('unified_origin'):
+        if job.kind == 'current_version_check':
+            from .current_version import same_context
+            return same_context(incident, job) and job.payload['deadline'] > self.clock()
+        if job.kind == 'collect' and job.payload.get('purpose') == evidence_inquiry.PURPOSE:
+            inquiry = incident.document.get('data', {}).get('evidence_inquiry') or {}
+            return (incident.state == 'collecting' and job.id == inquiry.get('job_id')
+                    and inquiry.get('state') == 'waiting' and inquiry.get('deadline', 0) > self.clock())
+        if not self.requires_runner_roles(incident.document, job.kind):
             return True  # preserve historical standalone behavior
         if job.kind == 'collect':
             expected = (job.payload.get('environment', '') + '_targets_collecting'
@@ -305,7 +346,8 @@ class ControlPlane(ReleaseControl):
             expected = job.payload.get('stage', '') + '_verifying'
         else:
             expected = {'source': 'source_pinning', 'test_build': 'test_build_queued',
-                        'reconcile': 'reconciliation_required'}.get(job.kind)
+                        'reconcile': 'reconciliation_required', 'qa': 'qa_queued',
+                        'recovery': 'awaiting_recovery'}.get(job.kind)
         return expected is not None and incident.state == expected
 
     def lease_violation(self, session, job):
@@ -326,11 +368,11 @@ class ControlPlane(ReleaseControl):
             return 'job_authorization_revoked'
         return None
 
-    RUNNER_OBSERVATION_IDS = {None: 1, 'source': 2, 'cluster': 3}
+    RUNNER_OBSERVATION_IDS = {None: 1, 'source': 2, 'cluster': 3, 'qa': 4}
 
     def runner_recent(self, role=None):
-        if role is None and self.settings.unified_mode:
-            return self.runner_recent('source') and self.runner_recent('cluster')
+        if role is None and (self.settings.unified_mode or self.settings.qa_required):
+            return self.runner_recent('source') and self.runner_recent('cluster') and self.runner_recent('qa')
         if role not in self.RUNNER_OBSERVATION_IDS or not self.store.ready():
             return False
         with self.store.read() as session:
@@ -357,10 +399,11 @@ class ControlPlane(ReleaseControl):
             job = next((row for row in jobs if self.job_phase_valid(incident, row)), None)
             if job is None:
                 return result
-            role = 'source' if job.kind in self.RUNNER_KINDS['source'] else 'cluster'
+            role = next(name for name, kinds in self.RUNNER_KINDS.items() if job.kind in kinds)
             pulse = session.get(RunnerObservation, self.RUNNER_OBSERVATION_IDS[role])
             recent = bool(pulse and 0 <= self.clock() - pulse.last_claim_at <= self.settings.lease_seconds * 2)
-            lease = job.lease_until if job.status == 'leased' else None
+            bound = (job.worker_id or '').startswith('subject:')
+            lease = job.lease_until if job.status == 'leased' and (bound or not self.requires_runner_roles(incident.document, job.kind)) else None
             result.update(role=role, last_claim_at=pulse.last_claim_at if pulse else None,
                           lease_expires_at=lease, observed=recent or bool(lease and lease > self.clock()))
             return result
@@ -402,7 +445,9 @@ class ControlPlane(ReleaseControl):
                 'awaiting_prd_approval': rows.get('awaiting_prd_approval', 0)}
 
     RUNNER_KINDS = {'source': frozenset({'source', 'test_build'}),
-                    'cluster': frozenset({'collect', 'deploy', 'verify', 'reconcile'})}
+                    'cluster': frozenset({'collect', 'deploy', 'verify', 'reconcile', 'recovery', 'current_version_check'}),
+                    # Browser QA reads the registered dev UI only. It has no cluster write or repository identity.
+                    'qa': frozenset({'qa'})}
 
     def runner_kinds(self, actor, *, linked=False):
         role = (actor or {}).get('runner_role')
@@ -412,7 +457,7 @@ class ControlPlane(ReleaseControl):
             fail(403, 'runner_role_separation_required')
         return frozenset({'collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile'})
 
-    def runner_lease(self, job, actor):
+    def runner_lease(self, session, job, actor):
         """Principal binding survives stolen lease tokens and spoofed worker labels."""
         if job is None:
             fail(404, 'job_not_found')
@@ -422,8 +467,11 @@ class ControlPlane(ReleaseControl):
                 fail(403, 'runner_job_subject_conflict')
             if job.kind not in self.runner_kinds(actor, linked=True):
                 fail(403, 'runner_job_kind_forbidden')
-        elif self.settings.unified_mode:
+        elif self.requires_runner_roles(self.get(session, job.incident_id).document, job.kind):
+            # An old unbound lease cannot provide proof of role or subject for v3, even with its token.
             fail(403, 'runner_legacy_lease_forbidden')
+        elif job.kind not in self.runner_kinds(actor):
+            fail(403, 'runner_job_kind_forbidden')
 
     def claim(self, request, actor=None):
         self.require_store()
@@ -440,13 +488,15 @@ class ControlPlane(ReleaseControl):
             job = None
             for candidate in session.scalars(select(Job).where(Job.status == 'queued', Job.kind.in_(allowed))
                                              .order_by(Job.created_at, Job.id)):
+                not_before = (candidate.payload or {}).get('not_before')
+                if type(not_before) in (int, float) and not_before > self.clock():
+                    continue
                 owner = self.get(session, candidate.incident_id)
-                linked = bool(owner.document.get('data', {}).get('unified_origin'))
-                if linked and not self.job_phase_valid(owner, candidate):
+                if self.requires_runner_roles(owner.document, candidate.kind) and not (actor or {}).get('runner_role'):
+                    continue
+                if not self.job_phase_valid(owner, candidate):
                     candidate.status = 'cancelled'
                     self.event(session, owner, 'job_cancelled', {'job_id': candidate.id, 'reason': 'incident_phase_changed'})
-                    continue
-                if linked and not (actor or {}).get('runner_role'):
                     continue
                 job = candidate
                 break
@@ -455,7 +505,7 @@ class ControlPlane(ReleaseControl):
             incident = self.get(session, job.incident_id)
             release = incident.document.get('data', {}).get('release') or {}
             target = job.payload.get('stage', job.payload.get('environment'))
-            if target == 'stg' or (release and release.get('protocol') != 'dev-prd/v2' and job.kind != 'reconcile'):
+            if target == 'stg' or (release and release.get('protocol') not in ACTIVE_RELEASE_PROTOCOLS and job.kind not in ('reconcile', 'current_version_check')):
                 job.status = 'cancelled'
                 self.stop(session, incident, 'legacy_release_read_only' if release else 'environment_retired')
                 return {'job': None}
@@ -466,15 +516,27 @@ class ControlPlane(ReleaseControl):
             job.status, job.worker_id, job.lease_hash = 'leased', worker, text_sha(token)
             job.fence += 1
             job.lease_until = self.lease_deadline(session, job)
+            from .activity import record_contact
+            record_contact(session, job, self.clock(), 'claim')
+            self.event(session, incident, 'job_claimed', {'job_id': job.id, 'kind': job.kind, 'attempt': job.fence,
+                        'expires_at': job.lease_until})
             return {'job': {'id': job.id, 'kind': job.kind, 'incident_id': job.incident_id,
                 'payload': copy.deepcopy(job.payload), 'lease_token': token, 'fencing_token': job.fence,
                 'idempotency_key': job.idempotency_key, 'lease_expires_at': job.lease_until}}
 
     def lease_deadline(self, session, job):
         deadline = self.clock() + self.settings.lease_seconds
+        if job.kind == 'current_version_check':
+            deadline = min(deadline, job.payload['deadline'])
+        if job.kind == 'collect' and job.payload.get('purpose') == evidence_inquiry.PURPOSE:
+            inquiry = self.get(session, job.incident_id).document['data']['evidence_inquiry']
+            deadline = min(deadline, inquiry['deadline'])
         if job.kind == 'deploy' and job.payload.get('stage') == 'prd':
             release = self.get(session, job.incident_id).document['data']['release']
-            deadline = min(deadline, release['approval']['expires_at'], release['user_test']['expires_at'])
+            limits = [release['approval']['expires_at']]
+            if not self.qa_protocol(release):
+                limits.append(release['user_test']['expires_at'])
+            deadline = min(deadline, *limits)
         return deadline
 
     def lease_check(self, job, request):
@@ -487,12 +549,14 @@ class ControlPlane(ReleaseControl):
         self.require_store()
         with self.store.transaction() as session:
             job = session.get(Job, job_id)
-            self.runner_lease(job, actor)
+            self.runner_lease(session, job, actor)
             self.lease_check(job, request)
             code = self.lease_violation(session, job)
             if code is None:
                 # prd lease는 승인·사용자 시험 만료를 넘어 연장하지 않는다.
                 job.lease_until = self.lease_deadline(session, job)
+                from .activity import record_contact
+                record_contact(session, job, self.clock(), 'heartbeat')
                 return {'job_id': job.id, 'fencing_token': job.fence, 'lease_expires_at': job.lease_until}
         # 보존 전이를 커밋한 뒤 거부한다(트랜잭션 안에서 실패하면 전이가 롤백된다).
         fail(409, code)
@@ -502,7 +566,7 @@ class ControlPlane(ReleaseControl):
         result_hash = sha(request.result)
         with self.store.transaction() as session:
             job = session.get(Job, job_id)
-            self.runner_lease(job, actor)
+            self.runner_lease(session, job, actor)
             self.lease_check(job, request)
             if job.result_hash is not None:
                 if job.result_hash != result_hash:
@@ -526,12 +590,23 @@ class ControlPlane(ReleaseControl):
                 job.result_hash = result_hash
                 job.receipt = {'job_id': job.id, 'incident_id': incident.id, 'result_sha256': result_hash,
                                'state': incident.state, 'accepted_at': self.clock()}
-                self.event(session, incident, 'job_reported', {'job_id': job.id, 'kind': job.kind,
-                                                             'result_sha256': result_hash})
+                reported = {'job_id': job.id, 'kind': job.kind, 'attempt': job.fence, 'result_sha256': result_hash}
+                if job.kind == 'test_build':
+                    from .activity import test_observations
+                    record = incident.document['data'].get('test_build') or {}
+                    if record.get('job_id') == job.id:
+                        reported.update(test_observations(record))
+                self.event(session, incident, 'job_reported', reported)
+                # Operator supplements that arrived during this job apply now, at a completed boundary.
+                self.apply_pending_supplements(session, incident)
+                job.receipt['state'] = incident.state
                 return job.receipt
         fail(409, code)
 
     def apply_result(self, session, incident, job, result):
+        if job.kind == 'current_version_check':
+            from .current_version import accept
+            return accept(self, session, incident, job, result)
         if job.kind == 'collect' and job.payload.get('purpose') == 'release_target':
             return self.collect_release_result(session, incident, job, result)
         if job.kind == 'test_build':
@@ -542,8 +617,15 @@ class ControlPlane(ReleaseControl):
             return self.verify_result(session, incident, job, result)
         if job.kind == 'reconcile':
             return self.reconcile_result(session, incident, job, result)
+        if job.kind == 'qa':
+            return self.qa_result(session, incident, job, result)
+        if job.kind == 'recovery':
+            return self.recovery_result(session, incident, job, result)
         if job.kind == 'collect':
             if result.get('ok') is not True:
+                if job.payload.get('purpose') == evidence_inquiry.PURPOSE:
+                    inquiry = incident.document['data']['evidence_inquiry']
+                    return evidence_inquiry.finish(self, session, incident, inquiry, [], '추가 수집에 실패해 원인 후보를 구별할 수 없습니다.')
                 return self.stop(session, incident, 'collect_failed', 'failed')
             try:
                 target = Target.model_validate(result['target']).model_dump()
@@ -552,7 +634,7 @@ class ControlPlane(ReleaseControl):
             doc = incident.document
             if (target['environment'], target['service'], target['system']) != (doc['environment'], doc['service'], doc['system']):
                 return self.stop(session, incident, 'collect_target_mismatch')
-            if not result.get('logs') or not result.get('evidence') or not result.get('observed_at'):
+            if 'logs' not in result or not result.get('evidence') or not result.get('observed_at'):
                 return self.stop(session, incident, 'collect_evidence_missing')
             allowed_services = {doc['service'], *self.catalog.dependencies.get(doc['service'], {}).values()}
             raw_logs, raw_evidence = result['logs'], result['evidence']
@@ -572,7 +654,22 @@ class ControlPlane(ReleaseControl):
                     row['text'] = row['text'][:2000]
                     if row.get('quality') == 'observed':
                         row['quality'] = 'truncated'
-            self.data(incident, 'collection', {'target': target, 'logs': logs, 'evidence': evidence, 'observed_at': result['observed_at']})
+            if job.payload.get('purpose') == evidence_inquiry.PURPOSE:
+                return evidence_inquiry.accept(self, session, incident, job, target, logs, evidence, result['observed_at'])
+            previous = doc['data'].get('collection')
+            if not logs and not (previous and doc['data'].get('round_request') and any(
+                    row['service'] == doc['service'] and row.get('source') == 'deployment'
+                    and row.get('quality') in ('observed', 'truncated') for row in evidence)):
+                return self.stop(session, incident, 'collect_evidence_missing')
+            self.data(incident, 'collection', {
+                'round': doc['data'].get('round', 1), 'target': target, 'logs': logs, 'evidence': evidence,
+                'observed_at': result['observed_at'],
+                'log_window': {'since': job.payload['since'], 'log_batches': len(logs)},
+            })
+            if previous:
+                # The previous value is already scrubbed. Re-scrubbing the entire history would cap it at 2,000.
+                incident.document = {**incident.document, 'data': {**incident.document['data'],
+                    'collection_history': [*doc['data'].get('collection_history', []), previous]}}
             self.transition(session, incident, 'source_pinning')
             self.enqueue(session, incident, 'source', {'target': target, 'profile_id': self.catalog.profiles[doc['service']]['id']})
         elif job.kind == 'source':

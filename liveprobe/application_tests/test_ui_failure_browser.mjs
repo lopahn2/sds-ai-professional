@@ -20,9 +20,6 @@ try {
     page.on('pageerror',e=>errors.push(e.message));
     page.on('request',r=>requests.push({method:r.method(),origin:new URL(r.url()).origin,path:new URL(r.url()).pathname}));
     await page.goto(url);
-    // 이 값은 저장소에 명시된 합성 시험 identity이며 운영 자격이 아니다.
-    await page.locator('#auth-bearer').fill('synthetic-human-only');
-    await page.locator('#auth-form button[type=submit]').click();
     await page.locator('#incident-list [data-id="'+incidentId+'"]').click();
     await expect(page.locator('#test-results')).toContainText('수정 후 시험이 통과하지 못했습니다');
     await expect(page.locator('#test-results')).not.toContainText('tests/test_main.py::test_run');
@@ -40,7 +37,7 @@ try {
     assert.equal(overflow,false);
     assert.deepEqual(errors,[]);
     assert.ok(requests.every(r=>r.origin===new URL(url).origin),'외부 요청 없음');
-    assert.equal(requests.filter(r=>r.method==='POST').length,0,'브라우저는 조회만 수행한다.');
+    assert.deepEqual(requests.filter(r=>!['GET','HEAD'].includes(r.method)).map(r=>[r.method,r.path]),[],'브라우저는 조회만 수행한다.');
     await page.locator('#raw-tests').screenshot({path:resolve(out,`failed-tests-${width}.png`)});
     observations.push({width,requests,page_errors:errors,overflow,approval_disabled:true});
     await page.close();

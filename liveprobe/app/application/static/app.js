@@ -143,26 +143,25 @@ function showError(error) {
 function resetIncidentView() {
   resetRaw($('incident-detail'));
   setRecordVisibility(false);
-  for (const id of ['tester-bearer','approver-bearer','test-notes','test-passed']) $(id).value='';
+  for (const id of ['test-notes','test-passed']) $(id).value='';
   $('approve-confirm').checked=false; confirmedFor=null;
   for (const id of ['incident-summary','next-action-body','approve-digest','approval-verification','human-records','env-status','test-results','patch-overview','collection-meta','analysis-overview']) put(id);
 }
-function renderAccess() {
-  $('workspace').hidden=!readBearer;
-  $('access-panel').open=!readBearer;
-  $('access-state').textContent=readBearer?'· 적용됨 (권한 변경·지우기)':'· 조회 권한을 적용하세요';
+function operatorCsrf() {
+  return document.cookie?.match(/(?:^|;\s*)lp_operator_csrf=([a-f0-9]{64}\.[a-f0-9]{64})(?:;|$)/)?.[1];
 }
-// 조회 bearer는 페이지 수명 동안만 유지한다. tester/approver는 전송 중 함수의 지역 변수로만 존재한다.
-let readBearer = '', current = null, selectedId = null, revision = 0, catalogReady = false, busy = false;
+function renderAccess() { $('workspace').hidden=false; }
+let hasReadRole = !!operatorCsrf(), current = null, selectedId = null, revision = 0, catalogReady = false, busy = false;
+const permits = () => !!operatorCsrf();
 // 정돈-04/06: 목록 페이지 상태(서버 필터·as_of 고정), 상세 응답 순서 번호, 승인 확인 당시 지문.
 let listState = {offset:0, asOf:null, total:0, filters:{}}, listSeq = 0, detailSeq = 0, confirmedFor = null;
-async function api(path, {method='GET',body,bearer=readBearer,readiness=false,query=null}={}) {
-  if (!/^\/(?:readyz|catalog|healthz|incidents(?:\/[^/?#]+(?:\/(?:release|user-test|approve-prd))?)?)$/.test(path)) throw new Error('허용되지 않은 요청 경로입니다.');
+async function api(path, {method='GET',body,readiness=false,query=null}={}) {
+  if (!/^\/(?:readyz|catalog|healthz|summaries|incidents(?:\/[^/?#]+(?:\/(?:summary|release|user-test|approve-prd|review-merge))?)?)$/.test(path)) throw new Error('허용되지 않은 요청 경로입니다.');
   if (query) { const q=new URLSearchParams(Object.entries(query).filter(([,v])=>v!==null&&v!==undefined&&v!=='')).toString(); if (q) path += '?' + q; }
-  const headers = {'Accept':'application/json'};
-  if (bearer) headers.Authorization = 'Bearer ' + bearer;
+  const headers = {'Accept':'application/json', 'X-LiveProbe-Client':'dashboard'};
+  if (method !== 'GET' && operatorCsrf()) headers['X-LiveProbe-Operator-CSRF']=operatorCsrf();
   if (body) headers['Content-Type'] = 'application/json';
-  const response = await fetch(API_PREFIX + path, {method,headers,credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer', ...(body ? {body:JSON.stringify(body)} : {})});
+  const response = await fetch(API_PREFIX + path, {method,headers,credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer', ...(body ? {body:JSON.stringify(body)} : {})});
   const text = await response.text();
   let data;
   try { data=JSON.parse(text); }
@@ -171,7 +170,6 @@ async function api(path, {method='GET',body,bearer=readBearer,readiness=false,qu
   if (!response.ok && !(readiness && response.status === 503)) throw uiError(data.code?codeKo(data.code):'서버 응답을 확인할 수 없습니다.',data);
   return data;
 }
-function takeBearer(id) { const token=$(id).value.trim(); $(id).value=''; return token; }
 function release() { return obj(current?.data?.release); }
 // 아직 release가 없는 사건은 현행 절차(v2)로 안내한다. release가 있으면 protocol 필드로만 판단한다(없으면 기존 v1 기록).
 function releaseProtocol(r) {
@@ -210,11 +208,11 @@ function gates() {
   // v1(dev→stg→prd) 기록은 서버가 읽기 전용(legacy_release_read_only)으로 거부하고 stg는 퇴역했으므로 시험·승인 제출을 열지 않는다.
   // 사용자 시험 직전 확인 환경은 프로토콜별로 계산한다(v2 dev, v1 stg). 현행 v2에서는 dev 업무 확인이 통과해야 한다.
   const r=release(),valid=exactRelease(r) && !isLegacyRelease(r) && !busy;
-  $('create-submit').disabled = !readBearer || !catalogReady || busy;
-  $('user-test-submit').disabled = !valid || current?.state!=='awaiting_user_test' || !userTestReady(r);
+  $('create-submit').disabled = !permits('incident:create') || !catalogReady || busy;
+  $('user-test-submit').disabled = !permits('tester') || !valid || current?.state!=='awaiting_user_test' || !userTestReady(r);
   $('approve-confirm').disabled = !$('approval-target').open || current?.state!=='awaiting_prd_approval';
-  $('approve-submit').disabled = !$('approval-target').open || !valid || current?.state!=='awaiting_prd_approval' || !validUserTest(r) || !$('approve-confirm').checked
-    || confirmedFor !== approvalKey(r) || !$('approver-bearer').value.trim();
+  $('approve-submit').disabled = !permits('prd-approver') || !$('approval-target').open || !valid || current?.state!=='awaiting_prd_approval' || !validUserTest(r) || !$('approve-confirm').checked
+    || confirmedFor !== approvalKey(r);
 }
 // 정돈-06: 승인 확인은 확인 당시의 지문(산출물·계획·이미지·시험 기록)에만 유효하다. 바뀌면 확인만 해제한다.
 function approvalKey(r) { return JSON.stringify([current?.id,current?.state,r.release_id,r.artifact_sha256,r.plan_sha256,r.artifact?.image,r.user_test?.id]); }
@@ -257,10 +255,9 @@ function readFilters() {
 }
 // 정돈-04: 서버가 전체 이력에 필터를 적용한다. 첫 페이지는 최신 기준, 이후 페이지는 첫 페이지의 as_of로 고정한다.
 async function loadList({offset=listState.offset, filters=listState.filters, pinned=offset>0}={}) {
-  if (!readBearer) return;
   const rev=revision, seq=++listSeq;
   const asOf=pinned ? listState.asOf : null;
-  const data=await api('/incidents',{query:{...filters,limit:PAGE_SIZE,offset,as_of:asOf}});
+  const data=await api(hasReadRole?'/incidents':'/summaries',{query:{...filters,limit:PAGE_SIZE,offset,as_of:asOf}});
   if (rev!==revision || seq!==listSeq) return;           // 늦게 도착한 이전 응답은 버린다.
   if (!Array.isArray(data.incidents) || !Number.isFinite(data.total)) throw uiError('사건 목록 응답을 확인할 수 없습니다. 건수는 미관측입니다.',data);
   listState={offset,asOf:data.as_of ?? null,total:Number.isFinite(data.total)?data.total:0,filters};
@@ -340,13 +337,13 @@ function renderNextAction() {
 }
 async function fetchDetail(id) {
   const path='/incidents/' + encodeURIComponent(id);
+  if (!hasReadRole) return api(`${path}/summary`);
   const [detail,rr]=await Promise.all([api(path),api(`${path}/release`)]);
   if (detail.id!==id || rr.incident_id!==id) throw new Error('사건 응답의 대상이 일치하지 않습니다.');
   return {...detail,data:{...obj(detail.data),release:rr.release,
     test_build:Object.hasOwn(rr,'test_build')?rr.test_build:detail.data?.test_build}};
 }
 async function selectIncident(id, fromList=false) {
-  if (!readBearer) return;
   if (selectedId!==id) resetIncidentView();
   const rev=++revision, seq=++detailSeq;selectedId=id;current=null;confirmedFor=null;$('approve-confirm').checked=false;
   $('detail-sections').hidden=true;$('detail-title').textContent='사건을 불러오는 중입니다.';put('incident-summary');clearError();gates();
@@ -363,7 +360,7 @@ async function selectIncident(id, fromList=false) {
 }
 // 정돈-06: 자동 갱신은 선택·작성 중인 시험 기록·포커스·펼침 상태를 바꾸지 않고 표시 영역만 갱신한다.
 async function refreshDetail() {
-  if (!readBearer || !selectedId || busy) return;
+  if (!selectedId || busy) return;
   const id=selectedId, rev=revision, seq=++detailSeq;
   const next=await fetchDetail(id);
   if (rev!==revision || seq!==detailSeq || selectedId!==id || busy) return;   // 선택이 바뀌었거나 더 새 응답이 있으면 버린다.
@@ -373,6 +370,11 @@ async function refreshDetail() {
 function renderDetail({quiet=false}={}) {
   const d=obj(current.data),r=release(),patch=obj(d.patch),collection=obj(d.collection);
   $('detail-title').textContent = `${value(current.service)} · ${stateLabelFor(current.state,r)}`;
+  if (current.projection === 'local-read/v1') {
+    $('detail-sections').hidden=true;
+    put('incident-summary',facts([['시스템',current.system],['환경',current.environment],['상태',stateLabel(current.state)],['감지',stamp(current.created_at)],['사유',current.reason],['다음 행동',current.next_ko]]));
+    gates(); return;
+  }
   renderUserTestEnv(r);
   $('detail-sections').hidden=false;
   // 승인 확인은 지문이 같을 때만 유지한다. 바뀌면 확인만 해제하고 알린다(자동 승인 없음).
@@ -459,20 +461,6 @@ function renderEnvironments(r) {
   }));
   rawJson('raw-environments','env-raw',results);
 }
-$('auth-form').addEventListener('submit',async e=>{
-  e.preventDefault();resetIncidentView();readBearer=takeBearer('auth-bearer');revision++;current=null;selectedId=null;confirmedFor=null;renderUserTestEnv({});renderAccess();
-  $('detail-sections').hidden=true;$('detail-title').textContent='사건을 선택하세요';put('incident-summary');
-  for(const id of ['tester-bearer','approver-bearer']) $(id).value='';
-  put('incident-list',empty('목록을 불러오는 중입니다.'));clearError();gates();
-  try {await loadList({offset:0,filters:readFilters(),pinned:false});} catch(e){showError(e);}
-});
-$('forget-auth').addEventListener('click',()=>{
-  resetIncidentView();readBearer='';revision++;current=null;selectedId=null;confirmedFor=null;renderUserTestEnv({});renderAccess();
-  $('raw-readiness').open=false;syncRaw('raw-readiness');
-  $('create-form').reset();$('create-panel').open=false;
-  for(const id of ['auth-bearer','tester-bearer','approver-bearer']) $(id).value='';
-  $('detail-sections').hidden=true;$('detail-title').textContent='사건을 선택하세요';put('incident-summary');put('incident-list',empty('조회 권한을 적용하세요.'));$('list-count').textContent='미관측';clearError();gates();status('입력한 권한과 화면의 선택 사건을 지웠습니다.');
-});
 $('refresh').addEventListener('click',async()=>{
   clearError();await prerequisites();try{await loadList();if(selectedId)await refreshDetail();}catch(e){showError(e);}
 });
@@ -496,14 +484,14 @@ async function poll() {
   polling = true;
   try {
     await loadReadiness();
-    if (readBearer) { await loadList(); await refreshDetail(); }
+    await loadList(); if(selectedId) await refreshDetail();
   } catch(e) { status('자동 갱신에 실패했습니다. 다음 주기에 다시 시도합니다.'); }
   finally { polling = false; }
 }
 setInterval(()=>void poll(), POLL_MS);
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) void poll(); });
 $('create-form').addEventListener('submit',async e=>{
-  e.preventDefault();if(!readBearer||busy||!catalogReady)return;
+  e.preventDefault();if(!hasReadRole||busy||!catalogReady)return;
   const rev=revision;busy=true;gates();clearError();
   try {
     const d=await api('/incidents',{method:'POST',body:{environment:$('create-environment').value,service:$('create-service').value,reason:$('create-reason').value.trim()}});
@@ -516,20 +504,28 @@ async function attest(kind) {
   const r=release(),id=current.id,rev=revision,isTest=kind==='user-test';
   // 버튼 비활성화와 별개로 전송 직전에도 다시 확인한다: v1 기록(퇴역 stg 절차)은 시험·승인을 보내지 않는다.
   if(!exactRelease(r)||isLegacyRelease(r)||(!isTest && (!$('approval-target').open||!validUserTest(r)||!$('approve-confirm').checked||confirmedFor!==approvalKey(r))))return;
-  const bearer=takeBearer(isTest?'tester-bearer':'approver-bearer');
-  if(!bearer)return;
+  if(!permits(isTest?'tester':'prd-approver'))return;
   const body={...fingerprint(r),...(isTest?{passed:$('test-passed').value==='true',notes_ko:$('test-notes').value.trim()}:{user_test_id:r.user_test.id})};
   busy=true;gates();clearError();
   try {
-    await api(`/incidents/${encodeURIComponent(id)}/${isTest?'user-test':'approve-prd'}`,{method:'POST',body,bearer});
+    await api(`/incidents/${encodeURIComponent(id)}/${isTest?'user-test':'approve-prd'}`,{method:'POST',body});
     if(rev!==revision)return;
     await selectIncident(id);if(isTest){$('test-notes').value='';$('test-passed').value='';}
     status(isTest?`${userTestEnv(r)} 시험 결과를 기록했습니다.`:'명시적 prd 승인 요청을 기록했습니다. 배포·업무 확인은 별도입니다.');
   }catch(e){if(rev===revision)showError(e);}finally{busy=false;gates();}
 }
 $('user-test-form').addEventListener('submit',e=>{e.preventDefault();if(!$('user-test-submit').disabled)void attest('user-test');});
-$('approver-bearer').addEventListener('input',gates);
 $('approve-form').addEventListener('submit',e=>{e.preventDefault();if(!$('approve-submit').disabled)void attest('approve-prd');});
 $('approve-confirm').addEventListener('change',()=>{confirmedFor=$('approve-confirm').checked&&current?approvalKey(release()):null;gates();});
-void prerequisites();
+renderAccess();
+// Preview is selected once, without moving keyboard focus or changing the active filter.
+void prerequisites().then(async()=>{
+  const initialSeq=listSeq+1;
+  const initialRevision=revision;
+  await loadList();
+  if(selectedId || initialSeq!==listSeq || initialRevision!==revision) return;
+  const first=$('incident-list').querySelector('.group-waiting_people[data-id]') || $('incident-list').querySelector('[data-id]');
+  if(first) await selectIncident(first.dataset.id);
+  else $('detail-title').textContent='표시할 사건이 없습니다';
+}).catch(showError);
 })();

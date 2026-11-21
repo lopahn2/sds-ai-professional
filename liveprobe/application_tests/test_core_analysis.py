@@ -39,6 +39,28 @@ class SyntheticTransport:
 
 
 class CoreAnalysisTests(unittest.TestCase):
+    def test_missing_controller_contract_uses_registered_service_and_test_root(self):
+        from pathlib import Path
+        from app.application.catalog import Catalog
+        from app.application.settings import ApplicationSettings
+        root = Path(__file__).resolve().parents[2] / 'deploy' / 'samsung'
+        catalog = Catalog(ApplicationSettings(catalog_file=str(root / 'system-catalog.json'),
+                                               profiles_file=str(root / 'application-profiles.json')))
+        expected = {'order': ('src/test/java/io/liveprobe/target/order/OrderControllerTest.java', 'orderable'),
+                    'catalog': ('tests/test_business.py', '상품 상세'),
+                    'payment': ('tests/test_business.py', '결제 ID'),
+                    'notification': ('tests/test_business.py', 'queue_depth'),
+                    'delivery': ('test/index.js', 'delayed=true')}
+        for service, (path, predicate) in expected.items():
+            requirement = catalog.missing_controller_test(service)
+            self.assertEqual(requirement['profile_id'], catalog.profiles[service]['id'])
+            self.assertEqual(requirement['test_file'], path)
+            self.assertTrue(requirement['test_cases'])
+            self.assertIn(predicate, ' '.join(requirement['expectations_ko']))
+        self.assertIsNone(catalog.missing_controller_test('inventory'))
+        catalog.profiles['catalog']['test_root'] = '../outside'
+        self.assertIsNone(catalog.missing_controller_test('catalog'))
+
     def worker(self, h):
         try:
             importlib.import_module('app.application.worker')
@@ -56,8 +78,8 @@ class CoreAnalysisTests(unittest.TestCase):
         self.assertEqual(detail['state'], 'test_build_queued')
         self.assertEqual([c['role'] for c in provider.calls], ['classifier', 'analyst', 'specialist', 'critic', 'verifier', 'patch'])
         self.assertEqual([(c['model'], c['effort']) for c in provider.calls], [
-            ('gpt-6-luna', 'low'), ('gpt-6.1-sol', 'medium'), ('gpt-6.1-sol', 'medium'),
-            ('gpt-6-astra', 'high'), ('gpt-6.1-sol', 'medium'), ('gpt-6.1-sol', 'medium')])
+            ('gpt-6-luna', 'low'), ('gpt-6.2-sol', 'medium'), ('gpt-6.2-sol', 'medium'),
+            ('gpt-6.2-astra', 'high'), ('gpt-6.2-sol', 'medium'), ('gpt-6.2-sol', 'medium')])
         self.assertTrue(all('synthetic-sensitive-value' not in c['prompt'] for c in provider.calls))
         job = h.claim(['test_build'])
         self.assertEqual(job['payload']['patch']['source_snapshot_id'], 'snapshot-one')
@@ -73,9 +95,60 @@ class CoreAnalysisTests(unittest.TestCase):
                 self.addCleanup(h.close)
                 incident = h.seed_source()
                 self.worker(h).run_once()
+                if 'confidence' in kwargs:
+                    self.assertEqual(h.detail(incident)['state'], 'collecting')
+                    self.assertEqual(h.report(h.claim(['collect']), h.collect()).status_code, 200)
                 self.assertEqual(h.detail(incident)['state'], 'handoff')
                 self.assertTrue(h.claim(['test_build', 'deploy']) is None)
                 self.assertFalse(any(c['role'] == 'patch' for c in provider.calls))
+
+    def test_unresolved_requires_new_scoped_observation_in_cause_and_independent_verifier(self):
+        class Inquiring(SyntheticTransport):
+            def complete(self, role, prompt, **kwargs):
+                result = super().complete(role, prompt, **kwargs)
+                if role in ('analyst', 'verifier'):
+                    if '"review_evidence"' not in prompt:
+                        result.data['unresolved'] = ['어떤 주문 입력이 실패했습니까?']
+                    else:
+                        import re
+                        ref = re.search(r'followup:[a-f0-9]{64}', prompt).group()
+                        result.data['citations'].append({'ref': ref, 'quote': 'quantity zero failed'})
+                return result
+        provider = Inquiring()
+        h = Harness(provider)
+        self.addCleanup(h.close)
+        iid = h.seed_source()
+        self.assertTrue(self.worker(h).run_once())
+        job = h.claim(['collect'])
+        self.assertEqual(job['payload']['purpose'], 'review_evidence')
+        self.assertFalse(self.worker(h).run_once())
+        outcome = h.collect()
+        outcome['evidence'].append({**outcome['evidence'][0], 'text': 'quantity zero failed', 'id': 'E2-order'})
+        self.assertEqual(h.report(job, outcome).status_code, 200)
+        self.assertTrue(self.worker(h).run_once())
+        detail = h.detail(iid)
+        self.assertEqual(detail['state'], 'test_build_queued')
+        data = detail['data']
+        self.assertEqual(data['evidence_inquiry']['state'], 'reviewed')
+        self.assertEqual(data['collection']['evidence'][0]['id'], 'E1-order')
+        key = data['evidence_inquiry']['evidence_refs'][0]
+        verified = next(r for r in data['analysis']['roles'] if r['role'] == 'verifier')
+        self.assertTrue(any(x['ref'] == key for x in verified['result']['citations']))
+        self.assertEqual(data['source_snapshot']['id'], 'snapshot-one')
+
+    def test_stale_additional_collection_cannot_reopen_case(self):
+        provider = SyntheticTransport(confidence=.2)
+        h = Harness(provider)
+        self.addCleanup(h.close)
+        iid = h.seed_source()
+        self.worker(h).run_once()
+        job = h.claim(['collect'])
+        self.assertIsNotNone(job)
+        h.now += 901
+        self.assertFalse(self.worker(h).run_once())
+        self.assertEqual(h.detail(iid)['state'], 'handoff')
+        self.assertEqual(h.report(job, h.collect()).status_code, 409)
+        self.assertIsNone(h.claim(['source', 'test_build', 'deploy']))
 
     def test_observed_and_truncated_are_the_only_accepted_quality_strings(self):
         for quality in ('observed', 'truncated', .95, 1, True, '0.95', 'inferred', None):

@@ -3,11 +3,19 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from .safety import text_sha
 
-KINDS = ('collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile')
+KINDS = ('collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile', 'qa', 'recovery', 'investigate', 'current_version_check')
 
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+
+
+class HumanSessionStart(Strict):
+    scope: Literal['incident:read', 'incident:create', 'tester', 'prd-approver', 'operator']
+
+
+class HumanSessionApprove(HumanSessionStart):
+    user_code: str = Field(min_length=8, max_length=9)
 
 
 class Signal(Strict):
@@ -33,12 +41,18 @@ class CreateIncident(Strict):
 
 class Claim(Strict):
     worker_id: str = Field(min_length=1, max_length=100, pattern=r'^[A-Za-z0-9._-]+$')
-    capabilities: list[Literal['collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile']] = Field(min_length=1, max_length=6)
+    capabilities: list[Literal['collect', 'source', 'test_build', 'deploy', 'verify', 'reconcile', 'qa', 'recovery','investigate','current_version_check']] = Field(min_length=1, max_length=10)
 
 
 class Lease(Strict):
     lease_token: str = Field(min_length=16, max_length=128)
     fencing_token: int = Field(ge=1)
+
+
+class Progress(Lease):
+    seq: int = Field(ge=1, le=10000)
+    phase: str = Field(min_length=1,max_length=48)
+    file: str | None = Field(default=None,max_length=360)
 
 
 class Report(Lease):
@@ -66,11 +80,25 @@ class UserTest(Strict):
 
 
 class Approval(Strict):
-    user_test_id: str
+    # v2: user_test_id. v3: qa_receipt_id + risk_sha256 of the exact QA receipt and prd risk picture reviewed.
+    user_test_id: str | None = None
     release_id: str
     artifact_sha256: str
     plan_sha256: str
     image: str
+    qa_receipt_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+    risk_sha256: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+
+
+class CurrentVersionRequest(Strict):
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,64}$')
+    release_id: str | None = Field(max_length=128)
+
+
+class Supplement(Strict):
+    request_id: str = Field(pattern=r'^[A-Za-z0-9_-]{8,64}$')
+    kind: Literal['revise', 'rerun_qa'] = 'revise'
+    note_ko: str = Field(min_length=1, max_length=4000)
 
 
 class ErrorResponse(Strict):

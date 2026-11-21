@@ -2,13 +2,30 @@
 import hashlib
 import json
 from pathlib import Path
-from .safety import sha
+from .safety import safe_source_path, sha
 
 SERVICE_SYSTEMS = {
     'order': 'samsung-trade', 'inventory': 'samsung-trade', 'catalog': 'samsung-trade',
     'payment': 'samsung-trade', 'trade-member': 'samsung-trade',
     'delivery': 'samsung-delivery', 'notification': 'samsung-delivery',
     'delivery-member': 'samsung-delivery', 'business-api': 'samsung-business',
+}
+
+# Business assertions consumed by the five installed dev UI adapters, relative to the pinned service source.
+CONTROLLER_TESTS = {
+    'order': ('java', 'src/test/java/io/liveprobe/target/order/OrderControllerTest.java',
+              ('returnsInventoryData', 'notFoundIsNotRetried'),
+              ('GET /api/orders/check?item=…에서 등록 상품은 200이고 orderable과 inventory.quantity가 재고 조회와 일치한다.',
+               '없는 상품은 재고 조회가 한 번 호출되고 404를 반환한다.')),
+    'catalog': ('python', 'tests/test_business.py', ('CatalogTests.test_search_detail_and_prices',),
+                ('GET /api/products?q=…의 검색 건수와 첫 상품 가격을 시험 데이터와 대조한다.',
+                 'GET /api/products/{id}의 상품 상세 설명과 재고를 확인한다. 두 요청 모두 200이다.')),
+    'payment': ('python', 'tests/test_business.py', ('test_history_has_fixed_retention_and_monotonic_ids',),
+                ('GET /api/payments의 payments 목록에서 최근 100건을 보존하고, 100개의 결제 ID가 모두 서로 다름을 확인한다.',)),
+    'notification': ('python', 'tests/test_business.py', ('test_enqueue_and_complete_all_channels',),
+                     ('격리 시험에서 세 채널 알림을 등록한 뒤 GET /api/notifications의 queue_depth가 3인지 확인한다.',)),
+    'delivery': ('node', 'test/index.js', ('송장 등록·조회·순차 단계 변경·지연 목록',),
+                 ('격리 시험에 지연 송장을 준비하고 GET /api/deliveries?delayed=true의 deliveries 목록에 항목이 있는지 확인한다.',)),
 }
 
 
@@ -47,6 +64,20 @@ class Catalog:
                 'language': 'python', 'test_root': 'tests', 'affected_services': [service]}
                 for service, system in SERVICE_SYSTEMS.items()}
             self.configured = True
+
+    def missing_controller_test(self, service):
+        registered = CONTROLLER_TESTS.get(service)
+        profile = self.profiles.get(service)
+        if not self.configured or not registered or not profile:
+            return None
+        language, path, cases, expectations = registered
+        if (profile.get('language') != language or profile.get('service') != service or
+                not safe_source_path(path) or not path.startswith((profile.get('test_root') or '\0') + '/')):
+            return None
+        return {'reason': 'qa_tests_missing', 'service': service, 'profile_id': profile['id'],
+                'test_file': path, 'test_cases': list(cases), 'expectations_ko': list(expectations),
+                'instruction': 'Add the registered controller test at test_file in the service source. '
+                               'Implement the specified business assertions using isolated test fixtures.'}
 
     def public(self):
         return {'systems': self.systems, 'services': [{'service': service, 'system': system,

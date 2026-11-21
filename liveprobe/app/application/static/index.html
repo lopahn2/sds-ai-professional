@@ -10,14 +10,9 @@
 </head>
 <body>
 <a class="skip" href="#incident-detail">사건 상세로 이동</a>
-<header class="top"><div><strong>LiveProbe <span>for Application</span></strong><h1>애플리케이션 사건 관제</h1><p class="purpose">코드 장애의 분석·수정·시험과 dev → prd 승격을 맡는 별도 제품입니다. <a href="http://liveprobe.localhost/" rel="noreferrer">Kubernetes 관제 및 기존 변경 이력</a></p></div><div class="top-actions"><label class="check" for="auto-refresh"><input id="auto-refresh" type="checkbox" checked><span>자동 갱신(15초)</span></label><button id="refresh" type="button">새로고침</button></div></header>
+<header class="top"><div><strong>LiveProbe <span>for Application</span></strong><h1>애플리케이션 사건 관제</h1><p class="purpose">코드 장애의 분석·수정과 dev 시험·prd 승인을 확인합니다. <a href="http://liveprobe.localhost/" rel="noreferrer">Kubernetes 관제 및 기존 변경 이력</a></p></div><div class="top-actions"><label class="check" for="auto-refresh"><input id="auto-refresh" type="checkbox" checked><span>자동 갱신(15초)</span></label><button id="refresh" type="button">새로고침</button></div></header>
 <main>
-  <section class="access" aria-labelledby="access-title"><details id="access-panel" open><summary id="access-title">접근 권한 <span id="access-state">· 조회 권한을 적용하세요</span></summary>
-    <form id="auth-form" autocomplete="off"><label for="auth-bearer">조회·사건 생성 인증 토큰(bearer)<input id="auth-bearer" type="password" autocomplete="off" spellcheck="false" required></label><button type="submit">접근 적용</button><button id="forget-auth" type="button">권한 지우기</button></form>
-    <p class="muted">입력값은 이 화면의 메모리에서만 사용합니다. 새로 열면 다시 입력해야 합니다. 사용자 시험과 운영 승인은 별도 권한으로 전송합니다.</p>
-  </details></section>
-  <section id="readiness" aria-labelledby="readiness-title"><h2 id="readiness-title">실행 준비</h2><div id="readiness-body">확인 중입니다.</div><details id="readiness-details"><summary>준비 점검 자세히</summary><div id="readiness-checks"></div><details id="raw-readiness" data-raw><summary>원문 보기 · 준비 점검 응답</summary><pre id="readiness-raw"></pre></details></details></section>
-  <p id="live-status" role="status" aria-live="polite" aria-atomic="true">조회 권한을 적용하면 사건 목록을 불러옵니다.</p>
+  <p id="live-status" role="status" aria-live="polite" aria-atomic="true">사건 목록을 불러오고 있습니다.</p>
   <div id="error-banner" role="alert" hidden><p id="error-message"></p><details id="raw-error" data-raw><summary>원문 보기 · 요청 실패 정보</summary><pre id="error-raw"></pre></details></div>
   <div id="workspace" class="workspace" hidden>
     <aside class="sidebar" aria-label="사건 탐색">
@@ -35,7 +30,7 @@
           <button type="submit">조회</button>
         </form>
         <p id="list-newer" class="notice" hidden><span id="list-newer-text"></span> <button id="list-newest" type="button">최신 목록 보기</button></p>
-        <div id="incident-list">조회 권한을 적용하세요.</div>
+        <div id="incident-list">사건 목록을 불러오고 있습니다.</div>
         <nav class="pager" aria-label="사건 목록 페이지"><button id="list-prev" type="button" disabled>이전</button><span id="list-page" class="muted"></span><button id="list-next" type="button" disabled>다음</button></nav>
       </section>
       <section><details id="create-panel"><summary id="create-title">새 사건 만들기</summary><form id="create-form" autocomplete="off">
@@ -55,13 +50,11 @@
           <details id="approval-target" data-raw hidden><summary>승인 대상 검토 · 원문 보기</summary><div id="approve-digest"></div><div id="approval-verification"></div><p class="warning">확인한 버전과 대상에만 승인이 적용됩니다.</p></details>
           <div class="human-forms">
             <form id="user-test-form" autocomplete="off" hidden><h4><span class="user-test-env">dev</span> 사용자 시험 기록</h4>
-              <label for="tester-bearer"><span><span class="user-test-env">dev</span> 시험자 인증 토큰(tester)</span><input id="tester-bearer" type="password" autocomplete="off" spellcheck="false" required></label>
               <label for="test-passed">실제 시험 결과<select id="test-passed" required><option value="">결과 선택</option><option value="true">통과</option><option value="false">실패</option></select></label>
               <label for="test-notes">시험 기록<textarea id="test-notes" rows="3" maxlength="4000" required></textarea></label>
               <button id="user-test-submit" type="submit" disabled><span class="user-test-env">dev</span> 시험 기록</button>
             </form>
             <form id="approve-form" autocomplete="off" hidden><h4>prd 명시 승인</h4>
-              <label for="approver-bearer">prd 승인자 인증 토큰(prd-approver)<input id="approver-bearer" type="password" autocomplete="off" spellcheck="false" required></label>
               <label class="check" for="approve-confirm"><input id="approve-confirm" type="checkbox" required><span>위에 표시된 전체 이미지 digest와 대상 지문, 검증 결과와 위험·원복 방법을 확인했습니다. 이 버전의 prd 배포를 승인합니다.</span></label>
               <button id="approve-submit" type="submit" disabled>이 버전의 prd 배포 승인</button>
               <p class="muted">자동 시험은 사람의 승인을 대신하지 않습니다.</p>
@@ -81,6 +74,7 @@
       </div>
     </article>
   </div>
+  <section id="readiness" aria-labelledby="readiness-title"><h2 id="readiness-title">실행 준비</h2><div id="readiness-body">확인 중입니다.</div><details id="readiness-details"><summary>준비 점검 자세히</summary><div id="readiness-checks"></div><details id="raw-readiness" data-raw><summary>원문 보기 · 준비 점검 응답</summary><pre id="readiness-raw"></pre></details></details></section>
 </main>
 <footer>관측되지 않은 정보는 미관측으로 표시합니다. 이 화면은 서버의 권한·안전 검사를 대신하지 않습니다.</footer>
 </body>

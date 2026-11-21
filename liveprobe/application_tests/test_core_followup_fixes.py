@@ -22,7 +22,7 @@ from app.application.storage import Incident, Job
 RAW = 'raw-material-never-persist'
 SECRET = 'synthetic-secret-never-persist'
 TABLES = {'application_incidents', 'application_jobs', 'application_events',
-          'application_mutex', 'application_runner_observation'}
+          'application_mutex', 'application_runner_observation', 'application_source_inquiries', 'application_display_readings', 'application_runner_contacts'}
 
 
 class FlowCase(unittest.TestCase):
@@ -230,7 +230,7 @@ class CorePrdLeaseAuthorizationTests(FlowCase):
         self.assertEqual(self.h.report(job, self.written(job)).status_code, 200)
         self.assertEqual(self.job_status(job['id']), 'completed')
         self.flow.verified('prd')
-        self.assertEqual(self.h.detail(incident)['state'], 'completed')
+        self.assertEqual(self.h.detail(incident)['state'], 'recovery_review')
 
 
 class CoreSafeResultEvidenceTests(FlowCase):
@@ -476,17 +476,17 @@ class CoreDatabaseBootstrapTests(unittest.TestCase):
 
 
 class CoreModelDefaultTests(unittest.TestCase):
-    """보완 계약 §5: 분석·수정안 gpt-6.1-sol/medium, 반론 gpt-6-astra/high, 검증 gpt-6.1-sol/medium, 분류 gpt-6-luna/low."""
-    EXPECTED = {'classifier': ('gpt-6-luna', 'low'), 'analyst': ('gpt-6.1-sol', 'medium'),
-                'specialist': ('gpt-6.1-sol', 'medium'), 'patch': ('gpt-6.1-sol', 'medium'),
-                'critic': ('gpt-6-astra', 'high'), 'verifier': ('gpt-6.1-sol', 'medium')}
+    """보완 계약 §5: 분석·수정안 gpt-6.2-sol/medium, 반론 gpt-6.2-astra/high, 검증 gpt-6.2-sol/medium, 분류 gpt-6-luna/low."""
+    EXPECTED = {'classifier': ('gpt-6-luna', 'low'), 'analyst': ('gpt-6.2-sol', 'medium'),
+                'specialist': ('gpt-6.2-sol', 'medium'), 'patch': ('gpt-6.2-sol', 'medium'),
+                'critic': ('gpt-6.2-astra', 'high'), 'verifier': ('gpt-6.2-sol', 'medium')}
 
     def test_role_defaults_follow_addendum_lineup(self):
         from app.application.settings import ApplicationSettings
         with patch.dict(os.environ, {}, clear=True):
             from_env = ApplicationSettings.from_env()
         for settings in (ApplicationSettings(), from_env):
-            self.assertEqual(settings.model, 'gpt-6.1-sol')
+            self.assertEqual(settings.model, 'gpt-6.2-sol')
             self.assertEqual({role: (settings.model_for(role), settings.effort_for(role)) for role in self.EXPECTED},
                              self.EXPECTED)
 

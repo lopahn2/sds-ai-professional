@@ -38,8 +38,8 @@ def main(argv=None):
     parser.add_argument('--machine-token-file',type=Path)
     parser.add_argument('--runtime-config',type=Path)
     parser.add_argument('--worker-id',default='application-host')
-    parser.add_argument('--role',choices=('legacy','source','cluster'),default='legacy',
-                        help='통합 모드는 소스/클러스터 실행기를 별도 신원으로 실행')
+    parser.add_argument('--role',choices=('legacy','source','cluster','qa'),default='legacy',
+                        help='통합 모드는 소스/클러스터/QA 실행기를 별도 신원으로 실행')
     parser.add_argument('--dry-run',action='store_true')
     parser.add_argument('--once',action='store_true')
     parser.add_argument('--poll-seconds',type=float,default=5)
@@ -61,16 +61,22 @@ def main(argv=None):
     try:
         config=json.loads(args.runtime_config.read_text())
         config['runner_role']=args.role
-        if args.role=='source' and (args.deploy or args.confirm_deployment or args.command=='build-fixture'):
+        if args.role in ('source','qa') and (args.deploy or args.confirm_deployment or args.command=='build-fixture'):
             raise ValueError('runner_role_job_forbidden')
         # 부모가 인증·RBAC를 적용한 전용 loopback 프록시. 기존 kubeconfig/Secret은 읽지 않는다.
-        kube_url=safe_url(config['kube_api'])
+        socket_path=config.get('kube_unix_socket')
+        kube_url='http://localhost' if socket_path else safe_url(config['kube_api'])
         if urllib.parse.urlsplit(kube_url).hostname not in ('127.0.0.1','localhost','::1'):
             raise ValueError('local_kubernetes_proxy_required')
         from kubernetes import client
         settings=client.Configuration();settings.host=kube_url
+        if socket_path:
+            settings.proxy=None
         api=client.ApiClient(settings)
-        kube=KubeTransport(api,read_only=args.role=='source')
+        if socket_path:
+            from .kube_proxy import use_private_socket
+            use_private_socket(api,socket_path)
+        kube=KubeTransport(api,read_only=args.role in ('source','qa'))
         kube.business_reader=business_reader(registry,kube)
         if args.command in ('detect', 'watch'):
             from datetime import datetime,timedelta,timezone

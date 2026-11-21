@@ -18,9 +18,13 @@ class Executor:
     def __init__(self,registry,kube,host,state_root,config):
         self.registry=registry;self.kube=kube;self.host=host;self.state_root=Path(state_root);self.config=config
         self.guard=lambda:None
+        self.observe=lambda phase,file=None: None
 
     def artifact_key(self,artifact):
         return digest({k:artifact[k] for k in ARTIFACT_KEYS})
+
+    def artifact_receipt(self, key):
+        return Path(self.config.get('artifact_receipts_dir') or self.state_root/'artifacts') / (key+'.json')
 
     def execute(self,job):
         self.guard()
@@ -32,19 +36,62 @@ class Executor:
         from .worker import ROLE_KINDS
         role=self.config.get('runner_role','legacy')
         if role not in ROLE_KINDS or kind not in ROLE_KINDS[role]:raise ValueError('runner_role_job_forbidden')
-        if kind=='collect':return self.collect(payload)
-        if kind=='source':return self.source(payload)
+        if kind=='investigate':
+            from .source import map_stack
+            env,service=payload['environment'],payload['service']
+            profile=self.registry.get(service,payload['profile_id'])
+            target=summarize(self.kube.read(env,service),env,service,self.registry)
+            if target['image']!=payload['image']:raise ValueError('source_target_changed')
+            self.observe('pin_source')
+            source=self.source({'target':target,'profile_id':profile['id']})['source_snapshot']
+            findings=[]
+            for frame in payload['frames']:
+                self.guard()
+                try:path=map_stack(frame['file'],profile,source)
+                except ValueError:continue
+                lines=source['files'][path].splitlines()
+                n=frame['line']
+                if type(n) is not int or not 1<=n<=len(lines):continue
+                self.observe('read_file',path)
+                findings.append({'file':path,'line':n,'file_sha256':source['file_sha256'][path],
+                                 'excerpt':redact(lines[n-1])[:700]})
+            return {'ok':True,'image':source['base_image'],'snapshot_id':source['id'],'findings':findings}
+        if kind=='collect':
+            self.observe('inspect_resources')
+            return self.collect(payload)
+        if kind=='source':
+            self.observe('pin_source')
+            return self.source(payload)
         if kind=='test_build':return self.test_build(payload)
+        if kind=='qa':
+            self.observe('test_journey')
+            return self.qa(job)
+        if kind=='current_version_check':
+            from .current_version import check_current_version
+            self.observe('observe_original_request')
+            return check_current_version(self.registry, self.kube, job)
+        if kind=='recovery':
+            # Read-only prd observation of the incident's own attributed operation (runtime lane helper).
+            from .recovery_probe import run_recovery
+            self.observe('observe_original_request')
+            return run_recovery(self.registry,self.kube,payload)
         if kind in ('deploy','verify','reconcile'):
             original=payload
             if kind=='reconcile':
                 if payload.get('original_kind')!='deploy':raise ValueError('unsupported_reconciliation')
                 original=payload['original_payload']
             key=self.artifact_key(original['artifact'])
-            saved=self.state_root/'artifacts'/(key+'.json')
+            saved=self.artifact_receipt(key)
             if not saved.is_file():raise ValueError('tested_artifact_receipt_required')
+            if self.config.get('artifact_receipts_dir'):
+                metadata = saved.lstat()
+                if saved.is_symlink() or metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
+                    raise ValueError('tested_artifact_receipt_untrusted')
             receipt=json.loads(saved.read_text())
-            if not receipt['ok']:raise ValueError('tested_artifact_receipt_required')
+            if receipt.get('ok') is not True:raise ValueError('tested_artifact_receipt_required')
+            if self.config.get('artifact_receipts_dir') and receipt.get('artifact') != original['artifact']:
+                raise ValueError('tested_artifact_receipt_mismatch')
+            self.observe({'verify':'verify_release','reconcile':'reconcile_write','deploy':'apply_release'}[kind])
             deployer=Deployer(self.registry,self.kube,self.state_root/'deployments')
             if kind=='verify':
                 deadline = time.monotonic() + 90
@@ -102,6 +149,7 @@ class Executor:
             when=observed_at if selected==service else utc_now()
             evidence_row(selected,'deployment',deployment_text(selected_doc,selected_target),when)
             evidence_row(selected,'rollout',rollout_text(selected_doc),when)
+            self.observe('read_logs')
             for row in self.kube.logs(env,selected,since):
                 if not isinstance(row.get('text'),str) or not row['text'].strip():continue
                 when=row.get('observed_at') or utc_now()  # receipt time of actual HTTP observation
@@ -145,7 +193,66 @@ class Executor:
         if not re.fullmatch('[a-f0-9]{64}',source['id']):raise ValueError('source_snapshot_invalid')
         path=self.state_root/'snapshots'/(source['id']+'.json')
         if not path.is_file() or json.loads(path.read_text())!=source:raise ValueError('source_snapshot_not_observed')
-        result=Builder(self.state_root/'workspaces',self.host,
-                       self.config.get('provenance_dir') or self.state_root/'provenance').run(source,payload['patch'],p)
-        durable_write(self.state_root/'artifacts'/(self.artifact_key(result['artifact'])+'.json'),result)
+        builder=Builder(self.state_root/'workspaces',self.host,
+                       self.config.get('provenance_dir') or self.state_root/'provenance')
+        builder.observe=self.observe
+        result=builder.run(source,payload['patch'],p)
+        durable_write(self.artifact_receipt(self.artifact_key(result['artifact'])),result)
+        return result
+
+    def released_source(self,profile,image,artifact):
+        """The build receipt's exact released tree. Only a hash-identical tree can ground developer tests."""
+        directory=self.config.get('provenance_dir') or self.state_root/'provenance'
+        path=Path(directory)/(profile['service']+'-'+image.rsplit(':',1)[1]+'.json')
+        if path.is_symlink() or not path.is_file():raise ValueError('released_source_unobserved')
+        stat=path.stat()
+        if stat.st_uid!=os.getuid() or stat.st_mode&0o022:raise ValueError('released_source_untrusted')
+        proof=json.loads(path.read_text())
+        if (proof.get('provenance_kind')!='local_build_receipt' or proof.get('image')!=image or
+                proof.get('profile_id')!=profile['id'] or digest(proof.get('file_sha256'))!=artifact.get('source_tree_sha256')):
+            raise ValueError('released_source_mismatch')
+        return {'root':proof['source_root'],'file_sha256':proof['file_sha256'],'image':image,'profile_id':profile['id']}
+
+    def dev_identity(self,service,uid,image):
+        """Pinned dev Deployment: UID, settled generation, all replicas ready, every owned ready Pod running exactly image."""
+        doc=self.kube.read('dev',service)
+        observed=summarize(doc,'dev',service,self.registry)
+        md,st=doc['metadata'],doc.get('status') or {}
+        count=doc['spec'].get('replicas',1);gen=md.get('generation')
+        if (md.get('namespace')!='dev' or md.get('name')!=service or md.get('deletionTimestamp') or observed['uid']!=uid
+                or observed['image']!=image or type(gen) is not int or st.get('observedGeneration',0)<gen or count<1
+                or any(st.get(k)!=count for k in ('updatedReplicas','readyReplicas','availableReplicas'))):
+            return None
+        pods=self.kube.pods('dev',service)
+        if len(pods)!=count or not all(p.get('owned') is True and p.get('ready') is True and p.get('image_id')==image for p in pods):
+            return None
+        return {'uid':uid,'generation':gen,'template_sha256':observed['template_sha256'],'replicas':count,'image':image}
+
+    def qa(self,job):
+        """Real dev UI QA via the QA lane's browser helper. Reads only: dev Deployment/Pods, registered UI, registered reads."""
+        from .dev_ui_qa import run_dev_ui_qa
+        payload=job['payload'];service=payload['service']
+        profile=self.registry.get(service,payload.get('profile_id'))
+        if payload.get('stage')!='dev':raise ValueError('qa_target_mismatch')
+        image=payload['artifact']['image']
+        target=next((t for t in payload.get('targets') or [] if t.get('environment')=='dev' and t.get('service')==service),{})
+        # Desired template image is not enough during a rollout: pin UID, generation and actual ready Pod images.
+        before=self.dev_identity(service,target.get('uid'),image) if target.get('uid') else None
+        configured=dict(profile)
+        configured['qa_source']=self.released_source(profile,image,payload['artifact'])
+        origin=(self.config.get('qa_ui_origins') or {}).get(service)
+        if origin:configured['qa_ui_origin']=origin
+        if service=='order':
+            def inventory(item):
+                if not re.fullmatch(r'[A-Za-z0-9_-]{1,32}',item):raise ValueError('qa_inventory_item_invalid')
+                return self.kube.http_get('/api/v1/namespaces/dev/services/http:inventory:8080/proxy/api/stock/'+item)
+            configured['qa_inventory_read']=inventory
+        evidence=self.state_root/'qa-evidence'/re.sub(r'[^A-Za-z0-9_-]','',job['id'])
+        result=run_dev_ui_qa(job={**payload,'observed_image':image if before else None},profile=configured,evidence_dir=evidence)
+        after=self.dev_identity(service,target.get('uid'),image) if before else None
+        if before and after!=before and result['qa'].get('outcome')!='unverifiable':
+            qa={k:v for k,v in result['qa'].items() if k!='receipt_id'}
+            qa.update(outcome='unverifiable',reason='dev_deployment_changed_during_qa')
+            qa['receipt_id']=digest(qa)
+            result={'ok':False,'write_outcome':'not_written','qa':qa,'error':qa['reason']}
         return result

@@ -11,6 +11,7 @@ import urllib.request
 import uvicorn
 
 from test_core_support import Harness
+from operator_gateway_support import local_gateway
 from test_core_analysis import SyntheticTransport
 import test_core_release as release_tests
 
@@ -44,9 +45,9 @@ class FailureApiBrowserTests(unittest.TestCase):
             self.assertTrue(server.started, '폐기 API 서버 시작 실패')
             with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/application/v1/healthz', timeout=3) as response:
                 self.assertTrue(json.load(response)['ok'])
-            command = ['node', 'liveprobe/application_tests/test_ui_failure_browser.mjs',
-                       f'http://127.0.0.1:{port}', incident, str(out)]
-            observed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            with local_gateway(h, port) as gateway_url:
+                command = ['node', 'liveprobe/application_tests/test_ui_failure_browser.mjs', gateway_url, incident, str(out)]
+                observed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
             self.assertEqual(observed.returncode, 0, observed.stdout + observed.stderr)
         finally:
             server.should_exit = True

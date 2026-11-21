@@ -189,6 +189,12 @@ class UnifiedReleaseFlowTests(unittest.TestCase):
             deploy('prd')
             verify('prd')
         self.assertGreaterEqual(len(calls), 4)  # review, approve, queue, claim, report rechecks
+        observe('recovery_review', 'recovery_review')
+        review_url = PREFIX + '/incidents/' + child + '/accountability'
+        review = h.client.get(review_url, headers=TESTER).json()
+        self.assertEqual(review['status'], 'pending_operator')
+        self.assertEqual(h.client.post(review_url + '/confirm', headers=TESTER,
+            json={'revision': review['revision']}).status_code, 200)
         observe('completed', 'resolved')
         self.assertFalse(coordinator.summary(1)['blocks_cluster'])
         with c.store.read() as session:

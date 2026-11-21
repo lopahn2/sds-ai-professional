@@ -94,6 +94,13 @@ class CoreReleaseTests(unittest.TestCase):
         self.assertEqual(self.h.detail(incident)['state'], 'prd_deploy_queued')
         self.deployed('prd')
         self.verified('prd')
+        self.assertEqual(self.h.detail(incident)['state'], 'recovery_review')
+        url = PREFIX + f'/incidents/{incident}/accountability'
+        review = self.h.client.get(url, headers=HUMAN).json()
+        self.assertEqual(review['status'], 'pending_operator')
+        decision = {'revision': review['revision'], 'note': '원래 요청의 관측 공백을 확인했습니다.'}
+        self.assertEqual(self.h.client.post(url + '/confirm', headers=HUMAN, json=decision).status_code, 200)
+        self.assertEqual(self.h.client.post(url + '/confirm', headers=HUMAN, json=decision).status_code, 409)
         self.assertEqual(self.h.detail(incident)['state'], 'completed')
         self.assertTrue(self.h.claim(['deploy']) is None)
 

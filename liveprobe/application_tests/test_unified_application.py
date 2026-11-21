@@ -16,6 +16,7 @@ from test_core_support import Harness, HUMAN, MACHINE, PREFIX
 SOURCE = {'Authorization': 'Bearer synthetic-source-machine'}
 CLUSTER = {'Authorization': 'Bearer synthetic-cluster-machine'}
 CLUSTER_OTHER = {'Authorization': 'Bearer synthetic-other-machine'}
+QA = {'Authorization': 'Bearer synthetic-qa-machine'}
 
 
 class UnifiedApplicationTests(unittest.TestCase):
@@ -28,6 +29,7 @@ class UnifiedApplicationTests(unittest.TestCase):
         for subject, token, role in (
             ('code-worker', 'synthetic-source-machine', 'source'),
             ('deploy-worker', 'synthetic-cluster-machine', 'cluster'),
+            ('browser-worker', 'synthetic-qa-machine', 'qa'),
             ('other-worker', 'synthetic-other-machine', 'cluster')):
             principals.append({'subject': subject, 'token': token, 'scopes': ['runner', 'runner:' + role]})
         path.write_text(json.dumps({'principals': principals}))
@@ -126,6 +128,53 @@ class UnifiedApplicationTests(unittest.TestCase):
         self.assertEqual(self.report(CLUSTER, job, self.h.collect()).status_code, 200)
         # A duplicate accepted receipt still requires the original principal.
         self.assertEqual(self.report(CLUSTER_OTHER, job, self.h.collect()).status_code, 403)
+
+    def test_standalone_v3_source_and_deploy_do_not_offer_or_extend_a_legacy_lease(self):
+        from app.application.safety import text_sha
+        from app.environments import QA_RELEASE_PROTOCOL
+        iid = self.h.create()
+        for kind, state, role in [('source', 'source_pinning', SOURCE), ('deploy', 'dev_deploy_queued', CLUSTER)]:
+            with self.subTest(kind=kind):
+                with self.control.store.transaction() as session:
+                    incident = self.control.get(session, iid)
+                    self.control.data(incident, 'release', {'protocol': QA_RELEASE_PROTOCOL, 'release_id': 'r', 'valid': True})
+                    self.control.transition(session, incident, state)
+                    job = self.control.enqueue(session, incident, kind, {'stage': 'dev', 'release_id': 'r'})
+                    job_id = job.id
+                self.assertIsNone(self.claim(MACHINE, [kind]).json()['job'])
+                with self.control.store.transaction() as session:
+                    job = session.get(Job, job_id)
+                    job.status, job.worker_id = 'leased', 'legacy-label'
+                    job.lease_hash, job.fence, job.lease_until = text_sha('historical-lease-token'), 2, self.h.now + 10
+                ticket = {'id': job_id, 'lease_token': 'historical-lease-token', 'fencing_token': 2}
+                for identity in (MACHINE, role):
+                    self.assertEqual(self.heartbeat(identity, ticket).status_code, 403)
+                    self.assertEqual(self.report(identity, ticket, {'ok': True}).status_code, 403)
+                with self.control.store.read() as session:
+                    persisted = session.get(Job, job_id)
+                    self.assertEqual((persisted.status, persisted.fence, persisted.lease_until, persisted.result_hash),
+                                     ('leased', 2, self.h.now + 10, None))
+
+    def test_enabled_standalone_qa_preserves_explicit_v2_and_splits_new_intake(self):
+        from dataclasses import replace
+        from app.environments import RELEASE_PROTOCOL
+        first = self.h.create()
+        ticket = self.claim(MACHINE, ['collect']).json()['job']
+        with self.control.store.transaction() as session:
+            self.control.data(self.control.get(session, first), 'release', {'protocol': RELEASE_PROTOCOL})
+        self.control.settings = replace(self.control.settings, qa_required=True)
+        self.assertEqual(self.heartbeat(MACHINE, ticket).status_code, 200)
+        self.assertEqual(self.report(MACHINE, ticket, self.h.collect()).status_code, 200)
+        self.assertEqual(self.claim(MACHINE, ['source']).json()['job']['incident_id'], first)
+        second = self.h.create(service='catalog')
+        self.assertIsNone(self.claim(MACHINE, ['collect']).json()['job'])
+        self.assertIsNone(self.claim(SOURCE, ['collect']).json()['job'])
+        current = self.claim(CLUSTER, ['collect']).json()['job']
+        self.assertEqual(current['incident_id'], second)
+        self.assertEqual(self.heartbeat(MACHINE, current).status_code, 403)
+        self.assertEqual(self.heartbeat(QA, current).status_code, 403)
+        self.assertEqual(self.heartbeat(CLUSTER, dict(current, fencing_token=current['fencing_token'] + 1)).status_code, 409)
+        self.assertEqual(self.heartbeat(CLUSTER, current).status_code, 200)
 
     def test_strict_mode_missing_combined_or_duplicate_roles_rejects(self):
         from dataclasses import replace
@@ -238,13 +287,16 @@ class UnifiedApplicationTests(unittest.TestCase):
         self.assertFalse(self.control.runner_recent('source'))
         self.assertFalse(self.control.runner_status_for_incident(linked['id'])['observed'])
 
-    def test_strict_runner_readiness_requires_both_roles(self):
+    def test_strict_readiness_requires_independent_source_cluster_and_qa_runners(self):
         from dataclasses import replace
         self.control.settings = replace(self.control.settings, unified_mode=True)
         self.assertFalse(self.control.runner_recent())
-        self.claim(CLUSTER, ['collect'])
+        self.assertEqual(self.claim(CLUSTER, ['collect']).status_code, 200)
         self.assertFalse(self.control.runner_recent())
-        self.claim(SOURCE, ['source'])
+        self.assertEqual(self.claim(SOURCE, ['source']).status_code, 200)
+        self.assertFalse(self.control.runner_recent())
+        self.assertFalse(self.control.runner_recent('qa'))
+        self.assertEqual(self.claim(QA, ['qa']).status_code, 200)
         self.assertTrue(self.control.runner_recent())
 
     def test_machine_cannot_request_dev_reconciliation_with_source_role(self):
@@ -269,7 +321,7 @@ class RunnerSeparationTests(unittest.TestCase):
             worker = Worker(api, Executor(), state, 'worker', role='source')
             with self.assertRaises(ValueError):
                 worker.once()
-            self.assertEqual(api.body['capabilities'], ['source', 'test_build'])
+            self.assertEqual(api.body['capabilities'], ['source', 'test_build', 'investigate'])
             self.assertFalse(state.exists())
 
     def test_source_transport_cannot_patch_even_when_sdk_has_authority(self):

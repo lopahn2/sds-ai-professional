@@ -156,9 +156,9 @@ class GitHubMergeObserver:
                 'human_merge_observed': True}
 
 
-def install_merge_policy(app, control, identities, settings):
+def install_merge_policy(app, control, identities, settings, *, human_actor=None):
     """권한이 있는 명시 조회만 proof를 저장한다. gate 재검사는 읽기만 수행한다."""
-    from fastapi import Header
+    from fastapi import Header, Request
     from .safety import fail
 
     def observer():
@@ -219,8 +219,9 @@ def install_merge_policy(app, control, identities, settings):
 
     control.review_merge = review
     # FastAPI resolves annotation using globals; use the actual type on the function below.
-    def endpoint(incident_id: str, body: MergeReview, authorization: str | None = Header(default=None)):
-        actor = identities.authenticate(authorization, 'prd-approver')
+    def endpoint(incident_id: str, body: MergeReview, request: Request, authorization: str | None = Header(default=None)):
+        actor = human_actor(request, 'prd-approver') if human_actor else identities.authenticate(authorization, 'prd-approver')
         return review(incident_id, body, actor)
     endpoint.__annotations__['body'] = MergeReview
+    endpoint.__annotations__['request'] = Request
     app.post('/api/application/v1/incidents/{incident_id}/review-merge')(endpoint)

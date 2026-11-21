@@ -8,12 +8,12 @@ STATIC = ROOT / 'app' / 'application' / 'static'
 CONTROL_SOURCES = [ROOT / 'app' / 'application' / name for name in ('control.py', 'releases.py', 'worker.py')]
 PREFIX = '/api/application/v1'
 REQUIRED_IDS = (
-    'auth-form', 'auth-bearer', 'readiness', 'live-status', 'error-banner', 'create-form',
+    'readiness', 'live-status', 'error-banner', 'create-form',
     'incident-list', 'incident-detail', 'stage-timeline', 'evidence-table', 'analysis-roles',
     'patch-diff', 'test-results', 'artifacts', 'env-status', 'release-explain',
-    'user-test-form', 'tester-bearer', 'approve-form', 'approver-bearer', 'approve-digest',
+    'user-test-form', 'approve-form', 'approve-digest',
 )
-API_PATHS = ('/incidents', '/catalog', '/readyz', '/healthz')
+API_PATHS = ('/incidents', '/catalog', '/readyz', '/healthz', '/summaries')
 
 
 def read(name):
@@ -75,19 +75,21 @@ class NoExternalResources(unittest.TestCase):
 class NoBrowserPersistence(unittest.TestCase):
     def test_no_web_storage_cookie_or_url_state(self):
         js = read('app.js')
-        for banned in ('localStorage', 'sessionStorage', 'document.cookie', 'indexedDB', 'serviceWorker',
+        for banned in ('localStorage', 'sessionStorage', 'indexedDB', 'serviceWorker',
                        'caches.', 'location.hash', 'location.search', 'pushState', 'replaceState',
                        'location.href', 'location.assign', 'window.name', 'BroadcastChannel', 'postMessage'):
             self.assertNotIn(banned, js, banned)
 
-    def test_bearer_inputs_are_masked_and_not_autofilled(self):
-        html = read('index.html')
-        inputs = re.findall(r'<input\b[^>]*\bid="([a-z]+-bearer)"[^>]*>', html)
-        self.assertEqual(sorted(inputs), ['approver-bearer', 'auth-bearer', 'tester-bearer'])
-        for tag in re.findall(r'<input\b[^>]*\bid="[a-z]+-bearer"[^>]*>', html):
-            self.assertIn('type="password"', tag)
-            self.assertIn('autocomplete="off"', tag)
-            self.assertNotIn('value=', tag)
+    def test_local_operator_needs_no_personal_role_registration(self):
+        html, js = read('index.html'), read('app.js')
+        self.assertNotRegex(html, r'id="[a-z]+-bearer"')
+        self.assertNotIn('headers.Authorization', js)
+        self.assertNotIn('document.cookie =', js)
+        self.assertNotIn('human_login', js)
+        for ident in ('session-scope', 'session-start', 'session-status', 'forget-auth'):
+            self.assertNotIn(f'id="{ident}"', html)
+        self.assertIn("credentials:'same-origin'", js)
+        self.assertIn("headers['X-LiveProbe-Operator-CSRF']", js)
 
 
 class FetchOnlyApplicationApi(unittest.TestCase):
@@ -193,7 +195,7 @@ class ActiveEnvironmentsAndReleaseProtocol(unittest.TestCase):
         self.assertNotIn('stage_results?.stg?.verified', gate)
         self.assertNotIn('stage_results?.dev?.verified', gate)
         self.assertIn("const userTestReady = r => obj(obj(r.stage_results)[userTestEnv(r)]).verified === true;", js)
-        self.assertIn("$('user-test-submit').disabled = !valid || current?.state!=='awaiting_user_test' || !userTestReady(r);", js)
+        self.assertIn("$('user-test-submit').disabled = !permits('tester') || !valid || current?.state!=='awaiting_user_test' || !userTestReady(r);", js)
         # 서버가 v1 기록을 읽기 전용(legacy_release_read_only)으로 거부하므로 화면도 제출을 열지 않는다.
         self.assertIn("valid=exactRelease(r) && !isLegacyRelease(r) && !busy", js)
 
@@ -202,7 +204,7 @@ class ActiveEnvironmentsAndReleaseProtocol(unittest.TestCase):
         for banned in ('사용자 stg 시험', 'stg 시험자 인증 토큰', 'stg 사용자 시험 기록', 'stg 시험 기록', 'stg 시험 결과를 기록'):
             self.assertNotIn(banned, html, banned)
             self.assertNotIn(banned, js, banned)
-        self.assertEqual(len(re.findall(r'class="user-test-env">dev</span>', html)), 3)
+        self.assertEqual(len(re.findall(r'class="user-test-env">dev</span>', html)), 2)
         block = re.search(r'const STATE_LABELS = \{(.*?)\};', js, re.S).group(1)
         self.assertIn("awaiting_user_test: '사용자 시험 대기'", block)
         # stg_* 상태 이름은 과거 기록 표시용으로 유지한다.

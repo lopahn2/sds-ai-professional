@@ -1,0 +1,8 @@
+{
+  "name": "liveprobe-dev-browser-qa",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": { "install:chromium": "playwright install chromium" },
+  "dependencies": { "playwright": "1.63.0" }
+}

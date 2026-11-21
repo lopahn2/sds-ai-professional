@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 import logging
 import time
-from sqlalchemy import JSON, Float, Integer, String, create_engine, select, text
+from sqlalchemy import Text, JSON, Float, Integer, String, create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -162,6 +162,17 @@ class Job(ApplicationBase):
     receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class RunnerContact(ApplicationBase):
+    """One bounded record per accepted job attempt. No token or worker identity enters display storage."""
+    __tablename__ = 'application_runner_contacts'
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
+    claimed_at: Mapped[float | None] = mapped_column(Float)
+    last_heartbeat_at: Mapped[float | None] = mapped_column(Float)
+    last_contact_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
 class RunnerObservation(ApplicationBase):
     __tablename__ = 'application_runner_observation'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -175,3 +186,35 @@ class Event(ApplicationBase):
     occurred_at: Mapped[float] = mapped_column(Float)
     kind: Mapped[str] = mapped_column(String(64))
     document: Mapped[dict] = mapped_column(JSON)
+
+
+class SourceInquiry(ApplicationBase):
+    """Read-only source investigation for a core incident; no Application release is created."""
+    __tablename__='application_source_inquiries'
+    id: Mapped[str]=mapped_column(String(64),primary_key=True)
+    incident_id: Mapped[int]=mapped_column(index=True)
+    created_at: Mapped[float]=mapped_column(Float)
+    expires_at: Mapped[float]=mapped_column(Float)
+    payload: Mapped[dict]=mapped_column(JSON)
+    state: Mapped[str]=mapped_column(String(16),index=True)
+    worker: Mapped[str|None]=mapped_column(String(160))
+    token_hash: Mapped[str|None]=mapped_column(String(64))
+    fence: Mapped[int]=mapped_column(default=0)
+    lease_until: Mapped[float|None]=mapped_column(Float)
+    result: Mapped[dict|None]=mapped_column(JSON)
+    receipt_sha: Mapped[str|None]=mapped_column(String(64))
+    receipt: Mapped[dict|None]=mapped_column(JSON)
+
+
+class DisplayReading(ApplicationBase):
+    """One sanitized public passage per incident/version. Independent of deployment leases."""
+    __tablename__ = "application_display_readings"
+    incident_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    passage: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    available_at: Mapped[float] = mapped_column(Float)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease: Mapped[str | None] = mapped_column(String(64))
+    ko: Mapped[str | None] = mapped_column(Text)
