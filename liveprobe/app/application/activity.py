@@ -1,4 +1,6 @@
 """Safe operator projections of persisted model and runner activity."""
+import re
+
 from .safety import safe_source_path, fail, scrub
 
 PHASES = {
@@ -135,6 +137,8 @@ def activity(control, iid, after):
         for event in rows[:500]:
             d=event.document or {}
             out={k:d[k] for k in ('job_id','kind','role','model','effort','attempt','seq','phase','file','call_id','reason_ko','status','attempt_id','text','before_ko','after_ko','request_ko','evidence_refs') if k in d}
+            # Stop and retry codes are fixed identifiers (citation_not_grounded ...); nothing else leaves through them.
+            out.update({k:d[k] for k in ('reason','code') if isinstance(d.get(k),str) and re.fullmatch(r'[a-z][a-z0-9_]{2,63}',d[k])})
             job = jobs.get(d.get('job_id'))
             if job and job.kind in ('deploy', 'verify', 'reconcile'):
                 payload = (job.payload.get('original_payload') or {}) if job.kind=='reconcile' else job.payload

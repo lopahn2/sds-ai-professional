@@ -484,9 +484,8 @@ def explain_fields(output: dict | None, sources: dict[str, str], citations: list
     # be tied to "a cited reference document" but not to one specific chunk.
     is_runbook = lambda ref: bool(re.fullmatch(r"R\d+", ref))  # noqa: E731
     quotes = []
-    for q in (o.get("evidence") or [])[:12]:
-        if not isinstance(q, dict) or not q.get("quote"):
-            continue
+    from .interpret import quote_entries
+    for q in quote_entries(o):
         ref = str(q.get("ref") or "")
         supports = " ".join(str(q.get("supports") or "").split()).lower()
         quotes.append({"ref": ref, "ref_ko": sources.get(ref) or ("참고 문서" if is_runbook(ref) else None),
@@ -673,6 +672,10 @@ def _cards(g: _G, inc, routing, runs, events, actions, evidence, audits, items, 
                                              ("verdict", "candidate_verdicts", "reason_ko")):
                     for i, entry in enumerate(card.get(field) or []):
                         entry[text] = entry.get(text) or ko.get(f"{prefix}{section}:{i}")
+                from .reading_era import legacy_at
+                for i, quote in enumerate(card.get("quotes") or []):
+                    quote["quote_ko"] = ko.get(f"{prefix}quote:{i}")
+                card["reading_era"] = "legacy" if legacy_at(run.created_at) else "current"
                 proposal = resolve(run.output, inc.workload)
                 if proposal:
                     card["proposed_action"] = {

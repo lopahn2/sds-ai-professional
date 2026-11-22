@@ -461,3 +461,28 @@ def korean_self_ko(raw: str) -> str | None:
     if not is_korean(raw):
         return None
     return re.sub(r"\(confidence ([\d.]+|None)\)", lambda m: f"(신뢰도 {m.group(1) if m.group(1) != 'None' else '미기록'})", raw.strip())
+
+
+# ------------------------------------------------------------------ what a screen can show
+# Mirrors the dashboard display boundary (dashboard/src/presentation.ts TECHNICAL): a summary that carries a URL,
+# braces, a stack frame, a hash or an exception class name is not shown, so it is not accepted as a summary either.
+_TECHNICAL = re.compile(
+    r"(?:https?://|\b(?:kubectl|curl|wget|Traceback|Exception|Error:|sha256|resourceVersion)\b|\b\d{1,3}(?:\.\d{1,3}){3}\b"
+    r"|[a-f\d]{32,}|[{}]|</?[a-z]|\b\w*(?:Error|Exception)\b|HTTP/\d|\bat \S+\([^)]*:\d+|\n\s*(?:at |File |[{$]))",
+    re.I | re.A)
+# Identifiers an operator still needs (file, class, field and service names, numbers) do not count against Korean.
+_IDENT = re.compile(r"`[^`]*`|\b\w+(?:\.\w+)+\b|[\w.-]*/[\w./-]+|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b|\b[\w.]*\d[\w.%:]*\b"
+                    r"|\b[a-z_]+==?\S+", re.A)
+
+
+def display_safe(text: str | None) -> bool:
+    """The dashboard shows this Korean text as it is (it is not hidden by the technical-text filter)."""
+    return bool(text) and bool(HANGUL.search(text)) and not _TECHNICAL.search(text)
+
+
+def summary_ok(text: str | None) -> bool:
+    """A Korean summary the screens can show: displayable, at least four Hangul letters, and mostly Korean once the
+    identifiers it keeps (paths, class and field names, numbers) are set aside."""
+    if not text or not display_safe(text) or len(HANGUL.findall(text)) < 4:
+        return False
+    return hangul_ratio(_IDENT.sub(" ", text)) >= 0.5
