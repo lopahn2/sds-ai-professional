@@ -17,6 +17,12 @@ test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은
   // P21: an environment chip opens the service detail, which lists its cases.
   await inventory.getByRole('button', { name: /^inventory prd · 장애 1건/ }).click();
   await expect(page.locator('.atlas-cases a').first()).toHaveAttribute('href', '/incidents/1976');
+  // The alert list names the same place as the map; checked before the map's modal dialog makes the page inert.
+  await page.getByRole('button', { name: /운영 알림/ }).click();
+  const alert = page.getByRole('link', { name: 'inventory 장애 1976 관제실 열기' });
+  await expect(alert).toContainText('inventory');
+  await expect(alert).toContainText('prd · order · #1976');
+  await page.keyboard.press('Escape');
   await openInfraMap(page);
   const scope = page.getByRole('combobox', { name: '지도 환경' });
   await expect(scope).toHaveValue('prd');
@@ -52,11 +58,6 @@ test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은
   await expect.poll(() => allInside(page)).toBe(true); await layout(page); await capture(page, info, 'p18-envs-all');
   await scope.selectOption('prd');
   await expect(page.locator('.resource-place')).toHaveText('prd · order · inventory');
-  await page.getByRole('button', { name: /운영 알림/ }).click();
-  const alert = page.getByRole('link', { name: 'inventory 장애 1976 관제실 열기' });
-  await expect(alert).toContainText('inventory');
-  await expect(alert).toContainText('prd · order · #1976');
-  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'inventory 장애 1976 관제실 열기', exact: true }).click();
   await expect(page).toHaveURL(/\/incidents\/1976$/);
   await expect(page.getByRole('heading', { name: '장애 관제실', exact: true })).toBeVisible();

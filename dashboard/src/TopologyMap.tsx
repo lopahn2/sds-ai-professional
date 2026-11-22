@@ -66,7 +66,8 @@ export function TopologyMap({ overview: o, selected, onSelect }: { overview: Ove
   const shown = new Set(m.nodes.map(n => n.id));
   const ingressCount = [...m.foldedIngresses.values()].reduce((sum, items) => sum + items.length, 0);
   const fitKey = JSON.stringify([namespace, showPlatform, m.groups.map(g => [g.id, g.x, g.y, g.width, g.height]), m.nodes.map(n => [n.id, n.groupId, n.x, n.y])]);
-  return <section className="ops-map" aria-label="클러스터 연결 지도"><div className="map-toolbar"><h2><DiagramIcon kind="group" />서비스 연결 지도</h2>
+  // The map opens in the wide infrastructure dialog, whose title names it; the toolbar carries only the controls.
+  return <section className="ops-map" aria-label="클러스터 연결 지도"><div className="map-toolbar">
       <select className="select" aria-label={envMode ? "지도 환경" : "지도 네임스페이스"} value={namespace} onChange={e => { setSelection(e.target.value); onSelect(null); }}>{envMode ? <>{envs.map(e => <option key={e.name} value={e.name}>{e.name}</option>)}<option value="">전체 환경</option></> : <><option value="">전체 네임스페이스</option>{names.map(n => <option key={n}>{n}</option>)}</>}</select>
       {m.foldedIngresses.size > 0 && <button type="button" className="btn sm" aria-pressed={!compactServices} onClick={() => setCompactServices(v => !v)}>{compactServices ? `접힌 Ingress ${ingressCount}개 펼치기` : '서비스 단위로 접기'}</button>}
       <select className="select" aria-label="지도 자원 선택" value="" onChange={e => e.target.value && open(e.target.value)}><option value="">자원 상세 또는 장애 열기</option>{all.nodes.map(n => <option value={n.id} key={n.id}>{n.node.name} · {n.node.namespace ?? '외부'}{n.node.kind === 'ContractEndpoint' ? ' · 계약 경로 미배포' : ''}{n.incident ? ' · 장애' : ''}{shown.has(n.id) ? '' : ' · 지도에서 숨김'}</option>)}</select>

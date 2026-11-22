@@ -72,13 +72,20 @@ export async function layout(page) {
 }
 export function errors(page) { const es=[];page.on('pageerror',e=>es.push(e.message));return es; }
 
-/** P21: the infrastructure map sits in the collection diagnostics beside the service map (source button → 수집 진단 → 인프라 연결 지도). */
+/** P21: the infrastructure map opens from the collection diagnostics (source button → 수집 진단 → '인프라 연결 지도 열기')
+ *  in a wide modal dialog; the page behind it is inert until the dialog closes. */
 export async function openInfraMap(page) {
   await page.getByRole('navigation', { name: '수집원 상태' }).getByRole('button').first().click();
   await expect(page.getByRole('heading', { name: '수집 진단', exact: true })).toBeVisible();
-  const map = page.locator('details.disclosure').filter({ has: page.locator('summary', { hasText: '인프라 연결 지도' }) });
-  if (!(await map.evaluate(d => d.open))) await map.locator('summary').first().click();
+  await page.getByRole('button', { name: '인프라 연결 지도 열기', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '인프라 연결 지도' })).toBeVisible();
   await expect(page.locator('.topology-canvas')).toBeVisible({ timeout: 10000 });
+}
+export async function closeInfraMap(page) {
+  const dialog = page.getByRole('dialog', { name: '인프라 연결 지도' });
+  await dialog.getByRole('button', { name: '닫기', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '인프라 연결 지도 열기', exact: true })).toBeFocused();
 }
 
 /** The semantic stage card that shows a raw flow node (dashboard/src/semanticFlow.ts coreStage). */

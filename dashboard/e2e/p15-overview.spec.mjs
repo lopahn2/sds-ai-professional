@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { capture, errors, layout, mock, noPageScroll, resetMock, openInfraMap } from './p15-helpers.mjs';
+import { capture, errors, layout, mock, noPageScroll, resetMock, openInfraMap, closeInfraMap } from './p15-helpers.mjs';
 test.beforeEach(async ({request})=>resetMock(request));
 async function ready(page) {
   await openInfraMap(page);
@@ -7,14 +7,19 @@ async function ready(page) {
 }
 test('운영 관제의 지도·보조 상태·원천·경고 원문과 장애 진입', async ({page,request},info)=>{
   const es=errors(page);const response=await request.get('/api/overview');expect(response.ok()).toBe(true);const data=await response.json();
-  await page.goto('/');await ready(page);
-  await expect(page.getByRole('heading',{name:'서비스 연결 지도'})).toBeVisible();await expect(page.getByRole('region',{name:'클러스터 건강도 요약'})).toBeVisible();await expect(page.getByRole('combobox',{name:data.cluster?.environments?.length ? '지도 환경' : '지도 네임스페이스'})).toBeVisible();
+  await page.goto('/');
+  // The collection diagnostics first; the infrastructure map then opens over the page in its wide dialog.
+  await page.getByRole('navigation',{name:'수집원 상태'}).getByRole('button').first().click();await expect(page.getByRole('heading',{name:'수집 진단',exact:true})).toBeVisible();
+  await expect(page.getByRole('region',{name:'클러스터 건강도 요약'})).toBeVisible();
   expect(await page.locator('iframe').count()).toBe(0);await expect(page.getByRole('navigation',{name:'수집원 상태'})).toBeVisible();
   // 운영 관제의 제목 영역과 큰 요약 카드는 없다. 화면 제목은 보조 기술에만 남긴다.
   await expect(page.locator('.page-head,.kpi-grid,.overview-right,.namespace-table')).toHaveCount(0);await expect(page.locator('h1.sr-only')).toHaveText('운영 관제');
   if(data.events?.length){const warning=page.locator('.warning-event').first();await warning.getByText('원문 보기',{exact:true}).click();await expect(warning.locator('.raw-text').first()).toBeVisible();}
   await layout(page);await capture(page,info,'overview');
   await page.getByRole('navigation',{name:'수집 진단 항목'}).getByRole('button',{name:/^네임스페이스/}).click();await expect(page.locator('.ns-row').first()).toBeVisible();await layout(page);await capture(page,info,'overview-namespaces');
+  await ready(page);
+  await expect(page.getByRole('heading',{name:'인프라 연결 지도',exact:true})).toBeVisible();await expect(page.getByRole('combobox',{name:data.cluster?.environments?.length ? '지도 환경' : '지도 네임스페이스'})).toBeVisible();
+  await layout(page);await capture(page,info,'overview-infra-map');
   const target=data.incidents?.open?.[0];
   if(target){
     const node=page.locator(`.react-flow__node`).filter({has:page.getByRole('button',{name:new RegExp(`장애 ${target.id} 관제실 열기`)})});await expect(node.locator('.incident-pin')).toBeVisible();await node.getByRole('button').focus();await node.getByRole('button').click();await expect(page).toHaveURL(new RegExp(`/incidents/${target.id}$`));await expect(page.getByRole('heading',{name:'장애 관제실',exact:true})).toBeAttached();
@@ -60,6 +65,7 @@ test('정상 자원 상세는 보조 영역에서 서비스 이름·포트·엔�
   const n=candidates.find(n=>n.services?.length)??candidates[0];test.skip(!n,'선택할 자원 없음');await page.goto('/');await ready(page);await page.getByRole('combobox',{name:'지도 자원 선택'}).selectOption(n.id);const panel=page.getByRole('complementary',{name:'자원 상세'});await expect(panel).toBeVisible();await expect(panel).toContainText(n.name);for(const s of n.services??[]){await expect(panel).toContainText(s.name);await expect(panel).toContainText('엔드포인트');}
   await expect(panel.locator('details')).not.toHaveAttribute('open','');await panel.getByText('수집 필드 원문 보기').click();await expect(panel.locator('pre.raw-text')).toContainText(n.id);
   await panel.scrollIntoViewIfNeeded();await layout(page);await capture(page,info,'resource-detail');await panel.getByRole('button',{name:'자원 상세 닫기'}).click();await expect(panel).toHaveCount(0);
+  await closeInfraMap(page);
 });
 test('시스템 구성요소는 기본으로 숨기고 문제가 있으면 보이며 전환 버튼으로 모두 표시한다',async({page,request})=>{
   test.skip(!mock,'모의 응답을 변형한다');

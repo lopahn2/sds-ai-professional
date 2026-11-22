@@ -1,5 +1,6 @@
 import './incidentOverview.css';
 import { useState } from 'react';
+import { EnterFullScreenIcon } from '@radix-ui/react-icons';
 import { clock, type Overview } from './api';
 import { bytesKo, cpuKo, numberKo, overviewKpis, percent } from './overviewModel';
 import { eventReasonKo } from './labels';
@@ -7,6 +8,7 @@ import { Badge, Meter as UsageMeter, StatusIndicator } from '@naria/ui';
 import { ServiceAtlas } from './ServiceAtlas';
 import { Disclosure } from './Disclosure';
 import { ResourceDetail, TopologyMap } from './TopologyMap';
+import { RoomDialog } from './RoomDialog';
 import { usePolling } from './usePolling';
 
 const SOURCES: Record<string, string> = { prometheus: 'Prometheus', kubernetes: 'Kubernetes', hubble: 'Hubble', envoy: 'Envoy' };
@@ -68,9 +70,8 @@ function Namespaces({ o }: { o: Overview }) {
   return <>{ns.map(n => <article className="ns-row" key={n.name}><div><b className="mono">{n.name}</b><Badge tone={n.workloads_unhealthy ? 'danger' : 'neutral'}>비정상 {numberKo(n.workloads_unhealthy)} / {numberKo(n.workloads)}</Badge></div>
     <dl><dt>Pod 실행 / 대기 / 실패</dt><dd>{numberKo(n.pods_running)} / {numberKo(n.pods_pending)} / {numberKo(n.pods_failed)}</dd><dt>재시작 · 1시간</dt><dd>{numberKo(n.restarts_1h)}</dd><dt>CPU · 메모리</dt><dd>{cpuKo(n.cpu_cores)} · {bytesKo(n.mem_bytes)}</dd></dl></article>)}</>;
 }
-export function ClusterDiagnostics({ overview, source, refresh }: {overview: Overview; source: string; refresh: () => void}) {
+export function ClusterDiagnostics({ overview, source, refresh, openInfra }: {overview: Overview; source: string; refresh: () => void; openInfra: () => void}) {
   const [tab, setTab] = useState('events');
-  const [resource, setResource] = useState<string | null>(null);
   return <section className="atlas-diagnostics" aria-label="클러스터 수집 진단">
     <header className="atlas-rail-title"><h2>수집 진단</h2><button type="button" className="nds-button nds-button--outline nds-control--sm" onClick={refresh}><span>새로고침</span></button></header>
     <p className="atlas-dim">마지막 관측 {clock(overview.generated_at)}</p>
@@ -81,17 +82,34 @@ export function ClusterDiagnostics({ overview, source, refresh }: {overview: Ove
         {value && !ok && <details><summary>상세보기</summary><pre className="raw-text">{value}</pre></details>}</section>;
     })}</div>
     <Stats o={overview}/>
+    {/* The rail is too narrow to read a topology, so the map opens in a wide dialog. */}
+    <button type="button" className="atlas-infra-open nds-button nds-button--outline nds-control--sm" aria-haspopup="dialog" onClick={openInfra}><EnterFullScreenIcon aria-hidden/><span>인프라 연결 지도 열기</span></button>
     <nav className="side-tabs" aria-label="수집 진단 항목">{[['events','경고 이벤트'],['namespaces','네임스페이스']].map(([id,label]) =>
       <button type="button" key={id} aria-pressed={tab===id} onClick={()=>setTab(id)}>{label}</button>)}</nav>
     {tab==='events' ? <Events o={overview}/> : <Namespaces o={overview}/>}
-    <Disclosure label="인프라 연결 지도">{()=><><TopologyMap overview={overview} selected={resource} onSelect={setResource}/>{resource && <ResourceDetail overview={overview} id={resource} onClose={()=>setResource(null)}/>}</>}</Disclosure>
   </section>;
+}
+
+/** The infrastructure topology at full width; a chosen resource opens its detail beside the map.
+ *  The page behind is inert, so the dialog carries its own observation time and refresh. */
+function InfraMapDialog({ overview, refresh, onClose }: { overview: Overview; refresh: () => void; onClose: () => void }) {
+  const [resource, setResource] = useState<string | null>(null);
+  return <RoomDialog title="인프라 연결 지도" className="infra-dialog" onClose={onClose}
+    actions={<><span className="infra-observed">마지막 관측 {clock(overview.generated_at)}</span><button type="button" className="btn sm" onClick={refresh}>새로고침</button></>}>
+    <div className="infra-body">
+      <TopologyMap overview={overview} selected={resource} onSelect={setResource}/>
+      {resource && <ResourceDetail overview={overview} id={resource} onClose={() => setResource(null)}/>}
+    </div>
+  </RoomDialog>;
 }
 
 export function OverviewPage() {
   const { data, error, refresh } = usePolling<Overview>('/overview', 10000);
+  const [infra, setInfra] = useState(false);
+  // The dialog renders outside the rail so the rail's scoped styles do not reach the map.
   return <div className="atlas-page"><h1 className="sr-only">운영 관제</h1>
     <ServiceAtlas overview={data} error={error} refresh={refresh}
-      diagnostics={source => data && <ClusterDiagnostics overview={data} source={source} refresh={refresh}/>}/>
+      diagnostics={source => data && <ClusterDiagnostics overview={data} source={source} refresh={refresh} openInfra={() => setInfra(true)}/>}/>
+    {infra && data && <InfraMapDialog overview={data} refresh={refresh} onClose={() => setInfra(false)}/>}
   </div>;
 }

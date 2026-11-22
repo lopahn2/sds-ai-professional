@@ -126,9 +126,30 @@ a.atlas-action { text-decoration: none; }
 .atlas-facts dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* 수집 진단(오른쪽에 열림): 원천 상태 · 사용량 미터 · naria 밑줄 탭 · 경고/네임스페이스 목록 */
 .atlas-interventions .atlas-diagnostics { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-/* 인프라 연결 지도: 오른쪽 칸 안에서도 지도가 높이를 가진다(펼쳤을 때 0px로 접히지 않게). */
-.atlas-diagnostics .ops-map { border-right: 0; }
-.atlas-diagnostics .topology-canvas { flex: none; height: 360px; }
+/* 인프라 연결 지도: 오른쪽 칸(약 250px)에서는 위상을 읽을 수 없어 입구만 두고, 지도는 넓은 대화창에서 연다. */
+.atlas-interventions .atlas-diagnostics .atlas-infra-open { justify-content: flex-start; gap: 8px; width: 100%; }
+.infra-dialog { width: calc(100vw - 32px); max-width: 1680px; height: calc(100dvh - 32px); max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-card); color: var(--nds-text); background: var(--nds-surface); box-shadow: var(--nds-shadow-overlay); }
+.infra-dialog::backdrop { background: #0b141865; }
+.infra-dialog[open] { display: flex; flex-direction: column; }
+.infra-dialog > header { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--nds-border); }
+.infra-dialog > header h2 { font-size: 18px; line-height: 1.4; font-weight: 600; }
+.infra-dialog .room-wide-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.infra-observed { font-size: 12px; line-height: 1.5; color: var(--nds-muted); font-variant-numeric: tabular-nums; }
+.infra-dialog .room-wide-body { flex: 1; min-height: 0; display: flex; }
+.infra-body { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.infra-body:has(> .resource-detail) { grid-template-columns: minmax(0, 1fr) 360px; }
+.infra-dialog .ops-map { flex: none; height: auto; min-height: 0; border: 0; }
+.infra-body .resource-detail { min-height: 0; overflow: auto; align-content: start; border-left: 1px solid var(--nds-border); }
+.infra-body .resource-detail .raw-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .infra-dialog { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  .infra-body { overflow: auto; overscroll-behavior: contain; }
+  /* With a detail below, the map keeps a canvas of its own height; the toolbar must not squeeze it.
+     Rows are max-content: with auto rows the min-height:0 items shared the height and the canvas spilled over the detail. */
+  .infra-body:has(> .resource-detail) { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content max-content; }
+  .infra-body:has(> .resource-detail) .topology-canvas { flex: none; height: max(360px, 55dvh); }
+  .infra-body .resource-detail { overflow: visible; border-left: 0; border-top: 1px solid var(--nds-border); }
+}
 .atlas-interventions .atlas-diagnostics .source-chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0; }
 .atlas-interventions .atlas-diagnostics .source-chip { display: grid; align-content: start; gap: 4px; min-width: 0; padding: 8px 12px; border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); background: var(--nds-surface); font-size: 12px; line-height: 1.5; }
 .atlas-interventions .atlas-diagnostics .source-chip b { font-size: 13px; font-weight: 600; }

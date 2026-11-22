@@ -65,7 +65,9 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
   const beforeViewport = await viewport.getAttribute('style');
   const count = await page.locator('.resource-button').count();
   payload = structuredClone(o); payload.topology.observed_edges = [];
-  await page.getByRole('button', { name: '새로고침', exact: true }).click();
+  // The map dialog is modal; its own refresh reloads the overview while the map stays open.
+  const refresh = page.getByRole('dialog', { name: '인프라 연결 지도' }).getByRole('button', { name: '새로고침', exact: true });
+  await refresh.click();
   await expect.poll(positions).not.toBe(beforePositions);
   await expect(page.locator('.resource-button')).toHaveCount(count);
   await expect(viewport).not.toHaveAttribute('style', beforeViewport);
@@ -78,7 +80,7 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
   payload = structuredClone(payload); payload.generated_at = new Date().toISOString();
   payload.workloads.forEach(w => { w.cpu = (w.cpu ?? 0) + .1; });
   const refreshed = page.waitForResponse(r => r.url().endsWith('/api/overview'));
-  await page.getByRole('button', { name: '새로고침', exact: true }).click();
+  await refresh.click();
   await refreshed;
   await expect(viewport).toHaveAttribute('style', zoomed);
 });
@@ -142,10 +144,7 @@ test('움직임 감소 설정은 두 다이어그램의 장식 애니메이션�
   const row = await incident(request);
   for (const [url, selector] of [['/', '.resource-button'], [`/incidents/${row.id}`, '.flow-step']]) {
     await page.goto(url);
-    if (url === '/') {
-      await page.getByRole('navigation',{name:'수집원 상태'}).getByRole('button').first().click();
-      await page.locator('summary').filter({hasText:'인프라 연결 지도'}).click();
-    }
+    if (url === '/') await openInfraMap(page);
     else await page.getByRole('button',{name:'전체 흐름',exact:true}).click();
     await page.locator(selector).first().waitFor();
     const motion = await page.locator(selector).evaluateAll(es => es.map(e => ({ animation: getComputedStyle(e).animationName, transition: getComputedStyle(e).transitionDuration })));
