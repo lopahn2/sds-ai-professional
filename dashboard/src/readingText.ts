@@ -10,6 +10,9 @@ export type ReadingEra = 'legacy' | 'current' | null | undefined;
 export type ReadingView = { text: string } | { note: string } | null;
 export type ReadingOptions = { state?: string | null; era?: ReadingEra; preparing?: boolean };
 
+// Sentence-opening connectives that refer back to the previous sentence.
+const CONNECTIVE = /^(?:따라서|그러므로|그래서|그러나|하지만|다만|또한|그리고|게다가|아울러|한편|결국|즉|이에 따라|이에|이로 인해|이 때문에|그 결과|그런데|반면)\s*,?\s+/u;
+
 /** Stored model conclusions may append a quoted log or diff to a readable explanation. Keep the readable head. */
 export function salvage(value: unknown, max = 1800): string | null {
   if (typeof value !== 'string') return null;
@@ -26,7 +29,10 @@ export function salvage(value: unknown, max = 1800): string | null {
   if (beginning.length) return beginning.join(' ');
   // A sentence that names an exception class or quotes code stays hidden; the readable sentences around it remain.
   const readable = sentences.map(sentence => summaryKo(sentence, '', 700)).filter(Boolean).slice(0, 2);
-  return readable.join(' ') || null;
+  if (!readable.length) return null;
+  // The first kept sentence followed the hidden one, so a connective that pointed back at it ('따라서 …') is dropped.
+  readable[0] = readable[0].replace(CONNECTIVE, '');
+  return readable.join(' ');
 }
 
 /** The one display rule for a model-written passage.

@@ -14,6 +14,9 @@ test('a displayable Korean passage is shown as it is', () => {
   assert.deepEqual(readingOf('재고 예약 요청에서 0으로 나누기 예외가 발생했습니다.'), {text: '재고 예약 요청에서 0으로 나누기 예외가 발생했습니다.'});
   assert.equal(salvage('분기가 원인입니다. 근거: source:src/App.java'), '분기가 원인입니다.');
   assert.equal(salvage('found.trim() 호출로 NullPointerException이 발생했습니다. 입력 전용 분기 두 곳이 원인입니다.'), '입력 전용 분기 두 곳이 원인입니다.', 'a sentence naming an exception class stays hidden; the rest remains')
+  assert.equal(salvage('IllegalStateException으로 재고 조회가 실패했습니다. 따라서 단일 서비스의 국소 코드 원인으로 분류합니다. 최초 로그는 과거 관측입니다.'), '단일 서비스의 국소 코드 원인으로 분류합니다. 최초 로그는 과거 관측입니다.', 'a kept sentence loses the connective that pointed at the hidden one')
+  assert.equal(salvage('IllegalStateException이 났습니다. 이에 따라, 재시도를 멈췄습니다.'), '재시도를 멈췄습니다.')
+  assert.equal(salvage('따라서 첫 문장부터 읽을 수 있으면 그대로 둡니다.'), '따라서 첫 문장부터 읽을 수 있으면 그대로 둡니다.', 'nothing was hidden, so nothing is trimmed')
 });
 test('a passage being summarised reads 정리 중', () => {
   assert.deepEqual(readingOf(null, {state: 'pending'}), {note: PENDING_KO});
