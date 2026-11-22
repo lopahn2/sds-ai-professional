@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, ComponentInstanceIcon, ExclamationTriangleIcon } from '@radix-ui/react-icons';
+import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@radix-ui/react-icons';
 import { Legend, StatusIndicator, ZoomControls, type StatusKind } from '@naria/ui';
 import { clock, type Overview } from './api';
 import { ResourceDetail } from './TopologyMap';
@@ -29,8 +29,10 @@ function affectedBy(service: AtlasService, source: string) {
 function EnvChip({ service, env, selection, onSelect }: { service: AtlasService; env: Env; selection: Selection | null; onSelect: (s: Selection) => void }) {
   const reading = service.env[env], tone = readingTone(reading), detail = readingLabel(reading);
   const selected = selection?.key === service.key && selection.env === env;
-  return <button type="button" className={`atlas-env is-${tone}`} aria-pressed={selected} aria-label={`${service.name} ${env} · ${detail} · 상세 보기`} onClick={() => onSelect({ key: service.key, env, name: service.name })}>
-    <span className="atlas-env-name">{env}</span><StatusIndicator status={statusOf[tone]}><span className="atlas-env-text" title={detail}>{chipLabel(reading)}</span></StatusIndicator>
+  // A ready environment shows only its dot; the words stay for screen readers and the tooltip.
+  const quiet = tone === 'ok';
+  return <button type="button" className={`atlas-env is-${tone}`} aria-pressed={selected} aria-label={`${service.name} ${env} · ${detail} · 상세 보기`} title={`${env} · ${detail}`} onClick={() => onSelect({ key: service.key, env, name: service.name })}>
+    <span className="atlas-env-name">{env}</span><StatusIndicator status={statusOf[tone]}><span className={'atlas-env-text' + (quiet ? ' sr-only' : '')}>{chipLabel(reading)}</span></StatusIndicator>
   </button>;
 }
 
@@ -40,7 +42,7 @@ function ServiceNode({ service, meta, gap, selection, onSelect }: { service: Atl
   const cases = caseSummary(service), line = [cases, meta].filter(Boolean).join(' · ');
   return <article className={`atlas-node is-${tone}${gap ? ' is-source-gap' : ''}`} data-service-key={service.key} aria-label={service.name}>
     <div className="atlas-node-head">
-      <span className="atlas-node-icon" aria-hidden>{tone === 'neutral' ? <ComponentInstanceIcon /> : <ExclamationTriangleIcon />}</span>
+      {tone !== 'neutral' && <span className="atlas-node-icon" aria-hidden><ExclamationTriangleIcon /></span>}
       <div className="atlas-node-text"><h4 title={service.name}>{service.name}</h4>{line && <small title={line}>{cases && <span className="atlas-node-cases">{cases}</span>}{cases && meta && ' · '}{meta}</small>}</div>
     </div>
     <div className="atlas-envs">{envs.map(env => <EnvChip key={env} service={service} env={env} selection={selection} onSelect={onSelect} />)}</div>

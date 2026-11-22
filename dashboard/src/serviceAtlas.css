@@ -30,7 +30,8 @@
 .atlas-lane-head p { font-size: 12px; line-height: 1.6; color: var(--nds-muted); word-break: keep-all; }
 .atlas-lane-head p.is-danger { color: var(--nds-danger); }
 .atlas-lane-head p.is-warning { color: var(--nds-warning); }
-.atlas-lane-track { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; align-items: start; min-width: 0; }
+/* 상태 점 타일(시안 C): 타일 폭을 고정해 레인 폭을 따라 늘어나지 않는다. */
+.atlas-lane-track { display: grid; grid-template-columns: repeat(auto-fill, 176px); justify-content: start; gap: 8px 16px; align-items: start; min-width: 0; }
 
 /* 서비스 노드: naria DiagramNode 규격(경계·곡률 control·미세한 그림자, 28px 아이콘 칸) */
 .atlas-node { position: relative; z-index: 1; display: grid; gap: 6px; min-width: 0; padding: 8px 12px; background: var(--nds-surface); border: 1px solid var(--nds-border); border-radius: var(--nds-radius-control); box-shadow: var(--nds-shadow); }
@@ -48,16 +49,17 @@
 .atlas-node-cases { color: var(--nds-danger); }
 
 /* 환경 칩: 선택 = 강조색 경계, 상태 바탕은 유지한다. */
-.atlas-envs { display: flex; gap: 4px; min-width: 0; }
-.atlas-env { flex: 1 1 auto; display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 24px; margin: 0; padding: 2px 6px; border: 1px solid transparent; border-radius: var(--nds-radius-small); background: var(--nds-subtle); color: var(--nds-text); font: inherit; font-size: 12px; line-height: 1.5; text-align: left; cursor: pointer; transition: border-color var(--nds-motion-hover) var(--nds-ease), box-shadow var(--nds-motion-hover) var(--nds-ease); }
+.atlas-envs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.atlas-env { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 24px; margin: 0; padding: 2px 6px; border: 1px solid transparent; border-radius: var(--nds-radius-small); background: var(--nds-subtle); color: var(--nds-text); font: inherit; font-size: 12px; line-height: 1.5; text-align: left; cursor: pointer; transition: border-color var(--nds-motion-hover) var(--nds-ease), box-shadow var(--nds-motion-hover) var(--nds-ease); }
 .atlas-env:hover { border-color: var(--nds-strong-border); }
 .atlas-env-name { flex: none; font: 600 11px/1.5 var(--nds-mono); color: var(--nds-muted); }
-.atlas-env .nds-status { flex: 1; min-width: 0; gap: 4px; font-size: 12px; line-height: 1.5; }
+.atlas-env .nds-status { flex: 0 0 auto; min-width: 0; gap: 4px; font-size: 12px; line-height: 1.5; }
 .atlas-env-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .atlas-env.is-danger { background: var(--nds-danger-soft); }
 .atlas-env.is-danger .nds-status { color: var(--nds-danger); font-weight: 600; }
 .atlas-env.is-warning { background: var(--nds-warning-soft); }
 .atlas-env.is-warning .nds-status { color: var(--nds-warning); font-weight: 600; }
+.atlas-env.is-ok { background: transparent; padding: 2px 4px; }
 .atlas-env.is-unknown { background: var(--nds-surface); border-style: dashed; border-color: var(--nds-border); }
 .atlas-env[aria-pressed="true"] { border-color: var(--nds-accent); border-style: solid; box-shadow: inset 0 0 0 1px var(--nds-accent); }
 
@@ -170,12 +172,11 @@ a.atlas-action { text-decoration: none; }
 }
 @media (min-width: 1600px) {
   .atlas-workspace { grid-template-columns: minmax(0, 1fr) 360px; }
-  .atlas-lane-track { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (max-width: 1200px) {
   .atlas-workspace { grid-template-columns: minmax(0, 1fr) 280px; }
   .atlas-lane { grid-template-columns: 120px minmax(0, 1fr); gap: 12px; }
-  .atlas-lane-track { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+  .atlas-lane-track { gap: 8px 12px; }
 }
 @media (max-width: 840px) {
   .atlas-page { height: auto; }
@@ -190,7 +191,7 @@ a.atlas-action { text-decoration: none; }
   .atlas-map { padding: 16px; }
   .atlas-lane { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .atlas-lane-head { padding-top: 0; }
-  .atlas-lane-track { grid-template-columns: minmax(0, 1fr); }
+  .atlas-lane-track { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .atlas-interventions { padding: 16px; }
 }
 @media (pointer: coarse) {
