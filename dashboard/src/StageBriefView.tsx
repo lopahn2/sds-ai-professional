@@ -38,8 +38,8 @@ export function BriefPanel({ brief, extra }: { brief: StageBrief; extra?: ReactN
   return <section className="stage-brief" aria-label="단계 요약">
     {brief.working && <p className="stage-working" role="status"><span className="working-dot" aria-hidden="true" />진행 중 · {brief.working}</p>}
     <p className="step-lead">{brief.lead}</p>
-    <dl className="stage-facts">{brief.facts.map((f, i) => <div key={f.label + i}><dt>{f.label}</dt><dd>{f.value}</dd></div>)}
-      {brief.composition && <div><dt>근거 구성</dt><dd>근거 {brief.evidence?.refs ?? 0} ({brief.composition})</dd></div>}</dl>
+    {(brief.facts.length > 0 || brief.composition) && <dl className="stage-facts">{brief.facts.map((f, i) => <div key={f.label + i}><dt>{f.label}</dt><dd>{f.value}</dd></div>)}
+      {brief.composition && <div><dt>근거 구성</dt><dd>근거 {brief.evidence?.refs ?? 0} ({brief.composition})</dd></div>}</dl>}
     {extra}
     <GoalList goals={brief.goals} />
     {brief.remaining.length > 0 && <div className="stage-remaining"><h3>남은 것</h3><ul>{brief.remaining.map(r => <li key={r}>{r}</li>)}</ul></div>}

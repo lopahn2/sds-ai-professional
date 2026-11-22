@@ -116,7 +116,8 @@ function coreBrief(node: SemanticNode, { data, preparing }: CoreSource) {
     const routing = [...members].reverse().find(n => n.card?.kind === 'routing')?.card;
     const group = members.find(n => n.card?.kind === 'group')?.card;
     if (routing?.kind === 'routing') {
-      lead = text(readingOf(routing.final_reason_ko, { era: 'current', preparing: routing.interpreting }));
+      lead = text(readingOf(routing.final_reason_ko, { era: 'current', preparing: routing.interpreting }))
+        ?? `${routing.level_ko}으로 결정${typeof routing.confidence === 'number' ? ` · 분류 신뢰도 ${pct(routing.confidence)}` : ''}`;
       facts.push({ label: '선택한 수준', value: routing.level_ko + ' · ' + routing.decided_by_ko });
       if (typeof routing.confidence === 'number') facts.push({ label: '분류 신뢰도', value: pct(routing.confidence) });
     } else if (group?.kind === 'group') {
@@ -174,8 +175,9 @@ function coreBrief(node: SemanticNode, { data, preparing }: CoreSource) {
     const r = data.accountability;
     const outcome = members.find(n => n.card?.kind === 'outcome')?.card;
     if (r && r.status !== 'not_applicable') {
-      lead = r.status === 'pending_operator' ? '운영자 소명 확인 대기' : r.decision_at ? '소명 확인 · 정상 확정' : '결과 소명 기록';
-      for (const v of (Array.isArray(r.limits_ko) ? r.limits_ko : r.limits_ko ? [r.limits_ko] : [])) { const t = text(readingOf(v, { era: 'current' })); if (t) remaining.push(t); }
+      const recovered = r.recovery_observed_at ? '복구 관측됨' : '복구 관측 미기록';
+      lead = r.status === 'pending_operator' ? `운영자 소명 확인 대기 · ${recovered}` : r.decision_at ? '소명 확인 · 정상 확정'
+        : `소명 검토 전 · ${recovered}`;
     } else lead = outcome?.kind === 'outcome' ? outcome.status_ko : null;
   } else if (kind === 'handoff') {
     const outcome = members.find(n => n.card?.kind === 'outcome')?.card;
@@ -223,14 +225,18 @@ function appBrief(node: SemanticNode, app: AppSource) {
       const describe = (o: AppObservation) => text(readingOf(o.ko, { state: o.state })) ?? '관측 기록';
       return { tag: label[source] ?? '기타 관측', changed: rows.length > 1 && describe(first) !== describe(last), first: describe(first), last: describe(last), count: rows.length };
     }).sort((a, b) => Number(b.changed) - Number(a.changed) || b.count - a.count);
-    const top = changes.find(c => c.changed) ?? changes[0];
-    lead = top ? (top.changed ? `${top.tag}: ${oneLine(top.first, 40)} → ${oneLine(top.last, 40)}` : `${top.tag}: ${oneLine(top.last, 60)}`) : null;
-    for (const c of changes.slice(0, 4)) facts.push({ label: c.tag, value: c.changed ? `${oneLine(c.first, 40)} → ${oneLine(c.last, 40)}` : `${oneLine(c.last, 60)} · ${c.count}건` });
+    const described = changes.filter(c => c.last !== '관측 기록');
+    const top = described.find(c => c.changed) ?? described[0];
+    const counts = changes.map(c => `${c.tag} ${c.count}`).join(' · ');
+    lead = top ? (top.changed ? `${top.tag}: ${oneLine(top.first, 40)} → ${oneLine(top.last, 40)}` : `${top.tag}: ${oneLine(top.last, 60)}`)
+      : observations.length ? `수집 결과 ${observations.length}건 · ${counts}` : null;
+    for (const c of described.slice(0, 4)) facts.push({ label: c.tag, value: c.changed ? `${oneLine(c.first, 40)} → ${oneLine(c.last, 40)}` : `${oneLine(c.last, 60)} · ${c.count}건` });
+    if (!described.length) for (const c of changes) facts.push({ label: c.tag, value: `${c.count}건` });
     facts.push({ label: '수집', value: `수집 결과 ${observations.length}건` });
   } else if (kind === 'routing') {
     const classifier = roles.filter(e => e.data.role === 'classifier').at(-1);
-    lead = classifier ? text(summaryOf(classifier)) : null;
     const level = object(doc.data.analysis_routing).effective_level ?? classifier?.data.level;
+    lead = classifier ? text(summaryOf(classifier)) ?? (level != null ? `수준 ${level}로 분류${typeof classifier.data.confidence === 'number' ? ` · 분류 신뢰도 ${pct(classifier.data.confidence)}` : ''}` : null) : null;
     if (level != null) facts.push({ label: '선택한 수준', value: String(level) });
     if (typeof classifier?.data.confidence === 'number') facts.push({ label: '분류 신뢰도', value: pct(classifier.data.confidence) });
     const team = [...new Map(roundEvents.filter(e => e.event === 'role_started' && e.data.role && e.data.role !== 'classifier').map(e => [e.data.role, e])).values()];
@@ -238,7 +244,8 @@ function appBrief(node: SemanticNode, app: AppSource) {
   } else if (kind === 'investigation') {
     const analysis = roles.filter(e => e.data.role === 'specialist' || e.data.role === 'analyst');
     const main = analysis.filter(e => e.data.role === 'specialist').at(-1) ?? analysis.at(-1);
-    lead = main ? text(summaryOf(main)) : null;
+    const shown = [main, ...[...analysis].reverse(), ...[...roles].reverse()].find(e => e && text(summaryOf(e)));
+    lead = shown ? text(summaryOf(shown)) : null;
     note = main ? noteOf(summaryOf(main)) : null;
     if (typeof main?.data.confidence === 'number') facts.push({ label: '판단 신뢰도', value: `${pct(main.data.confidence)} · ${appRole(main.data.role)}` });
     const level = Number(object(doc.data.analysis_routing).effective_level ?? NaN);

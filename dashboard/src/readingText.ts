@@ -16,13 +16,17 @@ export function salvage(value: unknown, max = 1800): string | null {
   const head = value.split(/(?:\s근거\s*[:：]\s*(?:source:|[\x22`{])|\n(?:Traceback|at |\s*[{]|diff --git|--- a\/))/u, 1)[0];
   const safe = summaryKo(head, '', max);
   if (safe) return safe;
+  const sentences = head.split(/(?<=[.!?])\s+|\n+/);
   const beginning: string[] = [];
-  for (const sentence of head.split(/(?<=[.!?])\s+|\n+/).slice(0, 3)) {
+  for (const sentence of sentences.slice(0, 3)) {
     const text = summaryKo(sentence, '', 700);
     if (!text) break;
     beginning.push(text);
   }
-  return beginning.join(' ') || null;
+  if (beginning.length) return beginning.join(' ');
+  // A sentence that names an exception class or quotes code stays hidden; the readable sentences around it remain.
+  const readable = sentences.map(sentence => summaryKo(sentence, '', 700)).filter(Boolean).slice(0, 2);
+  return readable.join(' ') || null;
 }
 
 /** The one display rule for a model-written passage.

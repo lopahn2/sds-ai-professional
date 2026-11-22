@@ -13,6 +13,7 @@ import {approvalHold, deriveStageBrief, flowStatusTone, type AppSource} from '..
 test('a displayable Korean passage is shown as it is', () => {
   assert.deepEqual(readingOf('재고 예약 요청에서 0으로 나누기 예외가 발생했습니다.'), {text: '재고 예약 요청에서 0으로 나누기 예외가 발생했습니다.'});
   assert.equal(salvage('분기가 원인입니다. 근거: source:src/App.java'), '분기가 원인입니다.');
+  assert.equal(salvage('found.trim() 호출로 NullPointerException이 발생했습니다. 입력 전용 분기 두 곳이 원인입니다.'), '입력 전용 분기 두 곳이 원인입니다.', 'a sentence naming an exception class stays hidden; the rest remains')
 });
 test('a passage being summarised reads 정리 중', () => {
   assert.deepEqual(readingOf(null, {state: 'pending'}), {note: PENDING_KO});
