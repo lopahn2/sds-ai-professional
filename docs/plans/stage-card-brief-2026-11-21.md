@@ -91,6 +91,34 @@
 - 남은 한계: 1440에서 수집 진단 칸의 폭이 253px라 인프라 지도가 17.8% 축소한 미리보기로 보인다. 자원 이름은 확대, 전체 보기, 자원 선택으로 읽어야 한다.
 - 캡처: `backups/stage-card-20261122/live3/`
 
+
+## 화면 다듬기 2건 (2026-11-22)
+
+정리분을 실제 화면에서 확인하다 찾은 두 가지를 소유자 요청("여기서 진행")으로 고쳤다.
+
+| 항목 | 문제 | 처리 |
+|---|---|---|
+| 인프라 연결 지도 | 1440에서 수집 진단 칸의 폭이 253px라 자원 14개가 17.8%로 줄어든 미리보기로만 보였다. 입구도 긴 경고 목록 아래에 있었다 | 칸에는 사용량 요약 바로 아래에 `인프라 연결 지도 열기` 버튼만 둔다. 지도는 화면 너비의 모달 대화창(`RoomDialog`, 단계 원문과 같은 방식)에서 연다. 대화창 머리에 마지막 관측 시각과 `새로고침`을 둔다. 자원 상세는 지도 오른쪽 360px 칸에 열고, 900px 이하에서는 지도 아래에 연다(캔버스 높이 max(360px, 55dvh)). Esc나 닫기로 닫으면 포커스가 버튼으로 돌아간다 |
+| 첫 줄 접속어 | 기술 문장(예외 이름 등)을 숨기고 뒷문장을 살리면 첫 줄이 `따라서 …`로 시작했다(Application `6a14d02a…` 대응 경로 카드) | 숨긴 문장 바로 뒤 첫 문장의 접속어(`따라서`, `이에 따라` 등)만 뗀다. 처음부터 읽히는 글은 그대로 둔다 |
+
+- 시험 중에 잡은 결함 2건
+  1. 모달이 뒤 화면을 막아 수집 진단의 새로고침을 누를 수 없었다. 대화창 머리에 새로고침을 두었다.
+  2. 900px 이하에서 상세를 지도 아래에 두면 두 줄의 높이가 나뉘어 캔버스가 상세 위로 넘쳤다. 두 줄을 내용 높이(`max-content`)로 고정했다.
+- 검증 결과
+  - 단위 시험 236/236, naria 검증 0 FAIL.
+  - mock e2e 10개 spec(지도·상태·다이어그램·환경·삼성·서비스 지도·단계 카드·분석 스트림·관제실): 1440 46 통과, 768과 375 각 43 통과(폭 조건으로 건너뜀 3).
+  - 게이트된 실환경 삼성 spec도 같은 도우미를 쓰도록 바꿨지만 실행하지 않았다.
+- 반영(대시보드만, 세대 66 → 67, `liveprobe/dashboard@sha256:2766d8bdea9a…`)
+  - 19~20시에 dev 서비스의 연결 대상 없음(endpoint_loss) 사건이 시간당 25건씩 이어졌다. 그래서 20초 간격으로 20분, 다시 3초 간격으로 25분(확인 175회)을 지켜보는 동안 진행 중인 작업이 0건인 순간이 없었다. 이 동안에는 아무것도 적용하지 않았다.
+  - 이미지를 먼저 만들어 오프라인으로 검증했다(파일 9/9, nginx 경로 24, k3s 가시성). 그 뒤 진행 중인 작업이 0건인 순간에만 조건부 patch를 거는 스크립트(`backups/stage-card-20261122/apply-when-idle.sh`, 읽기 전용 확인)로 20:51:53에 적용했다(51번째 확인).
+  - 4175가 제공하는 8개 파일이 시험한 번들과 같다.
+- 운영 확인(GET만)
+  - 인프라 지도 대화창(1440/768/375): 캔버스 1406×669 / 750×620 / 357×401px, 배율 0.636 / 0.551 / 0.325(이전 칸 안 0.178). 자원 13개가 모두 보였고, 가로 넘침은 0이었다. Esc로 닫으면 포커스가 버튼으로 돌아왔다.
+  - Application 대응 경로 카드의 첫 줄은 `단일 서비스의 국소 코드 원인으로 분류합니다.`로 시작한다.
+  - #1501과 `6a14d02a…`의 대응 경로·원인 조사·독립 검증 카드 18개 모두 첫 줄 1개, 해석 상태 문구 0, 가로 넘침 0이었다. GET 외 요청은 0건이었다.
+  - 캡처는 `backups/stage-card-20261122/live4/`에 있다.
+- 같은 작업 폴더에서 Codex 세션(19:44 시작)이 `docs/operations/liveprobe-incident-types-2026-11-22.md`를 새로 만들었다(19:49). 이 작업과 겹치는 파일은 없었고, 그 문서는 커밋하지 않고 그대로 두었다.
+
 ## 반영과 롤백
 
 2026-11-22 12:59 KST에 실행 중인 워크플로·조치·명령·Application 작업이 0건임을 읽기 전용으로 확인하고, 각 배포의 세대와 이전 이미지가 그대로일 때만 바뀌는 JSON patch(서버 dry-run 먼저)로 교체했다. 한글 정리 컷오프는 `READINGS_V2_SINCE = 1795319520`(2026-11-22 12:52 KST)이다.
@@ -99,7 +127,7 @@
 |---|---|---|---|
 | liveprobe-api | `liveprobe/liveprobe@sha256:cf35e7428724…` | `liveprobe/liveprobe@sha256:94c72c0a3478…` | 96 → 97 |
 | liveprobe-application-model-worker | `liveprobe/liveprobe@sha256:038cfd35fc55…` | `liveprobe/liveprobe@sha256:2bae02afcc14…` | 5 → 6 |
-| dashboard | `liveprobe/dashboard@sha256:8c283a6611f9…` | `…698cd3ca01ff…` → 재반영 `…64ecdd96fa16…` → 정리분 `…b2bc12112955…` | 63 → 64 → 65 → 66 |
+| dashboard | `liveprobe/dashboard@sha256:8c283a6611f9…` | `…698cd3ca01ff…` → 재반영 `…64ecdd96fa16…` → 정리분 `…b2bc12112955…` → 다듬기 `…2766d8bdea9a…` | 63 → 64 → 65 → 66 → 67 |
 
 - 후보 이미지는 각자의 운영 이미지 위에 바뀐 파일 6개(`reading_era.py`·`readings_ko.py`·`interpret.py`·`flowgraph.py`·`application/display_readings.py`·`application/activity.py`)만 얹었다. 두 운영 이미지 안의 기존 5개 파일이 커밋된 수정 전 파일과 같음을 먼저 확인했다. 기반 레이어 유지·이미지 설정 동일·파일 6/6 일치·모듈 가져오기·k3s 가시성을 오프라인에서 검증했다.
 - 반영 뒤 실행 중인 API의 파일 6개가 후보와 같고, `/api/overview`·Application readyz가 200이었다. 기존 기록 지문(K8s 1,526건, Application 10건·이벤트 274건·작업 41건)이 바뀌지 않았다. 대시보드 재반영 때는 K8s 워크플로 1건이 실행 중이었고, 정적 파일만 바꾸는 교체라 그대로 진행했다.
@@ -113,4 +141,4 @@ $K patch deployment/liveprobe-application-model-worker --type=json -p '[{"op":"r
 $K patch deployment/liveprobe-api --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"liveprobe/liveprobe@sha256:cf35e7428724dc4ac06314addc6fb999f18e9abd2d5210965fb42009a62df7b8"}]'
 ```
 
-정리분만 되돌릴 때는 dashboard 이미지를 `liveprobe/dashboard@sha256:64ecdd96fa16c6a3b8f39a3565ecbc6ea946a36f8f2d4b653c4f58c8ad195564`로 같은 방식으로 patch한다. `rollout undo`는 쓰지 않는다. 반영 기록과 스크립트는 `backups/stage-card-20261122/`(git 제외)에 있다.
+다듬기만 되돌릴 때는 dashboard 이미지를 `liveprobe/dashboard@sha256:b2bc12112955960c30f8edf0d1b4df75bba0774d3df401cf31d25d69c268be3c`로, 정리분까지 되돌릴 때는 `liveprobe/dashboard@sha256:64ecdd96fa16c6a3b8f39a3565ecbc6ea946a36f8f2d4b653c4f58c8ad195564`로 같은 방식으로 patch한다. `rollout undo`는 쓰지 않는다. 반영 기록과 스크립트는 `backups/stage-card-20261122/`(git 제외)에 있다.
