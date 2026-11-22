@@ -49,12 +49,42 @@
 - [x] 카드 틀·결정 슬롯·이어받음
 - [x] 한글 정리 백엔드와 시험
 - [x] 서비스 지도 타일
-- [ ] 전체 e2e 비교, 캡처, 운영 반영
+- [x] 전체 e2e 비교, 캡처, 운영 반영(2026-11-22 13:00 KST)
+- [x] 실데이터에서 찾은 첫 줄·중복 문제를 고쳐 대시보드 재반영
 
 ## 검증
 
-(진행하며 기록)
+| 항목 | 결과 |
+|---|---|
+| 단위 시험 | 대시보드 236/236(새 `tests/stage-card.test.ts` 14건 포함). 백엔드 새 시험 `tests/test_readings_display.py` 5건, `application_tests/test_display_readings.py` 8건, 기존 해석·서사·설명·활동 시험(핵심 214건, Application 29건) 통과 |
+| 타입·빌드 | `tsc --noEmit` 통과, `vite build` 통과 |
+| naria | `naria-verify.py`(P21 기준 원본 `d536b75`) 159건 모두 naria 근거, FAIL 0. 기준선의 3건(단계 흐름 3px·9px)은 4px·8px로 고침 |
+| mock e2e 전체 | 1440 116 통과/27 실패, 768 113/27, 375 113/27. 실패 목록은 변경 전 기준선(1440 110/27, 768 107/27, 375 107/33)과 같고 새 실패 0건. 새 `stage-card` spec 6건은 세 폭 모두 통과 |
+| 의도한 시험 수정 | `unified.spec.mjs`·`application-original.mock.spec.mjs`는 접힌 판단 기록·시간순 관측 칸을 먼저 연다. 기준선에서 이미 실패하던 p18-w6-room·p15-incident-room의 옛 노드 id 선택은 이번 범위에서 옮기지 않았다 |
+| 캡처 | mock: `backups/stage-card-20261122`가 아닌 스크래치 e2e 증거 폴더의 `stage-card/width-{375,768,1440}-*.png`(작업 중·완료·과거·승인·K8s). 운영: `backups/stage-card-20261122/live2/app-6a14-*.png`, `live/k8s-1501-*.png` |
+| 운영 확인(GET만) | 4175가 새 번들 7개 파일을 그대로 제공. #1501(감지·근거 수집·대응 경로·원인 조사·독립 검증·결과)과 Application `6a14d02a…`(감지~운영자 인계 8단계)를 375/768/1440으로 열어 단계마다 첫 줄 1개, 해석 상태 문구 0, 가로 넘침 0. GET 외 요청 0건 |
+| 실데이터에서 찾은 것 | 저장된 한국어 판단 8개 중 6개가 예외 클래스명을 포함해 표시 필터에 통째로 숨겨지고 있었다(이전 화면의 '한글 해석 미관측' 상당수가 이 경우). 표시 경계는 그대로 두고 표시 가능한 문장만 골라 첫 줄에 쓴다 |
 
 ## 반영과 롤백
 
-(반영 후 기록)
+2026-11-22 12:59 KST에 실행 중인 워크플로·조치·명령·Application 작업이 0건임을 읽기 전용으로 확인하고, 각 배포의 세대와 이전 이미지가 그대로일 때만 바뀌는 JSON patch(서버 dry-run 먼저)로 교체했다. 한글 정리 컷오프는 `READINGS_V2_SINCE = 1795319520`(2026-11-22 12:52 KST)이다.
+
+| 배포 | 이전 | 새 이미지 | 세대 |
+|---|---|---|---|
+| liveprobe-api | `liveprobe/liveprobe@sha256:cf35e7428724…` | `liveprobe/liveprobe@sha256:94c72c0a3478…` | 96 → 97 |
+| liveprobe-application-model-worker | `liveprobe/liveprobe@sha256:038cfd35fc55…` | `liveprobe/liveprobe@sha256:2bae02afcc14…` | 5 → 6 |
+| dashboard | `liveprobe/dashboard@sha256:8c283a6611f9…` | `…698cd3ca01ff…` → 재반영 `…64ecdd96fa16…` | 63 → 64 → 65 |
+
+- 후보 이미지는 각자의 운영 이미지 위에 바뀐 파일 6개(`reading_era.py`·`readings_ko.py`·`interpret.py`·`flowgraph.py`·`application/display_readings.py`·`application/activity.py`)만 얹었다. 두 운영 이미지 안의 기존 5개 파일이 커밋된 수정 전 파일과 같음을 먼저 확인했다. 기반 레이어 유지·이미지 설정 동일·파일 6/6 일치·모듈 가져오기·k3s 가시성을 오프라인에서 검증했다.
+- 반영 뒤 실행 중인 API의 파일 6개가 후보와 같고, `/api/overview`·Application readyz가 200이었다. 기존 기록 지문(K8s 1,526건, Application 10건·이벤트 274건·작업 41건)이 바뀌지 않았다. 대시보드 재반영 때는 K8s 워크플로 1건이 실행 중이었고, 정적 파일만 바꾸는 교체라 그대로 진행했다.
+- 스키마 변경은 없다. 새 해석 행은 남아도 이전 코드가 무시한다.
+- 롤백(대시보드 → 작업자 → API 순서, 각각 같은 방식의 조건부 patch 뒤 `rollout status`):
+
+```bash
+K="kubectl --context rancher-desktop -n liveprobe-system"
+$K patch deployment/dashboard --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"liveprobe/dashboard@sha256:8c283a6611f9f9a2b9945f0d0070851e9b25933c47540079c75264b4417e3aac"}]'
+$K patch deployment/liveprobe-application-model-worker --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"liveprobe/liveprobe@sha256:038cfd35fc55f21916240098561c03bea7c841ccc552a42796ca3e8c388f85da"}]'
+$K patch deployment/liveprobe-api --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"liveprobe/liveprobe@sha256:cf35e7428724dc4ac06314addc6fb999f18e9abd2d5210965fb42009a62df7b8"}]'
+```
+
+`rollout undo`는 쓰지 않는다. 반영 기록과 스크립트는 `backups/stage-card-20261122/`(git 제외)에 있다.
