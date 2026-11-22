@@ -16,7 +16,7 @@ export function appObservations(application:ApplicationIncident){
   return (Array.isArray(collection.evidence)?collection.evidence:[]).map((value,index)=>{
     const entry=object(value), translation=object(readings['evidence/'+index]);
     return {entry, index, tag:questions[String(entry.source)] || '기타 관측', at:observationTime(entry.observed_at),
-      answer:summaryKo(translation.ko, readingStatus(translation.state),1200)};
+      answer:summaryKo(translation.ko, readingStatus(translation.state),1200), ko:translation.ko, state:typeof translation.state==='string'?translation.state:null};
   }).sort((a,b)=>(a.at??Infinity)-(b.at??Infinity) || a.index-b.index);
 }
 const time=(at:number|null)=>at==null?'시각 미관측':new Date(at).toLocaleString('ko-KR');

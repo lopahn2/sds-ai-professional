@@ -1,8 +1,8 @@
-const descriptions:Record<string,string> = {
-  pending:'한글 해석 대기', missing:'한글 해석 미기록', running:'한글 해석 중',
-  failed:'한글 해석 실패', unobserved:'한글 해석 미관측',
-};
+import { readingNote, type ReadingEra } from './readingText';
 
-export function readingStatus(state:unknown, fallback='한글 해석 미관측') {
-  return typeof state==='string' ? descriptions[state] || fallback : fallback;
+/** The label shown in place of a passage whose Korean summary is not displayed:
+ *  '정리 중' while it is being summarised, '과거 데이터 없음' for records that predate the summary pipeline,
+ *  and nothing ('') when a current summary failed or was filtered (a failure is never shown as text). */
+export function readingStatus(state: unknown, era?: ReadingEra): string {
+  return readingNote(state, era) ?? '';
 }

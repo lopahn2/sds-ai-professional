@@ -179,7 +179,7 @@
 .stage-work-locator svg { width: 16px; height: 16px; }
 .stage-work-locator button {
   max-width: 100%;
-  padding: 4px 9px;
+  padding: 4px 8px;
   border: 1px solid var(--nds-strong-border);
   border-radius: var(--nds-radius-control);
   color: var(--nds-text);

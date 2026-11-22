@@ -45,6 +45,8 @@ test('기존 애플리케이션 주소는 같은 관제실로 열리고 역할�
   await chooseStage(page,'evidence');
   await expect(panel).toContainText('같은 주문이 두 번 처리됐습니다.');
   expect(requested).not.toContain(base);
+  // The time-ordered observations sit in a counted data section under the brief.
+  await panel.getByRole('button',{name:/시간순 관측 기록/}).click();
   await page.getByText('관측 원문 상세보기',{exact:true}).click();
   await expect(page.locator('pre.raw-text')).toContainText('QA_FIXTURE_ORIGINAL');
   await page.getByText('관측 원문 상세보기',{exact:true}).click();

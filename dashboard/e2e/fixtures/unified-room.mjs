@@ -51,7 +51,7 @@ export async function mockUnifiedRoom(page, {state='awaiting_user_test', linked=
   }
   const requests=[], writes=[], created=new Map();
   await mockLocalOperator(page);
-  const fixture={summary,application,release,requests,writes,created,denyDetails:false,loseFirstCreate:false,
+  const fixture={summary,application,release,requests,writes,created,events,denyDetails:false,loseFirstCreate:false,
     observeMerge(){application.data.merge_review={...fingerprint,human_merge_observed:true,observed_at:Date.now()/1000,expires_at:expiry};},
   };
   await page.route('**/api/**',async route=>{
@@ -92,8 +92,10 @@ export async function mockUnifiedRoom(page, {state='awaiting_user_test', linked=
       if(path.endsWith('/current-version-check'))return send({eligible:false,reason_ko:'원래 요청을 확인하지 못했습니다.',
         release_id:release.release_id,service:application.service,environment:application.environment,latest:null});
       if(url.searchParams.get('view')==='stage'){
-        const {text,...safe}=original, {raw,...data}=application.data;
-        return send({...application,data:{...data,collection:{evidence:[{...safe,has_original:true}]}}});
+        const {raw,...data}=application.data;
+        // The stage view never carries evidence text, only ids, sources and times.
+        const evidence=(application.data.collection?.evidence ?? [original]).map(({text,...safe})=>({...safe,has_original:true}));
+        return send({...application,data:{...data,collection:{evidence}}});
       }
       return send(application);
     }

@@ -265,7 +265,11 @@ function Room({ id }: { id: string }) {
   const selectedGate = focused?.semantic.kind === 'approval' && code?.state === 'awaiting_prd_approval';
   const gatedActions = (focused?.semantic.kind === 'approval' || focused?.semantic.kind === 'action')
     ? approvals.filter(a => focused.semantic.members.some(n => n.card?.kind === 'action' && n.card.action_id === a.id)) : [];
+  const handoffHosted = focused?.semantic.kind === 'handoff' && !snapshot && !coreLocked && i.status === 'handed_off' && !!detail.data;
   const streamState = snapshot ? 'snapshot' : recordView ? 'record' : execution.state === 'snapshot' ? 'polling' : execution.state;
+  // One live-work source for the graph and the stage card, so both show the same working stage.
+  const workSources = {coreLive: !recordView && control === 'running' && !narrative.error && !eventError,
+    events, application: code?.linked && !snapshot && !appActivity.error ? appActivity.view : null};
   // Message ids rendered inside step cards: this browser's targeted sends and steering nodes (`steer:<message id>`).
   const ownedBy = new Map<string, string>();
   const aliasesFor = (n: FlowNode) => (n.aliases ?? []).filter(key => resolveStepId(key, steps) === n.id);
@@ -350,8 +354,7 @@ function Room({ id }: { id: string }) {
           control={code?.linked ? undefined : control}
           delayed={code?.linked ? appActivity.error : narrative.error || eventError}
           pending={!!code?.linked && !appActivity.view}
-          sources={{coreLive: !recordView && control === 'running' && !narrative.error && !eventError,
-            events, application: code?.linked && !snapshot && !appActivity.error ? appActivity.view : null}}/>
+          sources={workSources}/>
       </section>
       <section className="room-pane chat-pane conversation-pane" aria-label={tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}><header className="pane-heading"><div>{tab==='flow' && <button type="button" className="link-btn back-flow" onClick={()=>{focusAfterSelect.current='flow';setMobileDetail(false);}}>← 흐름으로 돌아가기</button>}<h2>{tab === 'flow' ? '단계 관제' : '분석 · 운영자 대화'}</h2></div>{tab==='flow' && <button type="button" className="btn sm widen-stage" aria-pressed={wideDetail} onClick={()=>{if(focused)setSelected(focused.id);setWideDetail(v=>!v);}}>{wideDetail?'기본 너비로':'단계 넓게 보기'}</button>}<button type="button" className="btn sm" onClick={() => setTab(tab === 'flow' ? 'chat' : 'flow')}>{tab === 'flow' ? '전체 대화·이력' : '단계 관제로'}</button></header>
         <div className="chat-feed" ref={feed} onFocusCapture={e=>{if(tab==="flow" && !selected && focused && e.target.closest(".step-panel"))setSelected(focused.id);}} onWheel={() => { responseScroll.current = null; }} onTouchStart={() => { responseScroll.current = null; }} onPointerDown={() => { responseScroll.current = null; }} onKeyDown={e => { if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(e.key)) responseScroll.current = null; }}>
@@ -359,10 +362,13 @@ function Room({ id }: { id: string }) {
             <SemanticStagePanel key={focused?.id} node={focused}
               core={{data, events, historical:recordView, state:streamState, error:execution.error, receivedAt:execution.receivedAt, readOnly:snapshot}}
               application={appSummary ? {summary:appSummary, activity:appActivity} : undefined}
-              onChange={reload}/>
-            {selectedGate && <CodeActionCard id={id} summary={code} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={reload} readOnly={snapshot} decisionOnly/>}
-            {gatedActions.map(a => <ActionApprovalCard action={a} key={a.id} onChange={reload}/>)}
-            {focused?.semantic.kind === 'handoff' && !snapshot && !coreLocked && i.status === 'handed_off' && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload}/>}
+              onChange={reload} flow={mainFlow} sources={workSources} onSelect={choose}
+              decisionCovers={handoffHosted ? ['handoff'] : undefined}
+              decision={selectedGate || gatedActions.length || handoffHosted ? <>
+                {selectedGate && <CodeActionCard id={id} summary={code} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={reload} readOnly={snapshot} decisionOnly/>}
+                {gatedActions.map(a => <ActionApprovalCard action={a} key={a.id} onChange={reload}/>)}
+                {handoffHosted && detail.data && <HandoffCard incident={i} view={handoffView ?? handoffFallback(i)} onChange={reload}/>}
+              </> : undefined}/>
           </>}
           {tab === 'chat' && <>
           {legacyCore ? <p className="notice">이 Kubernetes 서버는 통합 코드 조치를 지원하지 않습니다. <Link to="/application">애플리케이션 장애 메뉴</Link></p> : <CodeActionCard nodeId={data.flow.nodes.find(n => n.type === 'code_action')?.id} flash={flash === data.flow.nodes.find(n => n.type === 'code_action')?.id} id={id} summary={codeAction.data} summaryError={codeAction.error} problem={incidentSymptom(i)} onChange={codeAction.refresh} readOnly={snapshot} />}

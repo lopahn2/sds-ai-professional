@@ -29,6 +29,9 @@ test('루트 사건의 원인·근거는 선택한 단계에 표시하며 원문
   await chooseStage(page,'investigation');
   const panel=page.getByRole('region',{name:'선택 단계 입력과 결과'});
   await expect(panel).toContainText('연결 반환 누락을 확인했습니다.');
+  // The request sent to a role is part of its judgement row under the brief.
+  await panel.getByRole('button',{name:/판단 기록/}).click();
+  await panel.locator('.call-toggle').filter({hasText:'원인 분석'}).first().click();
   await expect(panel).toContainText('연결 반환 실패 원인을 조사하세요.');
   await expect(panel).toContainText('gpt-6.2-sol');
   await chooseStage(page,'evidence');
@@ -36,6 +39,7 @@ test('루트 사건의 원인·근거는 선택한 단계에 표시하며 원문
   await expect(panel.getByText(/RAW_ONLY_SENTINEL/)).toHaveCount(0);
   const raw=()=>fixture.requests.filter(r=>r.path.endsWith('/incidents/native-a')&&!r.search);
   expect(raw()).toHaveLength(0);
+  await panel.getByRole('button',{name:/시간순 관측 기록 · 애플리케이션/}).click();
   const observation=panel.getByRole('list',{name:'시간순 관측 기록'}).getByRole('listitem')
     .filter({hasText:'연결을 반환하지 않아 주문 요청이 지연됐습니다.'});
   await observation.getByText('관측 원문 상세보기',{exact:true}).click();

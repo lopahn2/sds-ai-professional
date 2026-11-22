@@ -164,9 +164,9 @@
 .flow-canvas[data-before]::before, .flow-canvas[data-after]::after { opacity: .96; }
 .flow-canvas[data-compact] .flow-step > button { grid-template-columns: 16px minmax(0, 1fr); gap: 2px 4px; padding-inline: 8px; }
 .flow-canvas[data-compact] .flow-role-icon, .flow-canvas[data-compact] .flow-role-icon svg { width: 16px; height: 16px; }
-.flow-canvas[data-compact] .flow-step-top { gap: 3px; }
+.flow-canvas[data-compact] .flow-step-top { gap: 4px; }
 .flow-canvas[data-compact] .flow-step strong { font-size: 13px; }
-.nds-theme .flow-canvas[data-compact] .flow-state { padding-inline: 3px; }
+.nds-theme .flow-canvas[data-compact] .flow-state { padding-inline: 4px; }
 
 /* The work ring belongs to an observed actor and stays on that actor when the
    operator selects another card. A static badge also identifies it at rest. */

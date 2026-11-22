@@ -54,6 +54,8 @@ function OriginalIncident({ id }: { id: string }) {
     setSelected(key);setDetail(true);
   };
   const showGate = step?.semantic.kind === 'approval' && item?.state === 'awaiting_prd_approval';
+  // One live-work source for the graph and the card, so both show the same working stage.
+  const sources = {application: activity.error ? null : activity.view};
   if(item?.root_incident_id && /^[1-9]\d*$/.test(String(item.root_incident_id)))return <Navigate replace to={'/incidents/'+item.root_incident_id} state={{incidentListSearch:back}}/>;
   return <div className="incident-room application-incident-room tab-flow">
     <section className="headline" aria-label="장애 상황 요약"><div className="headline-top"><Link to={list}>← 장애 목록</Link><span className="mono">#{id}</span><span className="badge">애플리케이션</span></div>
@@ -70,15 +72,16 @@ function OriginalIncident({ id }: { id: string }) {
     <div className={'room-columns '+(detail?'show-stage-detail ':'')+(wide?'wide-stage-detail':'')}>
       <section className="room-pane flow-pane" aria-label="AI 분석 흐름"><header className="pane-heading"><h2>AI 분석 흐름</h2><button type="button" className="btn sm" ref={graphButton} aria-pressed={all} onClick={()=>{setAll(v=>!v);setDetail(false);}}>{all?'단계 흐름':'전체 흐름'}</button></header>
         <StageFlowView all={all} flow={flow} selected={step?.id ?? null} onSelect={choose} archived={done}
-          sources={{application: activity.error ? null : activity.view}}
+          sources={sources}
           pending={!activity.view} delayed={activity.error}/>
       </section>
       <section className="room-pane conversation-pane chat-pane" aria-label="단계 관제"><header className="pane-heading"><div><button type="button" className="link-btn back-flow" onClick={()=>{moveFocus.current='flow';setDetail(false);}}>← 흐름으로 돌아가기</button><h2>단계 관제</h2></div>
         <button type="button" className="btn sm widen-stage" aria-pressed={wide} onClick={()=>{if(step)setSelected(step.id);setWide(v=>!v);}}>{wide?'기본 너비로':'단계 넓게 보기'}</button></header>
         <div className="chat-feed" ref={feed} onFocusCapture={e=>{if(!selected && step && e.target.closest(".step-panel"))setSelected(step.id);}}>
           {activity.error && <p role="status">작업 기록 갱신 지연 · 마지막 관측을 표시합니다.</p>}
-          <SemanticStagePanel key={step?.id} node={step} application={{summary:item, activity}} onChange={result.refresh}/>
-          {showGate && <NativeReleaseReview key={item.state} id={id} state={item.state!} onChange={result.refresh} decisionOnly/>}
+          <SemanticStagePanel key={step?.id} node={step} application={{summary:item, activity}} onChange={result.refresh}
+            flow={flow} sources={sources} onSelect={choose}
+            decision={showGate ? <NativeReleaseReview key={item.state} id={id} state={item.state!} onChange={result.refresh} decisionOnly/> : undefined}/>
           <Disclosure label={done?'후속 메모 열기':'사건 보완 열기'}>{()=> <NativeOriginal id={id} supplement onChange={message=>{if(message)setSupplementReceipt(message);result.refresh();}}/>}</Disclosure>
           {supplementReceipt && <p role="status">{supplementReceipt}</p>}
         </div></section></div></StageMotion></>}
