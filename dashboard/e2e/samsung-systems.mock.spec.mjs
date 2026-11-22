@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { capture, errors, layout, mock } from './p15-helpers.mjs';
+import { capture, errors, layout, mock, openInfraMap } from './p15-helpers.mjs';
 const sample = JSON.parse(readFileSync(new URL('./fixtures/samsung-overview.mock.json', import.meta.url), 'utf8'));
 const names = ['삼성 트레이드 시스템', '삼성 딜리버리 시스템', '삼성 비즈니스 시스템'];
 const captureRoot = `${process.env.LIVEPROBE_EVIDENCE_ROOT ?? 'e2e/artifacts'}/mock/samsung`;
@@ -8,7 +8,7 @@ const captureRoot = `${process.env.LIVEPROBE_EVIDENCE_ROOT ?? 'e2e/artifacts'}/m
 test.skip(!mock, '삼성 합성 inventory의 모의 화면 시험입니다.');
 async function load(page, overview = sample) {
   await page.route('**/api/overview', route => route.fulfill({ json: overview }));
-  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();
+  await page.goto('/'); await openInfraMap(page);
   await expect(page.getByRole('combobox', { name: '지도 환경' })).toHaveValue('prd');
 }
 // 2026-11-13 dev/prd 전환: 표본은 전환 전처럼 stg 환경·자원·계약을 담고 있다. 화면은 활성 dev·prd만 그린다

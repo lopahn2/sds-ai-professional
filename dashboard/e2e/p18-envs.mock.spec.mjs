@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { capture, errors, layout, mock, resetMock } from './p15-helpers.mjs';
+import { capture, errors, layout, mock, resetMock, openInfraMap } from './p15-helpers.mjs';
 test.skip(!mock, '다중 환경 계약 표본은 모의 API에서 검증합니다.');
 test.beforeEach(async ({ request }) => resetMock(request));
 const allInside = page => page.locator('.resource-button').evaluateAll(es => {
@@ -14,8 +14,10 @@ test('환경 선택·시스템 여섯 묶음·장애 위치·관제실 이동은
   await page.goto('/');
   const inventory = page.getByRole('article', { name: 'inventory', exact: true });
   await expect(inventory.getByRole('button', { name: /^inventory dev ·/ })).toBeVisible();
-  await expect(inventory.getByRole('link', { name: 'inventory prd · 장애 1건 · 사건 열기' })).toHaveAttribute('href', '/incidents/1976');
-  await page.getByRole('button', { name: '인프라·수집 진단' }).click();
+  // P21: an environment chip opens the service detail, which lists its cases.
+  await inventory.getByRole('button', { name: /^inventory prd · 장애 1건/ }).click();
+  await expect(page.locator('.atlas-cases a').first()).toHaveAttribute('href', '/incidents/1976');
+  await openInfraMap(page);
   const scope = page.getByRole('combobox', { name: '지도 환경' });
   await expect(scope).toHaveValue('prd');
   await expect(scope.locator('option')).toHaveText(['dev', 'prd', '전체 환경']);
@@ -70,7 +72,7 @@ test('장애 목록의 환경 필터는 서버에서 전체 이력에 적용된�
   async function selectEnvironment(environment) {
     const received = page.waitForResponse(response => {
       const url = new URL(response.url());
-      return response.request().method() === 'GET' && url.pathname === '/api/incidents'
+      return response.request().method() === 'GET' && url.pathname === '/api/console/incidents'
         && url.searchParams.get('environment') === environment && !url.searchParams.has('status');
     });
     await scope.selectOption(environment);

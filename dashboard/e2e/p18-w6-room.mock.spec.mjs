@@ -1,6 +1,6 @@
 // P18 W6 2영역 관제실 모의 브라우저 시험: 계약 2장(U1·U2·판단 과정·Group·근거 N행·단계 채팅·인계·상세 패널·초안 보존).
 import { test, expect } from '@playwright/test';
-import { capture as baseCapture, errors, layout, mock, resetMock, tab } from './p15-helpers.mjs';
+import { capture as baseCapture, errors, layout, mock, resetMock, tab, openFirstCall, stageOf } from './p15-helpers.mjs';
 const W6 = process.env.LIVEPROBE_W6_EVIDENCE_ROOT ?? 'e2e/artifacts/mock/w6';
 const capture = (page, info, name) => baseCapture(page, info, name.replace(/^w6\//, ''), W6);
 test.skip(!mock, '모의 API에서만 실행한다(실배포 장애 기록 보호).');
@@ -11,7 +11,8 @@ const ready = async page => { await expect(page.locator('.incident-room')).toBeV
 const wide = info => info.project.name === 'width-1440';
 /** 카드가 02 대화 스크롤 영역 안에 실제로 보인다. */
 const inFeed = card => card.evaluate(e => { const f = e.closest('.chat-feed').getBoundingClientRect(), a = e.getBoundingClientRect(); return a.top >= f.top - 2 && a.top < f.bottom - 20; });
-/** 흐름 노드를 키보드로 선택한다(좁은 화면은 흐름 탭으로 전환, 포커스가 캔버스를 노드로 옮긴다). */
+/** 단계 카드를 키보드로 선택한다(좁은 화면은 흐름 탭으로 전환, 포커스가 캔버스를 노드로 옮긴다). 실행 노드는 그 단계 카드에 모인다. */
+const open = async (card, name) => { const b = card.getByRole('button', { name }); if ((await b.getAttribute('aria-expanded')) === 'false') await b.click(); };
 async function pick(page,nodeId) {
   await tab(page,'흐름');
   const back=page.getByRole('button',{name:/흐름으로 돌아가기/});
@@ -45,27 +46,34 @@ test('각 노드는 같은 실행의 단계 상세를 열고 중복 역할도 �
   test.setTimeout(90000);
   const n = await narrative(request, 971); await page.goto('/incidents/971'); await ready(page);
   expect(n.flow.nodes.filter(x => x.role === 'k8s_log_analyst').length).toBe(2);
-  for (const node of n.flow.nodes.filter(node=>node.type!=='interpret')) {
-    const card = await pick(page, node.id);
-    await expect(card).toHaveAttribute('data-selected-step',node.id);
-    if(wide(info))await expect(page.locator('.react-flow__node[data-id="'+node.id+'"] button')).toBeFocused();else await expect(card).toBeFocused();
+  const stages = [...new Set(n.flow.nodes.map(stageOf).filter(Boolean))];
+  for (const id of stages) {
+    const card = await pick(page, id);
+    await expect(card).toHaveAttribute('data-selected-step',id);
+    if(wide(info))await expect(page.locator('.react-flow__node[data-id="'+id+'"] button')).toBeFocused();else await expect(card).toBeFocused();
     await expect.poll(() => inFeed(card), { timeout: 4000 }).toBe(true);
+    if (id === 'stage:investigation') {
+      await open(card, /^판단 기록/);
+      const role = n.flow.nodes.find(x => x.role === 'k8s_log_analyst').role_ko;
+      await expect(card.locator('.call-row').filter({ hasText: role })).toHaveCount(2);
+    }
   }
   await expect(page.locator('.detail-panel')).toHaveCount(0); // 노드 선택만으로 상세 패널을 열지 않는다
-  await tab(page, '흐름'); await expect(page.locator(`.react-flow__node[data-id="${n.flow.nodes.at(-1).id}"] button`)).toHaveAttribute('aria-pressed', 'true');
+  await tab(page, '흐름'); await expect(page.locator(`.react-flow__node[data-id="${stages.at(-1)}"] button`)).toHaveAttribute('aria-pressed', 'true');
   await tab(page, '대화'); await layout(page); await capture(page, info, 'w6/node-jump');
 });
 
 test('사건 수준 판단은 판단 과정 5단계를, Group 선택은 선택 이유·역할 구성·진행 기록을 보여 준다', async ({ page, request }, info) => {
   const n = await narrative(request, 971); await page.goto('/incidents/971'); await ready(page);
-  const router = await pick(page, 'router');
+  const router = await pick(page, 'stage:routing');
   const routing=n.flow.nodes.find(node=>node.id==='router').card;
   await expect(router.locator('.step-lead')).toHaveText(routing.final_reason_ko);
+  await open(router, /^판단 과정/);
   for(const step of routing.steps.filter(step=>!['final','model'].includes(step.key)))await expect(router).toContainText(step.title_ko);
   await expect(router).toContainText(routing.model_policy.selected_model);
   await expect(router).not.toContainText('LLM raised level');
   await layout(page); await capture(page, info, 'w6/router-steps');
-  const group=await pick(page,'group'),g=n.flow.nodes.find(node=>node.id==='group').card;
+  const group=await pick(page,'stage:routing'),g=n.flow.nodes.find(node=>node.id==='group').card;
   await expect(group.locator('.group-team > li')).toHaveCount(g.roles.length);
   for(const role of g.roles) await expect(group.locator('.group-team')).toContainText(role.role_ko);
   await expect(group).toContainText(g.decision.final_reason_ko);
@@ -79,7 +87,8 @@ test('사건 수준 판단은 판단 과정 5단계를, Group 선택은 선택 �
 test('근거 수집 카드는 N건 전체 행과 실패 사유를 보이고 행의 원문 보기는 서버 원문을 연다', async ({ page, request }, info) => {
   const n = await narrative(request, 990); const ev = n.flow.nodes.find(x => x.type === 'evidence');
   await page.goto('/incidents/990'); await ready(page);
-  const card=await pick(page,'evidence');
+  const card=await pick(page,'stage:evidence');
+  await open(card, /^시간순 관측 기록/);
   const entries=card.getByRole('list',{name:'시간순 관측 기록'}).locator(':scope > li');
   await expect(entries).toHaveCount(ev.card.total);
   await expect(card).toContainText('수집 '+ev.card.total+'건 · 성공 '+ev.card.ok+'건 · 실패 '+ev.card.failed+'건');
@@ -205,7 +214,8 @@ test('재수집된 근거는 각 행의 당시 요약과 원문을 열고 최신
     data.raw = data.raw.map(r => r.ref === 'E1_deployment' ? { ...r, raw: '{"ready_replicas":1}' } : r);
     await route.fulfill({ response, json: data });
   });
-  const es = errors(page); await page.goto('/incidents/990'); await ready(page); const card = await pick(page, 'evidence');
+  const es = errors(page); await page.goto('/incidents/990'); await ready(page); const card = await pick(page, 'stage:evidence');
+  await open(card, /^시간순 관측 기록/);
   for (const index of [0, 1]) {
     const row = card.getByRole('list',{name:'시간순 관측 기록'}).locator(':scope > li').nth(index);
     await expect(row).toContainText(`당시 준비된 Pod ${index}개`);
@@ -304,7 +314,7 @@ test('인계 카드는 요약·결정사항·다음 단계 중심이고 원문 �
   for (const s of n.handoff_view.next_steps_raw) await expect(h.getByText(s, { exact: true })).toBeVisible();
   await h.getByRole('button', { name: '인계 인수', exact: true }).click(); await expect(h).toContainText('인수: operator');
   // 결과 카드도 같은 요약을 쓰고 원문 목록을 펼쳐 두지 않는다.
-  const out = await pick(page, 'outcome'); await expect(out.locator('.stage-facts')).toBeVisible(); await expect(out).not.toContainText('kubectl');
+  const out = await pick(page, 'stage:handoff'); await expect(out.locator('.stage-facts').first()).toBeVisible(); await expect(out).not.toContainText('kubectl');
 });
 
 test('상세 패널: 상세보기로만 열리고 교체·닫기·Esc 후 포커스·초안·대화 위치를 보존한다', async ({ page }, info) => {
@@ -338,7 +348,7 @@ test('상세 패널: 상세보기로만 열리고 교체·닫기·Esc 후 포커
 
 test('움직임 감소 설정에서는 카드 이동이 즉시이고 강조 애니메이션이 없다', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' }); await page.goto('/incidents/971'); await ready(page);
-  const card = await pick(page, 'outcome');
+  const card = await pick(page, 'stage:result');
   await page.waitForTimeout(120); expect(await inFeed(card)).toBe(true);
   expect(await card.evaluate(e => getComputedStyle(e).animationName)).toBe('none');
 });
@@ -352,17 +362,17 @@ test('한글 요약·판단 과정·결정사항·단계 입력은 실제 렌더
     for (const item of sizes) expect(item.size, item.text).toBeGreaterThanOrEqual(14);
   };
   await check(handoff.locator('.handoff-lead,.decision-table dd,.next-steps li'));
-  const router = await pick(page, 'router'); await check(router.locator('.stage-timeline p,.step-lead'));
-  const group = await pick(page, 'group'); await check(group.locator('.group-team li > span,.step-lead'));
+  const router = await pick(page, 'stage:routing'); await open(router, /^판단 과정/); await check(router.locator('.stage-timeline p:not(.reading-note),.step-lead'));
+  const group = await pick(page, 'stage:routing'); await check(group.locator('.group-team li > span,.step-lead'));
   await page.goto('/incidents/1976'); await ready(page);
-  const agent = await pick(page, 'planned:coordinator'); await check(agent.locator('.step-lead,textarea'));
+  const agent = page.getByRole('region',{name:'선택 단계 입력과 결과'}); await check(agent.locator('.step-lead'));
 });
 
 test('백엔드 새 필드가 없는 응답에서도 깨지지 않고 미기록·해석 준비 중을 표시한다', async ({ page, request }, info) => {
   const n = await narrative(request, 990); delete n.handoff_view; for (const x of n.flow.nodes) { delete x.card; delete x.at; }
   await page.route('**/api/incidents/990/narrative', r => r.fulfill({ json: n }));
   const es = errors(page); await page.goto('/incidents/990'); await ready(page);
-  const router = await pick(page, 'router'); await expect(router).toContainText(n.flow.nodes.find(x => x.id === 'router').conclusion_ko);
+  const router = await pick(page, 'stage:routing'); await expect(router).toContainText(n.flow.nodes.find(x => x.id === 'router').conclusion_ko);
   const ev = await conversationStep(page, 'evidence'); await expect(ev).toContainText('수집 항목별 목록은 아직 받지 못했습니다');
   await tab(page, '대화'); const h = page.getByRole('article', { name: '운영자 인계' }); await expect(h).toContainText('자동 대응을 멈췄습니다. 담당자 확인이 필요합니다.'); await expect(h.locator('.decision-table')).toContainText('운영자 인계 · 자동 복구 아님');
   await expect(page.locator('.step-time').first()).toHaveText('시각 미기록');

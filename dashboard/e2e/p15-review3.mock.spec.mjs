@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { mock, resetMock, tab, layout } from './p15-helpers.mjs';
+import { mock, resetMock, tab, layout, openInfraMap } from './p15-helpers.mjs';
 test.skip(!mock, '조회 경합과 서버 실패는 모의 API에서만 재현한다.');
 test.beforeEach(async ({ request }) => resetMock(request));
 
 test('같은 필터의 오래된 실패가 최신 목록 성공 뒤 오류 경고를 만들지 않는다', async ({ page, request }) => {
- const {items}=await(await request.get('/api/incidents?limit=1')).json();const base=items[0];
+ // The incident list reads the unified console page (Kubernetes and Application in one list).
+ const {items}=await(await request.get('/api/console/incidents?limit=1')).json();const base=items[0];
  let calls=0,held,announce;const waiting=new Promise(r=>announce=r);
- await page.route('**/api/incidents?*',async route=>{
+ await page.route('**/api/console/incidents?*',async route=>{
   if(new URL(route.request().url()).searchParams.get('limit')!=='50')return route.fallback();
   const call=++calls;if(call===2){held=route;announce();return;}
   return route.fulfill({json:{items:[{...base,id:320+call,workload:call===1?'초기 목록':'최신 목록'}],total:1}});
@@ -20,7 +21,7 @@ test('같은 필터의 오래된 실패가 최신 목록 성공 뒤 오류 경�
 test('혼합 연결의 숨긴 문구는 자원 상세에서 요청률과 전체 흐름·차단·오류를 모두 보존한다',async({page,request})=>{
  const o=await(await request.get('/api/overview')).json();
  delete o.cluster.environments; o.workloads=[];o.incidents.open=[];o.topology={generated_at:10000,nodes:['a','b'].map((id,j)=>({id,name:id,namespace:j?'other':'shop',kind:'Deployment',status:'ready'})),structure_edges:[],observed_edges:[{from:'a',to:'b',flows:26,ok:12,dropped:13,errors:1,req_rate:10,err_rate:0.1,last_seen:10000,state:'degraded',ports:{},drop_reasons:{},via_service:{}}],freshness:{state:'connected',stale:false,stale_after_s:60},network_alerts:[]};
- await page.route('**/api/overview',r=>r.fulfill({json:o}));await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();await page.getByRole('combobox',{name:'지도 자원 선택'}).selectOption('a');
+ await page.route('**/api/overview',r=>r.fulfill({json:o}));await page.goto('/'); await openInfraMap(page);await page.getByRole('combobox',{name:'지도 자원 선택'}).selectOption('a');
  const d=page.getByRole('complementary',{name:'자원 상세'});await expect(d).toBeVisible();await expect(page.locator('.react-flow__edge-text')).toHaveCount(0);
  for(const value of ['10/초','오류 10%','흐름 26','차단 13','오류 1'])await expect(d).toContainText(value);await layout(page);
 });

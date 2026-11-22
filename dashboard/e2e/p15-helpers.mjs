@@ -71,3 +71,43 @@ export async function layout(page) {
   appendFileSync(`${artifactRoot}/layout.jsonl`, JSON.stringify({ url:page.url(), viewport:page.viewportSize(), source_sha256:sourceHash, document:await page.evaluate(()=>({client:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth})), panels:sizes, overlaps, clipped })+'\n');
 }
 export function errors(page) { const es=[];page.on('pageerror',e=>es.push(e.message));return es; }
+
+/** P21: the infrastructure map sits in the collection diagnostics beside the service map (source button → 수집 진단 → 인프라 연결 지도). */
+export async function openInfraMap(page) {
+  await page.getByRole('navigation', { name: '수집원 상태' }).getByRole('button').first().click();
+  await expect(page.getByRole('heading', { name: '수집 진단', exact: true })).toBeVisible();
+  const map = page.locator('details.disclosure').filter({ has: page.locator('summary', { hasText: '인프라 연결 지도' }) });
+  if (!(await map.evaluate(d => d.open))) await map.locator('summary').first().click();
+  await expect(page.locator('.topology-canvas')).toBeVisible({ timeout: 10000 });
+}
+
+/** The semantic stage card that shows a raw flow node (dashboard/src/semanticFlow.ts coreStage). */
+export function stageOf(node) {
+  if (node.status === 'planned' || node.type === 'interpret' || (node.id.startsWith('plan:') && node.status === 'skipped')) return null;
+  switch (node.type) {
+    case 'signal': return 'stage:detection';
+    case 'evidence': return node.card?.kind === 'evidence' && node.card.total === 0 && !node.at ? null : 'stage:evidence';
+    case 'router': case 'group': return node.status === 'skipped' ? null : 'stage:routing';
+    case 'agent': case 'investigation': case 'code_action': return 'stage:investigation';
+    case 'verify': return 'stage:verification';
+    case 'outcome': return node.card?.kind === 'outcome' && node.card.status === 'handed_off' ? 'stage:handoff' : 'stage:result';
+    case 'command': case 'action': return node.card?.kind === 'action' && ['pending_approval', 'rejected'].includes(node.card.status) ? 'stage:approval' : 'stage:action:' + node.id;
+    default: return null;
+  }
+}
+/** Every stage card a narrative must show: one card per stage, never one per raw node. */
+export async function expectStages(page, narrative) {
+  const want = [...new Set(narrative.flow.nodes.map(stageOf).filter(Boolean))];
+  const ids = await page.locator('.flow-step button').evaluateAll(es => es.map(e => e.dataset.stageId));
+  expect(new Set(ids).size, JSON.stringify(ids)).toBe(ids.length);
+  expect(ids.every(id => id?.startsWith('stage:')), JSON.stringify(ids)).toBe(true);
+  for (const id of want) expect(ids, id).toContain(id);
+  return ids;
+}
+/** Open a stage card's judgement rows and the first collapsed call (its request and answer stream). */
+export async function openFirstCall(panel) {
+  const rows = panel.getByRole('button', { name: /^판단 기록/ });
+  if (await rows.count() && (await rows.first().getAttribute('aria-expanded')) === 'false') await rows.first().click();
+  const call = panel.locator('.call-toggle[aria-expanded="false"]').first();
+  if (await call.count()) await call.click();
+}

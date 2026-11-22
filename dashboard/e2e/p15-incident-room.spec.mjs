@@ -1,5 +1,5 @@
 import {test,expect} from '@playwright/test';
-import {capture,errors,layout,noPageScroll,resetMock,tab} from './p15-helpers.mjs';
+import {capture,errors,expectStages,layout,noPageScroll,openFirstCall,resetMock,stageOf,tab} from './p15-helpers.mjs';
 
 test.beforeEach(async({request})=>resetMock(request));
 const stage = page => page.getByRole('region',{name:'선택 단계 입력과 결과'});
@@ -41,12 +41,14 @@ test('API의 진행·복구·인계 사건에서 신호, 병렬 단계, 근거 �
     await expect(page.getByRole('region',{name:'장애 상황 요약'})).toContainText('#'+i.id);
     await expect(page.locator('.headline h2')).toContainText(i.workload);
     await expect(page.locator('pre.raw-text:visible')).toHaveCount(0);
-    await allSteps(page);await expect(page.locator('.flow-step button')).toHaveCount(n.flow.nodes.filter(node=>node.type!=='interpret').length);
+    await allSteps(page);await expectStages(page,n);
     await layout(page);await capture(page,info,`room-${i.severity_level}-${i.status}-flow`);
     const evidence=n.flow.nodes.find(node=>node.type==='evidence');
     if(evidence){
-      await selectNode(page,evidence.id);
+      await selectNode(page,stageOf(evidence));
       await expect(stage(page)).toContainText('근거');
+      const timeline=stage(page).getByRole('button',{name:/시간순 관측 기록/});
+      if(await timeline.count())await timeline.first().click();
       const raw=stage(page).locator('summary').filter({hasText:'관측 원문 상세보기'}).first();
       if(await raw.count()){
         await raw.focus();await raw.press('Enter');
@@ -75,11 +77,16 @@ test('API의 진행·복구·인계 사건에서 신호, 병렬 단계, 근거 �
     }
     const agent=n.flow.nodes.find(node=>node.role&&['agent','router','verify'].includes(node.type));
     if(agent){
-      await allSteps(page);await selectNode(page,agent.id);
-      await expect(stage(page)).toContainText('전달한 요청');
+      await allSteps(page);await selectNode(page,stageOf(agent));
+      await openFirstCall(stage(page));
+      // The request is shown only when a dispatch record joins the call by its id (never rebuilt from the result).
+      const events=await(await request.get('/api/incidents/'+i.id+'/events')).json();
+      const dispatched=(events.events??events).some(e=>e.kind==='agent_started'&&e.detail?.call_id&&e.detail.call_id===agent.call_id&&e.detail.dispatch);
+      if(dispatched)await expect(stage(page)).toContainText('전달한 요청');
+      else await expect(stage(page).locator('.call-row').filter({hasText:agent.role_ko||agent.label}).first()).toBeVisible();
       const widen=page.getByRole('button',{name:'단계 넓게 보기'});
       if(await widen.isVisible()){
-        await widen.click();await expect(stage(page)).toHaveAttribute('data-selected-step',agent.id);
+        await widen.click();await expect(stage(page)).toHaveAttribute('data-selected-step',stageOf(agent));
         await page.getByRole('button',{name:'기본 너비로'}).click();
       }
 

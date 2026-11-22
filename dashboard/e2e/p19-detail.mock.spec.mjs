@@ -86,11 +86,9 @@ test('Group와 한글 해석 상세의 긴 문자열·특수문자 본문은 전
   await page.goto('/incidents/990');await ready(page);let {panel,trigger}=await open(page,'group');
   for(const text of ['판단 이유 '+long,'전체 판단 '+long,'하위 판단 '+long,'실제 진행 '+long,'Agent 호출 최대 0회','제한 시간 0초'])await expect(panel).toContainText(text);
   await layout(page);await page.screenshot({path:info.outputPath('group-long.png')});await page.keyboard.press('Escape');await expect(trigger).toBeFocused();
-  ({panel}=await open(page,'p19-interpret'));
-  const translation=panel.locator('details').filter({has:panel.page().locator('summary').filter({hasText:'p19-translation'})});
-  await translation.locator('summary').click();
-  await expect(translation.locator('p')).toHaveText('정확한 한글 '+long);await expect(translation.locator('.raw-text')).toHaveText('EXACT RAW '+long);
-  expect(await page.evaluate(()=>window.p19Injected)).toBeUndefined();await layout(page);await page.screenshot({path:info.outputPath('interpret-long.png')});expect(es).toEqual([]);
+  // Interpretation runs are display work, not operator steps (roomWorkflow.operatorFlow): they have no card of their own.
+  await expect(page.locator('[id="step-p19-interpret"]')).toHaveCount(0);
+  expect(await page.evaluate(()=>window.p19Injected)).toBeUndefined();await layout(page);expect(es).toEqual([]);
 });
 
 test('사건 상세 로드 실패는 다시 불러오기로 회복하며 마지막 승인 정보를 성공으로 꾸미지 않는다',async({page})=>{

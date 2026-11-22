@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { mkdirSync, appendFileSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { errors, layout, resetMock, tab } from './p15-helpers.mjs';
+import { errors, layout, resetMock, tab, openInfraMap, expectStages } from './p15-helpers.mjs';
 
 const mock = process.env.LIVEPROBE_MOCK === '1';
 const sourceFiles = ['index.html', 'vite.config.ts', ...readdirSync('src').filter(f => /\.(ts|tsx|css)$/.test(f)).sort().map(f => `src/${f}`)];
@@ -23,12 +23,20 @@ async function incident(request) {
 }
 async function readableTokens(page, selector) {
   const pairs = await page.locator(selector).evaluate(e => {
-    const css = getComputedStyle(e);
-    const lum = hex => hex.trim().slice(1).match(/../g).map(x => parseInt(x, 16) / 255).map(x => x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4).reduce((a, x, i) => a + x * [.2126, .7152, .0722][i], 0);
-    return ['text', 'muted', 'meta', 'accent', 'ok', 'warn', 'danger', 'reroute'].flatMap(fg => ['bg', 'group', 'node', 'selected'].map(bg => {
-      const a = lum(css.getPropertyValue(`--diagram-${fg}`)), b = lum(css.getPropertyValue(`--diagram-${bg}`));
+    // Tokens may be naria variables or color-mix(); the browser resolves each to sRGB first.
+    const probe = document.createElement('span'); e.appendChild(probe);
+    const rgb = name => {
+      probe.style.color = `var(--diagram-${name})`; const v = getComputedStyle(probe).color;
+      let m = v.match(/rgba?\(([^)]+)\)/); if (m) return m[1].split(',').slice(0, 3).map(x => parseFloat(x) / 255);
+      m = v.match(/color\(srgb ([^)]+)\)/); if (m) return m[1].trim().split(/\s+/).slice(0, 3).map(Number);
+      return [NaN, NaN, NaN];
+    };
+    const lum = c => c.map(x => x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4).reduce((a, x, i) => a + x * [.2126, .7152, .0722][i], 0);
+    const out = ['text', 'muted', 'meta', 'accent', 'ok', 'warn', 'danger', 'reroute'].flatMap(fg => ['bg', 'group', 'node', 'selected'].map(bg => {
+      const a = lum(rgb(fg)), b = lum(rgb(bg));
       return { fg, bg, ratio: (Math.max(a, b) + .05) / (Math.min(a, b) + .05) };
     }));
+    probe.remove(); return out;
   });
   for (const pair of pairs) expect(pair.ratio, JSON.stringify(pair)).toBeGreaterThanOrEqual(4.5);
 }
@@ -45,7 +53,7 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
   o.topology.observed_edges = [ingress, ...targets.slice(0, -1)].map((source, i) => ({ ...seed, from: source.id, to: targets[i].id, flows: 1, dropped: 0, errors: 0, state: 'ok' }));
   let payload = o;
   await page.route('**/api/overview', route => route.fulfill({ json: payload }));
-  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click(); await page.locator('.resource-button').first().waitFor();
+  await page.goto('/'); await openInfraMap(page); await page.locator('.resource-button').first().waitFor();
   const allInside = () => page.locator('.resource-button').evaluateAll(es => {
     const f = document.querySelector('.topology-canvas .react-flow').getBoundingClientRect();
     return es.every(e => { const r = e.getBoundingClientRect(); return r.left >= f.left - 1 && r.right <= f.right + 1 && r.top >= f.top - 1 && r.bottom <= f.bottom + 1; });
@@ -77,7 +85,7 @@ test('같은 자원 수라도 연결 변경으로 지도 배치가 바뀌면 전
 
 test('정교화한 서비스 지도는 원천 상태·선택·명도 위계와 확대 제어를 보존한다', async ({ page }, info) => {
   const es = errors(page);
-  await page.goto('/'); await page.getByRole('button', { name: '인프라·수집 진단' }).click();
+  await page.goto('/'); await openInfraMap(page);
   const nodes = page.locator('.topology-canvas .resource-button');
   await expect(nodes.first()).toBeVisible();
   await expect(page.locator('.resource-glyph svg')).toHaveCount(await nodes.count());
@@ -107,14 +115,18 @@ test('정교화한 AI 흐름은 모든 단계·역할·선택·밝은 근거 영
   await page.goto(`/incidents/${row.id}`); await tab(page, '흐름');
   await page.getByRole('button',{name:'전체 흐름',exact:true}).click();
   const nodes = page.locator('.flow-step button');
-  await expect(nodes).toHaveCount(n.flow.nodes.length);
-  await expect(page.locator('.flow-canvas')).toHaveCSS('background-color', 'rgb(17, 24, 28)');
-  await expect(page.locator('.flow-step svg')).toHaveCount(n.flow.nodes.length);
+  // One card per stage: the raw nodes of a stage share its card.
+  const stages = await expectStages(page, n);
+  // P21 (DESIGN.md): the incident room flow is a light diagram on the naria canvas; the topology map stays dark.
+  await expect(page.locator('.flow-canvas')).toHaveCSS('background-color', 'rgb(246, 248, 248)');
+  await expect(page.locator('.flow-step svg')).toHaveCount(stages.length);
   await readableTokens(page, '.flow-canvas');
   await layout(page); await capture(page, info, 'flow');
   await nodes.first().focus(); await page.keyboard.press('Enter');
   await expect(page.getByRole('region',{name:'선택 단계 입력과 결과'})).toBeVisible();
-  await expect(nodes.first()).toBeFocused();
+  // At 900px and below the chosen stage opens over the flow and takes focus; wider screens keep focus on the node.
+  if (page.viewportSize().width <= 900) await expect(page.getByRole('region',{name:'선택 단계 입력과 결과'})).toBeFocused();
+  else await expect(nodes.first()).toBeFocused();
   await tab(page, '흐름');
   await expect(nodes.first()).toHaveAttribute('aria-pressed', 'true');
   await layout(page); await capture(page, info, 'flow-selection');

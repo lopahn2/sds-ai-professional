@@ -1,20 +1,20 @@
 import { test, expect } from '@playwright/test';
-import { capture, errors, layout, mock, noPageScroll, resetMock } from './p15-helpers.mjs';
+import { capture, errors, layout, mock, noPageScroll, resetMock, openInfraMap } from './p15-helpers.mjs';
 test.beforeEach(async ({request})=>resetMock(request));
 async function ready(page) {
-  await page.getByRole('button',{name:'인프라·수집 진단'}).click();
+  await openInfraMap(page);
   await expect(page.locator('.topology-canvas .resource-button').first()).toBeVisible({timeout:10000});
 }
 test('운영 관제의 지도·보조 상태·원천·경고 원문과 장애 진입', async ({page,request},info)=>{
   const es=errors(page);const response=await request.get('/api/overview');expect(response.ok()).toBe(true);const data=await response.json();
   await page.goto('/');await ready(page);
-  await page.getByText('클러스터 진단',{exact:true}).click();await expect(page.getByRole('heading',{name:'서비스 연결 지도'})).toBeVisible();await expect(page.getByRole('region',{name:'클러스터 건강도 요약'})).toBeVisible();await expect(page.getByRole('combobox',{name:data.cluster?.environments?.length ? '지도 환경' : '지도 네임스페이스'})).toBeVisible();
-  expect(await page.locator('iframe').count()).toBe(0);await expect(page.getByLabel('데이터 원천 상태')).toBeVisible();
+  await expect(page.getByRole('heading',{name:'서비스 연결 지도'})).toBeVisible();await expect(page.getByRole('region',{name:'클러스터 건강도 요약'})).toBeVisible();await expect(page.getByRole('combobox',{name:data.cluster?.environments?.length ? '지도 환경' : '지도 네임스페이스'})).toBeVisible();
+  expect(await page.locator('iframe').count()).toBe(0);await expect(page.getByRole('navigation',{name:'수집원 상태'})).toBeVisible();
   // 운영 관제의 제목 영역과 큰 요약 카드는 없다. 화면 제목은 보조 기술에만 남긴다.
   await expect(page.locator('.page-head,.kpi-grid,.overview-right,.namespace-table')).toHaveCount(0);await expect(page.locator('h1.sr-only')).toHaveText('운영 관제');
   if(data.events?.length){const warning=page.locator('.warning-event').first();await warning.getByText('원문 보기',{exact:true}).click();await expect(warning.locator('.raw-text').first()).toBeVisible();}
   await layout(page);await capture(page,info,'overview');
-  await page.getByRole('navigation',{name:'보조 정보 전환'}).getByRole('button',{name:/^네임스페이스/}).click();await expect(page.locator('.ns-row').first()).toBeVisible();await layout(page);await capture(page,info,'overview-namespaces');
+  await page.getByRole('navigation',{name:'수집 진단 항목'}).getByRole('button',{name:/^네임스페이스/}).click();await expect(page.locator('.ns-row').first()).toBeVisible();await layout(page);await capture(page,info,'overview-namespaces');
   const target=data.incidents?.open?.[0];
   if(target){
     const node=page.locator(`.react-flow__node`).filter({has:page.getByRole('button',{name:new RegExp(`장애 ${target.id} 관제실 열기`)})});await expect(node.locator('.incident-pin')).toBeVisible();await node.getByRole('button').focus();await node.getByRole('button').click();await expect(page).toHaveURL(new RegExp(`/incidents/${target.id}$`));await expect(page.getByRole('heading',{name:'장애 관제실',exact:true})).toBeAttached();
@@ -84,7 +84,7 @@ test('오류율 비율을 자원과 연결선에서 백분율로 표시한다', 
   for(const e of data.topology?.observed_edges??[])Object.assign(e,{req_rate:2,err_rate:0.25});
   await page.route('**/api/overview',route=>route.fulfill({json:data}));
   await page.goto('/');
-  await page.getByRole('button',{name:'인프라·수집 진단'}).click();
+  await openInfraMap(page);
   const map=page.locator('.topology-canvas');
   await expect(map.locator('.react-flow__edge[aria-label*="오류 25%"]').first()).toBeAttached();
   const workload=data.workloads.find(w=>w.namespace==='prd' && !w.incident && !data.incidents.open.some(i=>i.namespace===w.namespace && i.workload===w.name));
