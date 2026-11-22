@@ -130,7 +130,7 @@
 
 /* 다이어그램: 디자인 시스템 다크 토큰 값(#11181c·#20292d·#303b40 …)으로 맞춘 작업면 */
 .nds-theme .topology-canvas, .nds-theme .flow-canvas {
-  --diagram-bg: #11181c; --diagram-group: #20292d; --diagram-node: #303b40; --diagram-selected: color-mix(in srgb, #b9c8da 22%, #303b40); --diagram-border: #707d83;
+  --diagram-bg: #11181c; --diagram-group: #20292d; --diagram-node: #303b40; --diagram-selected: color-mix(in srgb, #b9c8da 10%, #303b40); --diagram-border: #707d83;
   --diagram-text: #f6f8f8; --diagram-muted: #b6c0c4; --diagram-meta: #b6c0c4; --diagram-accent: #b9c8da;
   --diagram-ok: #89dcb0; --diagram-warn: #f3ca68; --diagram-danger: #ff9da6; --diagram-reroute: #80d9cc;
 }

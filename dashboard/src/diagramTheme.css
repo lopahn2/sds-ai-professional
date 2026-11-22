@@ -1,7 +1,7 @@
 /* P16 · 다이어그램만 흑연색 작업면으로 분리한다. */
 .topology-canvas,.flow-canvas{
   --diagram-bg:#11181c;--diagram-group:#20292d;--diagram-node:#303b40;
-  --diagram-selected:color-mix(in srgb, #b9c8da 22%, #303b40);--diagram-border:#707d83;--diagram-text:#f6f8f8;
+  --diagram-selected:color-mix(in srgb, #b9c8da 10%, #303b40);--diagram-border:#707d83;--diagram-text:#f6f8f8;
   --diagram-muted:#b6c0c4;--diagram-meta:#b6c0c4;--diagram-accent:#b9c8da;
   --diagram-ok:#89dcb0;--diagram-warn:#f3ca68;--diagram-danger:#ff9da6;--diagram-reroute:#80d9cc;
   background:var(--diagram-bg);color:var(--diagram-text);isolation:isolate;

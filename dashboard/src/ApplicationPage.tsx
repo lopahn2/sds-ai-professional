@@ -53,7 +53,8 @@ function OriginalIncident({ id }: { id: string }) {
     if(window.matchMedia('(max-width:900px)').matches && !document.activeElement?.closest('.flow-canvas[data-mode="stage"]'))moveFocus.current='stage';
     setSelected(key);setDetail(true);
   };
-  const showGate = step?.semantic.kind === 'approval' && item?.state === 'awaiting_prd_approval';
+  const showGate = (step?.semantic.kind === 'approval' && item?.state === 'awaiting_prd_approval')
+    || (step?.semantic.kind === 'dev_validation' && item?.state === 'awaiting_user_test');
   // One live-work source for the graph and the card, so both show the same working stage.
   const sources = {application: activity.error ? null : activity.view};
   if(item?.root_incident_id && /^[1-9]\d*$/.test(String(item.root_incident_id)))return <Navigate replace to={'/incidents/'+item.root_incident_id} state={{incidentListSearch:back}}/>;

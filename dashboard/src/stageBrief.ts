@@ -124,6 +124,8 @@ function coreBrief(node: SemanticNode, { data, preparing }: CoreSource) {
       lead = text(readingOf(group.decision.final_reason_ko, { era: 'current' }));
       facts.push({ label: '선택한 수준', value: group.decision.level_ko + ' · ' + group.decision.decided_by_ko });
     }
+    const teamReason = group?.kind === 'group' ? text(readingOf(group.decision.final_reason_ko, { era: 'current' })) : null;
+    if (teamReason && teamReason !== lead) facts.push({ label: '팀 구성 이유', value: teamReason });
   } else if (kind === 'investigation') {
     const candidates = runs.flatMap(n => n.card.candidates.map(c => ({ n, c }))).sort((a, b) => (b.c.confidence ?? -1) - (a.c.confidence ?? -1));
     const best = candidates[0];
@@ -189,8 +191,10 @@ function coreBrief(node: SemanticNode, { data, preparing }: CoreSource) {
     const action = members.find(n => n.card?.kind === 'action');
     lead = `${action?.label ?? '조치 승인'} · 운영자 결정 확인`;
   }
-  const calls: CallRow[] = members.filter(n => ['agent', 'verify', 'router', 'investigation'].includes(n.type) && (n.agent_run_id != null || n.model || n.status === 'running'))
-    .map(n => ({ id: n.call_id ? 'call:' + n.call_id : n.id, origin: 'core' as const, ref: n.id, label: n.role_ko || n.label, model: tag(n.model, n.effort), at: n.at ?? null, status: n.status,
+  lead ??= text(readingOf(node.conclusion_ko ?? members.find(m => m.conclusion_ko)?.conclusion_ko, { era: 'current' }));
+  const calls: CallRow[] = members.filter(n => ['agent', 'verify', 'router', 'investigation'].includes(n.type) && n.status !== 'planned' && n.status !== 'skipped')
+    .map(n => ({ id: n.call_id ? 'call:' + n.call_id : n.id, origin: 'core' as const, ref: n.id, label: n.role_ko || n.label, model: tag(n.model, n.effort),
+      at: n.at && Number.isFinite(Date.parse(n.at)) ? new Date(n.at).toLocaleString('ko-KR') : null, status: n.status,
       summary: n.card?.kind === 'agent' ? view(n.card.summary_ko ?? n.conclusion_ko, n.card) : readingOf(n.conclusion_ko, { era: 'current' }), running: n.status === 'running' }));
   return { lead, note, facts, goals, remaining, evidence, calls };
 }
