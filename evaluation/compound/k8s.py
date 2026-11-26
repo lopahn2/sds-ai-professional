@@ -52,6 +52,9 @@ def db_statefulset(ns: str, name: str, replicas: int, replication: bool) -> list
          "data": {"10-shop.sql": init, "20-replication.sh": hba if replication else "true\n", "start.sh": start}},
         {"apiVersion": "v1", "kind": "Service", "metadata": meta(f"{name}-hl", ns, name),
          "spec": {"clusterIP": "None", "selector": {"app": name}, "ports": [{"name": "pg", "port": 5432}]}},
+        *([] if replication else [  # single node: the client Service the applications use
+            {"apiVersion": "v1", "kind": "Service", "metadata": meta(name, ns, name),
+             "spec": {"selector": {"app": name}, "ports": [{"name": "pg", "port": 5432}]}}]),
         {"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": meta(name, ns, name),
          "spec": {"serviceName": f"{name}-hl", "replicas": replicas, "selector": {"matchLabels": {"app": name}},
                   "template": {"metadata": {"labels": {"app": name, "app.kubernetes.io/part-of": "shopfront"}},
@@ -118,6 +121,22 @@ while True:
 '''
 
 
+def network_policy(ns: str) -> dict:
+    """Namespaces with default-deny need the shopfront pods to reach each other, DNS and Prometheus."""
+    part = {"app.kubernetes.io/part-of": "shopfront"}
+    traffic = {"app": PREFIX + "traffic"}
+    return {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": meta("shopfront-internal", ns, "shopfront"),
+            "spec": {"podSelector": {"matchExpressions": [{"key": "app", "operator": "In", "values": [
+                         PREFIX + "stock", PREFIX + "order", PREFIX + "traffic", PREFIX + "db", PREFIX + "db-node", "partner-feed-sync"]}]},
+                     "policyTypes": ["Ingress", "Egress"],
+                     "ingress": [{"from": [{"podSelector": {"matchLabels": part}}, {"podSelector": {"matchLabels": traffic}},
+                                           {"podSelector": {"matchLabels": {"app": "partner-feed-sync"}}},
+                                           {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "liveprobe-observability"}}}]}],
+                     "egress": [{"to": [{"podSelector": {"matchLabels": part}}, {"podSelector": {"matchLabels": traffic}}]},
+                                {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}],
+                                 "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]}]}}
+
+
 def loadgen(ns: str, plan: list) -> dict:
     return {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": meta(PREFIX + "traffic", ns, PREFIX + "traffic"),
             "spec": {"replicas": 1, "selector": {"matchLabels": {"app": PREFIX + "traffic"}},
@@ -150,17 +169,19 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
             {"requests": {"cpu": "500m", "memory": "384Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}})
         sync = {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": meta("partner-feed-sync", ns, "partner-feed-sync"),
                 "spec": {"schedule": "*/3 * * * *", "concurrencyPolicy": "Forbid",
-                         "jobTemplate": {"spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{
+                         "jobTemplate": {"spec": {"template": {"metadata": {"labels": {"app": "partner-feed-sync",
+                                                                                            "app.kubernetes.io/part-of": "shopfront"}},
+                                                               "spec": {"restartPolicy": "Never", "containers": [{
                              "name": "sync", "image": PG_IMAGE,
                              "env": [{"name": "PGPASSWORD", "value": "shop-app-local"},
                                      {"name": "HOLDS", "valueFrom": {"configMapKeyRef": {"name": "partner-gateway-state",
                                                                                          "key": "frozen"}}}],
                              "command": ["sh", "-c",
                                          "echo \"$(date -u +%FT%TZ) INFO  partner-feed-sync: fetched 10 allocations from partner gateway\"; "
-                                         f"psql -h {PREFIX}db -U shop_app -d shop -qAt -c \"update partner_allocation set status = "
+                                         f"ok=0; for attempt in 1 2 3 4 5 6 7 8; do psql -h {PREFIX}db -U shop_app -d shop -qAt -c \"update partner_allocation set status = "
                                          "case when sku = any(string_to_array('$HOLDS', ',')) then 'HOLD' else 'OPEN' end, "
-                                         "allocatable = 1000000, synced_at = now()\" && "
-                                         "echo \"$(date -u +%FT%TZ) INFO  partner-feed-sync: upserted 10 rows into partner_allocation\""]}]}}}}}}
+                                         "allocatable = 1000000, synced_at = now()\" 2>/dev/null && { ok=1; break; }; sleep 2; done; "
+                                         "[ $ok = 1 ] && echo \"$(date -u +%FT%TZ) INFO  partner-feed-sync: upserted 10 rows into partner_allocation\""]}]}}}}}}
         state = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": meta("partner-gateway-state", ns, "partner-feed-sync"),
                  "data": {"frozen": ""}}
         objects = [*db_statefulset(ns, PREFIX + "db", 1, False), *stock, *order, state, sync,
@@ -213,7 +234,7 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
         ]
     else:
         raise SystemExit(f"unknown scenario {name}")
-    return objects, steps, fault
+    return [network_policy(ns), *objects], steps, fault
 
 
 def main() -> None:
