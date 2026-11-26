@@ -102,7 +102,7 @@ data:
             regex: ".+;.*|;/"
           - source_labels: [__name__]
             action: keep
-            regex: container_(cpu_usage_seconds_total|memory_working_set_bytes|memory_rss|spec_memory_limit_bytes|oom_events_total|last_seen)
+            regex: container_(cpu_usage_seconds_total|cpu_cfs_periods_total|cpu_cfs_throttled_periods_total|memory_working_set_bytes|memory_rss|spec_memory_limit_bytes|oom_events_total|last_seen)
           - regex: name|image
             action: labeldrop
       - job_name: kubernetes-pods

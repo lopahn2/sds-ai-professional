@@ -1050,6 +1050,21 @@ class Engine:
     def _run_group(self, iid: int, decision: R.Decision, bundle: Bundle, incident_view: dict) -> None:
         """Run the NORMAL/COMPLEX group through the existing safety executor or bounded read-only follow-up."""
         hits = self._rag(self._rag_query(bundle, decision))
+        from .resolution_memory import precedent as _precedent, signature as _signature
+        signature = _signature(bundle.findings, bundle.dependencies, incident_view.get("signals"))
+        match = _precedent(hits, signature)
+        if match and decision.level == "COMPLEX":
+            # A verified precedent turns discovery into confirmation: the lighter group checks it against the
+            # current evidence. It is cited like any reference and never authorizes a change by itself.
+            from dataclasses import replace as _replace
+            decision = _replace(decision, level="NORMAL", workflow=R.WORKFLOW["NORMAL"],
+                                rationale=(f"{decision.rationale} · 검증된 선례 {match['ref']} 일치"
+                                           f"(유사도 {match['similarity']}) → NORMAL 그룹으로 확인"),
+                                policy={**R.score_models("NORMAL", self.cfg), "precedent": match})
+            self._record_decision(iid, decision)
+        if match:
+            runlog.emit(iid, "note", f"검증된 선례 {match['ref']} 일치 (유사도 {match['similarity']})",
+                        {"precedent": match, "signature": signature})
         store = EvidenceStore(compact_summary(bundle), hits)
         if self.capture is not None:
             self.capture["store"] = store
@@ -1086,7 +1101,8 @@ class Engine:
                    "group": res.get("group"), "workflow_status": res.get("status"),
                    "counter_evidence": res.get("counter_evidence", []), "verification": res.get("verification"),
                    "budget": res.get("budget"), "confidence": res.get("confidence"),
-                   "investigations": inquiry.attempts}
+                   "investigations": inquiry.attempts, "signature": signature,
+                   **({"precedent": match} if match else {})}
         with db.session() as s:
             s.get(Incident, iid).summary = res.get("summary")
         proposal = res.get("action") or {}
@@ -1366,6 +1382,11 @@ class Engine:
             parts.append("container OOMKilled exit code 137 memory limit")
         if f.get("latency_signal"):
             parts.append("high latency connection pool exhaustion slow responses")
+        from .resolution_memory import signature as _signature
+        tokens = [t for t in _signature(b.findings, b.dependencies, f.get("signal_reasons") or [])
+                  if not t.startswith("signal:")]
+        if tokens:
+            parts.append("signature " + " ".join(tokens))
         return "; ".join(parts)
 
     def _rag(self, query: str) -> list[dict]:

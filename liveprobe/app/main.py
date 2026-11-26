@@ -72,7 +72,8 @@ def _start_background() -> None:
             while True:
                 try:
                     with db.session() as s:
-                        result = index_documents(s, emb, closed_incident_documents(s))
+                        from .resolution_memory import resolution_documents
+                        result = index_documents(s, emb, [*closed_incident_documents(s), *resolution_documents(s)])
                         STATE["rag_chunks"] = s.scalar(select(func.count()).select_from(RagChunk)
                                                         .where(RagChunk.retired_at.is_(None)))
                     if result.documents:
@@ -757,9 +758,17 @@ def claim_handoff(iid: int, user: str = Depends(require_user)):
     return redact_obj(handoff)
 
 
+class ResolutionIn(BaseModel):
+    """What actually fixed it, as verified by the operator. Becomes retrievable memory for recurrences."""
+    cause: str = ""
+    steps: list[str]
+    verification: str = ""
+
+
 class CloseIn(BaseModel):
     reason: str
     confirm: bool = False
+    resolution: ResolutionIn | None = None
 
 
 # Closing only records the operator's decision. It must never be the side door to a cluster change.
@@ -800,6 +809,14 @@ def close_incident(iid: int, body: CloseIn, user: str = Depends(require_user)):
         inc.status_reason = f"운영자 종료: {reason}"
         inc.handoff = {**handoff, "closed_by": user, "closed_at": iso(inc.closed_at), "close_reason": reason,
                        "closed_from": previous}
+        if body.resolution is not None:
+            from .resolution_memory import resolution_record
+            try:
+                inc.handoff = {**inc.handoff, "resolution": resolution_record(
+                    body.resolution.cause, body.resolution.steps, body.resolution.verification, user,
+                    handoff.get("signature"))}
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
         update_run(s, iid, "succeeded", "closed", inc.status_reason)
         db.audit(s, user, "incident_closed", iid, previous_status=previous, reason=reason, cluster_changed=False)
         out = _closed(inc, inc.handoff)

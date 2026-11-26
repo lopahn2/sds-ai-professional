@@ -26,6 +26,16 @@ def _containers(b):
     return {(p['name'], c['name']): c for p in b.pods for c in p.get('containers', [])}
 
 
+def _logs_observed(b: Bundle) -> bool:
+    latest = {i.source: i for i in b.items if i.source in ('loki', 'pod_log')}
+    return not latest or any(not i.error for i in latest.values())
+
+
+def _restart_masked(b: Bundle) -> bool:
+    from .evidence_depth import probe_restart_masking
+    return bool(probe_restart_masking(b.pods, b.events))
+
+
 def recovery_proof(first: Bundle, second: Bundle, signals: list[str], *, min_interval: float = 0.1) -> dict | None:
     if not signals or set(signals) - SUPPORTED:
         return None
@@ -109,6 +119,13 @@ def recovery_proof(first: Bundle, second: Bundle, signals: list[str], *, min_int
             stamp = parse_ts(event.get('last'))
             if stamp is None or stamp >= start:
                 return None
+    # Unknown is not clear: a failed log read cannot show that the errors stopped.
+    if not _logs_observed(second):
+        return None
+    # A clean window right after a kubelet restart is the restart itself, not recovery: a leak or a
+    # saturated limit returns once the fresh container fills up again.
+    if set(signals) & (HTTP_SIGNALS | LATENCY_SIGNALS | POOL_SIGNALS) and _restart_masked(second):
+        return None
     for line in second.logs:
         if any(word in line.lower() for word in ('error', 'exception', 'traceback', 'failed', 'timeout', 'refused')):
             # A timestamped historical line can be excluded; unstamped errors remain unproven.

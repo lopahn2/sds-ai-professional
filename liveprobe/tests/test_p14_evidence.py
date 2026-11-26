@@ -356,7 +356,7 @@ def test_timed_out_workers_stop_starting_followup_requests(monkeypatch, offline,
         release.set()
     for f in futures:
         f.result(timeout=1)
-    assert bounds == [4]
+    assert bounds == [5]  # kube, prometheus, loki, code refs, depth
     assert len(calls) == 1
 
 

@@ -126,6 +126,10 @@ def run_one(case: str, target: str, signal: str, arm: dict, wait_s: int) -> dict
     # parity: past incidents (incl. earlier eval runs) are excluded. P13 may add "reference_guide" via the arm spec.
     engine.rag_kinds = [k for k in (arm.get("rag_kinds") or ["runbook", "public_doc"])
                         if k in ("runbook", "public_doc", "reference_guide")]
+    if arm.get("rag_memory") is True:
+        # Memory episodes opt in explicitly. Only evaluation memory (verified resolutions of earlier eval
+        # incidents) is added; production past incidents stay out, so episodes cannot leak into each other.
+        engine.rag_kinds.append("eval_memory")
     engine.capture = {}
 
     reason, kind = SIGNAL[signal]
@@ -255,6 +259,36 @@ def run_one(case: str, target: str, signal: str, arm: dict, wait_s: int) -> dict
     }
 
 
+def resolve_eval(iid: int, cause: str, steps: list[str], verification: str) -> int:
+    """Close an evaluation hand-off with its verified fix. Only `eval/` incidents; no cluster change."""
+    from . import db
+    from .config import get_settings
+    from .db import audit
+    from .lifecycle import transition, update_run
+    from .models import Incident
+    from .resolution_memory import resolution_record
+    db.init_db(get_settings().sqlalchemy_url())
+    with db.session() as s:
+        inc = s.get(Incident, iid)
+        if inc is None or not str(inc.fingerprint).startswith("eval/") or inc.status not in ("handed_off", "closed"):
+            print(json.dumps({"error": "only an evaluation hand-off can be resolved here"}))
+            return 1
+        handoff = dict(inc.handoff or {})
+        from .resolution_memory import signature_from_evidence
+        record = resolution_record(cause, steps, verification, "evaluation-harness",
+                                   handoff.get("signature") or signature_from_evidence(s, inc))
+        if inc.status == "handed_off":
+            transition(inc, "closed")
+            inc.status_reason = "운영자 종료: 검증된 해결 기록"
+            update_run(s, iid, "succeeded", "closed", inc.status_reason)
+        inc.handoff = {**handoff, "closed_by": "evaluation-harness", "close_reason": "verified fix recorded",
+                       "resolution": record}
+        audit(s, "evaluation-harness", "resolution_recorded", iid, steps=len(record["steps"]),
+              signature=record["signature"], cluster_changed=False)
+    print(json.dumps({"incident": iid, "resolution": record}, ensure_ascii=False))
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -266,6 +300,12 @@ def main(argv=None) -> int:
     r.add_argument("--signal", required=True, choices=sorted(SIGNAL))
     r.add_argument("--arm", required=True, help="JSON: {arm_id,strategy,roles:{role:{model,effort}}}")
     r.add_argument("--wait", type=int, default=0)
+    rv = sub.add_parser("resolve", allow_abbrev=False,
+                        help="record the verified fix of an evaluation hand-off (the harness acts as the operator)")
+    rv.add_argument("--incident", type=int, required=True)
+    rv.add_argument("--cause", default="")
+    rv.add_argument("--step", action="append", required=True)
+    rv.add_argument("--verification", default="")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
     from . import evalguard
@@ -277,6 +317,8 @@ def main(argv=None) -> int:
         evalguard.set_lock("evaluation", a.ttl) if a.cmd == "lock" else evalguard.clear_lock()
         print(f"evaluation lock {a.cmd}ed")
         return 0
+    if a.cmd == "resolve":
+        return resolve_eval(a.incident, a.cause, a.step, a.verification)
     arm = json.loads(a.arm)
     try:
         res = run_one(a.case, a.target, a.signal, arm, a.wait)

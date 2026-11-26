@@ -22,6 +22,10 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
+  # Read-only: namespace admission defaults explain limits a Pod has that its template does not.
+  - apiGroups: [""]
+    resources: ["limitranges", "resourcequotas"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

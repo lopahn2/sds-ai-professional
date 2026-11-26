@@ -112,12 +112,15 @@ spec:
               port: 3100
             initialDelaySeconds: 15
             periodSeconds: 10
+          # 2026-11-26 compound benchmark: at 256Mi the working set reached 235Mi under incident log volume,
+          # the 1 s readiness probe failed and every query returned 503/timeouts exactly when logs mattered.
+          # The CPU request stays 50m: the single 4-CPU node is ~78% requested and a higher request blocks workloads.
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 384Mi
             limits:
-              memory: 256Mi
+              memory: 1Gi
           volumeMounts:
             - name: config
               mountPath: /etc/loki

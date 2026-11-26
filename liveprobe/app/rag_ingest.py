@@ -57,7 +57,7 @@ class IngestResult:
 
 
 def _validate(d: Document) -> None:
-    if d.kind not in {"runbook", "public_doc", "past_incident", "reference_guide"}:
+    if d.kind not in {"runbook", "public_doc", "past_incident", "reference_guide", "eval_memory"}:
         raise ValueError(f"unsupported document kind: {d.kind}")
     if d.license not in SUPPORTED_LICENSES:
         raise ValueError(f"unsupported or unknown reuse license: {d.license}")
@@ -70,7 +70,7 @@ def _validate(d: Document) -> None:
             raise ValueError("public document requires licensed https source + attribution")
         if not d.retrieved_at or not d.expected_hash or d.version_hash != d.expected_hash:
             raise ValueError("public document requires a verified content hash and retrieval time")
-    if d.kind == "past_incident" and (d.incident_id is None or d.license != "internal"):
+    if d.kind in ("past_incident", "eval_memory") and (d.incident_id is None or d.license != "internal"):
         raise ValueError("incident requires incident id and internal licence")
 
 

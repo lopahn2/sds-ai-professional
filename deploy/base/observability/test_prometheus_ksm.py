@@ -26,7 +26,8 @@ REQUIRED_KSM = [
     "kube_deployment_status_replicas_unavailable", "kube_endpoint_info", "kube_endpoint_address",
 ]
 REQUIRED_CADVISOR = ["container_memory_working_set_bytes", "container_spec_memory_limit_bytes",
-                     "container_oom_events_total", "container_cpu_usage_seconds_total"]
+                     "container_oom_events_total", "container_cpu_usage_seconds_total",
+                     "container_cpu_cfs_periods_total", "container_cpu_cfs_throttled_periods_total"]
 
 
 def render():
