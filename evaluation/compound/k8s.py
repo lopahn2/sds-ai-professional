@@ -30,7 +30,7 @@ def meta(name: str, ns: str, app: str, extra: dict | None = None) -> dict:
     return {"name": name, "namespace": ns, "labels": labels}
 
 
-def db_statefulset(ns: str, name: str, replicas: int, replication: bool) -> list[dict]:
+def db_statefulset(ns: str, name: str, replicas: int, replication: bool, profile: str = "reporting") -> list[dict]:
     """PostgreSQL; with replication, ordinal 0 starts as primary and the others clone it as hot standbys."""
     start = (
         "set -e\n"
@@ -38,8 +38,8 @@ def db_statefulset(ns: str, name: str, replicas: int, replication: bool) -> list
         "if [ \"$ord\" != 0 ] && [ ! -s \"$PGDATA/PG_VERSION\" ]; then\n"
         f"  until pg_basebackup -h {name}-0.{name}-hl -U replicator -D \"$PGDATA\" -R -X stream; do sleep 2; done\n"
         "  chmod 700 \"$PGDATA\"\n"
-        "  # reporting-replica access profile: only the reporting role may connect over TCP\n"
-        "  sed -i 's/^host all all all scram-sha-256/host all reporting all scram-sha-256/' \"$PGDATA/pg_hba.conf\"\n"
+        f"  # {profile}-replica access profile: only the {profile} role may connect over TCP\n"
+        f"  sed -i 's/^host all all all scram-sha-256/host all {profile} all scram-sha-256/' \"$PGDATA/pg_hba.conf\"\n"
         "fi\n"
         "exec docker-entrypoint.sh postgres -c 'log_line_prefix=%m [%p] %q%u@%d '\n"
     ) if replication else "exec docker-entrypoint.sh postgres -c 'log_line_prefix=%m [%p] %q%u@%d '\n"
@@ -194,11 +194,14 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
             "   (the next */3 sync writes HOLD)",
             "observe; collect pod logs (current+previous), namespace events and Job logs for the bundle",
         ]
-    elif name == "C2":
-        stock = app(ns, "stock", STOCK_IMAGE, db_env(f"{PREFIX}db", {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE": "6",
-                                                                     "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE": "6"}),
+    elif name in ("C2", "C2b"):
+        # C2b is the memory-round variant: the same stale-primary routing on another surface (another access
+        # profile on the promoted node and another pool size).
+        pool = "5" if name == "C2b" else "6"
+        stock = app(ns, "stock", STOCK_IMAGE, db_env(f"{PREFIX}db", {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE": pool,
+                                                                     "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE": pool}),
                     readiness, {"requests": {"cpu": "500m", "memory": "384Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}})
-        db = db_statefulset(ns, PREFIX + "db-node", 2, True)
+        db = db_statefulset(ns, PREFIX + "db-node", 2, True, "analytics" if name == "C2b" else "reporting")
         svc = {"apiVersion": "v1", "kind": "Service", "metadata": meta(PREFIX + "db", ns, PREFIX + "db-node"),
                "spec": {"selector": {"app": PREFIX + "db-node", "role": "primary"}, "ports": [{"name": "pg", "port": 5432}]}}
         objects = [*db, svc, *stock, *order, loadgen(ns, [[0, [[6.0, "web", WEB], [0.25, "partner", PARTNER]]]])]
@@ -212,14 +215,18 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
             "write-conflict line with 'will retry in 300s'; the Job then completes",
             "observe; collect stock/order/db pod logs, events and the Job log",
         ]
-    elif name == "C3":
+    elif name in ("C3", "C3b"):
+        # C3b is the memory-round variant: the same mechanism on another surface (a different LimitRange name
+        # and value, and a certificate-rotation restart instead of a log-level reload).
+        variant = name == "C3b"
         stock = app(ns, "stock", STOCK_IMAGE, db_env(PREFIX + "db", {"SHOPFRONT_STOCK_PARTNER_LEDGER": "false",
                                                                      "SHOPFRONT_STOCK_SCORING_ROUNDS": "1500000"}),
                     readiness, {"requests": {"cpu": "250m", "memory": "384Mi"}, "limits": {"memory": "512Mi"}},
                     annotations={"configmap.reloader.stakater.com/reload": "shop-stock-config"})
-        limits = {"apiVersion": "v1", "kind": "LimitRange", "metadata": meta("namespace-defaults", ns, "platform-policy"),
-                  "spec": {"limits": [{"type": "Container", "default": {"cpu": "250m"},
-                                       "defaultRequest": {"cpu": "100m"}}]}}
+        limits = {"apiVersion": "v1", "kind": "LimitRange",
+                  "metadata": meta("team-quota-defaults" if variant else "namespace-defaults", ns, "platform-policy"),
+                  "spec": {"limits": [{"type": "Container", "default": {"cpu": "300m" if variant else "250m"},
+                                       "defaultRequest": {"cpu": "150m" if variant else "100m"}}]}}
         cfg = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": meta("shop-stock-config", ns, PREFIX + "stock"),
                "data": {"LOGGING_LEVEL_COM_ACME": "INFO"}}
         objects = [*db_statefulset(ns, PREFIX + "db", 1, False), cfg, *stock, *order,
@@ -239,7 +246,7 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", required=True, choices=("C1", "C2", "C3"))
+    parser.add_argument("--scenario", required=True, choices=("C1", "C2", "C2b", "C3", "C3b"))
     parser.add_argument("--namespace", default="dev")
     parser.add_argument("--steps", action="store_true", help="print the operator-side fault steps instead of YAML")
     parser.add_argument("--fault-objects", action="store_true", help="print objects the fault steps apply (C3 LimitRange)")
