@@ -546,6 +546,26 @@ def query_pool_trend(settings, ns: str, workload: str, deadline: float | None) -
     return pool_trend([(float(t), float(v)) for t, v in rows[0]["values"]])
 
 
+def query_cpu_peak(settings, ns: str, workload: str, deadline: float | None) -> dict | None:
+    """Peak CPU of the workload's Pods over 20 minutes, replaced Pods included: the demand before a limit bound."""
+    import httpx
+    from .observation_sources import adapter_url
+
+    if not all(NAME.fullmatch(v or "") for v in (ns, workload)):
+        return None
+    _check(deadline)
+    q = ('max(max_over_time((sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="%s",'
+         'pod=~"%s-[a-z0-9]+-[a-z0-9]+",container=""}[1m])))[20m:30s]))' % (ns, workload))
+    r = httpx.get(f"{adapter_url(settings, 'prometheus')}/api/v1/query", params={"query": q},
+                  timeout=min(8, max(1, _remaining(deadline))))
+    r.raise_for_status()
+    rows = r.json()["data"]["result"]
+    if not rows:
+        return None
+    value = float(rows[0]["value"][1])
+    return {"peak_cpu_cores_20m": round(value, 3)} if math.isfinite(value) else None
+
+
 def collect_depth(kube, cfg, settings, ns: str, workload: str, since: datetime | None, deadline: float):
     """Fifth evidence worker. Returns a private Bundle; every optional read is isolated."""
     from .evidence import Bundle, _resource_err, _err
@@ -611,6 +631,33 @@ def collect_depth(kube, cfg, settings, ns: str, workload: str, since: datetime |
             b.add("caller_load", f"{ns}/{workload}", b.caller_load, supporting=True)
     except Exception as e:  # noqa: BLE001
         b.add("caller_load", f"{ns}/{workload}", error=_err(e), supporting=True)
+    try:  # source and configuration behind the workload, its callers and its dependencies
+        from . import source_analysis as S
+        registry = S.load_registry()
+        images = [c.get("image") for c in (template.get("spec") or {}).get("containers") or [] if c.get("image")]
+        callers_view = {}
+        for name in (b.caller_load or {}).get("callers") or []:
+            _check(deadline)
+            ct = (((raw.get_deployment(ns, name) or {}).get("spec") or {}).get("template")) or {}
+            cimages = [c.get("image") for c in (ct.get("spec") or {}).get("containers") or [] if c.get("image")]
+            if cimages:
+                callers_view[name] = S.caller_config(cimages[0], ct, registry)
+        by_name = {p["metadata"]["name"]: p for p in all_pods if p.get("metadata", {}).get("name")}
+        deps = {}
+        for dep in b.dependencies:
+            specs = [(by_name.get(row["name"]) or {}).get("spec") or {} for row in dep.get("pods") or []]
+            deps[dep["service"]] = {"access_config": S.dependency_access(raw, ns, specs, lambda: _check(deadline))}
+        b.source_view = {"workload": S.workload_source(images[0], template, registry) if images else None,
+                         "callers": callers_view, "dependencies": deps}
+        b.add("source", f"{ns}/{workload}", b.source_view, supporting=True)
+    except Exception as e:  # noqa: BLE001
+        b.add("source", f"{ns}/{workload}", error=_err(e), supporting=True)
+    try:
+        b.usage_history = query_cpu_peak(settings, ns, workload, deadline)
+        if b.usage_history:
+            b.add("usage_history", f"{ns}/{workload}", b.usage_history, supporting=True)
+    except Exception as e:  # noqa: BLE001
+        b.add("usage_history", f"{ns}/{workload}", error=_err(e), supporting=True)
     try:
         b.pool_trend = query_pool_trend(settings, ns, workload, deadline)
         if b.pool_trend:
@@ -622,7 +669,13 @@ def collect_depth(kube, cfg, settings, ns: str, workload: str, since: datetime |
 
 def findings(bundle, probes: dict | None, now: datetime | None = None) -> list[dict]:
     out = resource_findings(bundle.pods, bundle.metrics, bundle.deployment, bundle.limit_ranges)
+    peak = (getattr(bundle, "usage_history", None) or {}).get("peak_cpu_cores_20m")
+    for f in out:
+        if f.get("kind") in ("cpu_limit_binding", "cpu_limit_from_admission") and peak is not None:
+            f["workload_peak_cpu_cores_20m"] = peak  # demand seen before and during the bind, replaced Pods included
     out += restart_findings(bundle.pods, bundle.events, probes, now)
     out += pool_findings(bundle.metrics, bundle.pool_trend, bundle.workload)
     out += retry_findings(getattr(bundle, "caller_load", None))
+    from .source_analysis import source_findings
+    out += source_findings(getattr(bundle, "source_view", None))
     return out

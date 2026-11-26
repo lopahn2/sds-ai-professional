@@ -69,6 +69,8 @@ class Bundle:
     dependencies: list[dict] = field(default_factory=list)  # Services this workload connects to
     pool_trend: dict | None = None
     caller_load: dict | None = None   # discovered callers and request rates (retry amplification)
+    source_view: dict | None = None   # source and configuration of the workload, callers, dependencies
+    usage_history: dict | None = None
     findings: list[dict] = field(default_factory=list)    # deterministic read-only observations
 
     def add(self, source: str, target: str, payload: Any = None, error: str | None = None,
@@ -560,13 +562,15 @@ def collect(kube: K.Kube, cfg: AppConfig, settings: Settings, ns: str, workload:
                events=kb.events, nodes=kb.nodes, configs=kb.configs,
                metrics=pb.metrics, logs=lb.logs, code_refs=cb.code_refs or {"frames": [], "exceptions": [], "reason": "예외 로그 수집 미완료"},
                pod_logs=xb.pod_logs, limit_ranges=xb.limit_ranges, dependencies=xb.dependencies,
-               pool_trend=xb.pool_trend, caller_load=xb.caller_load)
+               pool_trend=xb.pool_trend, caller_load=xb.caller_load, source_view=xb.source_view,
+               usage_history=xb.usage_history)
     loki_item = next((i for i in lb.items if i.source == "loki"), None)
     if (loki_item is None or loki_item.error or not b.logs) and b.pod_logs:
         b.logs = [redact(line) or "" for line in b.pod_logs]  # provenance stays on the pod_log item
     order = {s: i for i, s in enumerate(("deployment", "pod_status", "service", "endpoints", "k8s_event",
                                         "prometheus", "loki", "pod_log", "node", "configmap", "code_refs",
-                                        "limitrange", "dependency", "pool_trend", "caller_load"))}
+                                        "limitrange", "dependency", "pool_trend", "caller_load", "source",
+                                        "usage_history"))}
     b.items = sorted([*kb.items, *pb.items, *lb.items, *cb.items, *xb.items], key=lambda item: order[item.source])
     try:
         from .evidence_depth import findings as _depth_findings
@@ -603,5 +607,6 @@ def compact_summary(b: Bundle) -> dict:
         "E8_code_refs": b.code_refs or {"frames": [], "exceptions": [], "reason": "최근 예외 로그 미관측"},
         "E10_findings": b.findings,
         "E11_dependencies": b.dependencies,
+        "E12_source": b.source_view,
         "collection_errors": [f"{i.source}: {i.error}" for i in b.items if i.error],
     })

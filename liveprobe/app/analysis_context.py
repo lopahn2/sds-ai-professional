@@ -26,7 +26,7 @@ def bounded_view(sources, rag, errors, limit):
     # 상대적으로 큰 몫을 주되, 다른 출처와 뒤쪽 반대 근거도 계속 예약한다.
     remaining = max(0, limit - len(blocks) + 1)
     sizes = [len(title) + 1 + len(text) for title, text in blocks]
-    weights = [2 if title.split('_', 1)[0] in ('E1', 'E2') else 1 for title, _ in blocks]
+    weights = [2 if title.split('_', 1)[0] in ('E1', 'E2', 'E10', 'E12') else 1 for title, _ in blocks]
     budgets = [0] * len(blocks)
     pending = set(range(len(blocks)))
     while pending and remaining:

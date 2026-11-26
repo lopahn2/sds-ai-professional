@@ -77,3 +77,10 @@ def test_signature_from_stored_evidence_matches_live_signature(monkeypatch):
     inc = SimpleNamespace(id=1, namespace="dev", workload="w", signal_reasons=["TargetConnectionPoolExhausted"])
     assert M.signature_from_evidence(S(), inc) == [
         "cpu_limit_binding", "limit_from_admission", "namespace_default_limits", "signal:TargetConnectionPoolExhausted"]
+
+
+
+def test_static_source_facts_do_not_enter_the_signature():
+    static = [{"kind": "source_connection_leak"}, {"kind": "caller_retry_without_backoff"},
+              {"kind": "dependency_access_config"}]
+    assert M.signature(static + CPU, [], ["X"]) == M.signature(CPU, [], ["X"])

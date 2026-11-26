@@ -36,6 +36,8 @@ def signature(findings: list[dict] | None, dependencies: list[dict] | None, sign
             tokens.add(kind)
         if kind in ("cpu_limit_binding", "cpu_limit_from_admission") and f.get("limit_in_deployment_template") is False:
             tokens.add("limit_from_admission")
+        # Only what was observed during the incident. Static facts about code and configuration (a latent leak in the
+        # image, retry defaults, access scripts) hold for every incident on the workload and would dilute the match.
         if kind == "caller_retry_amplification":
             tokens.add(kind)
         if kind == "recent_restart" and (f.get("liveness_failures") or 0) > 0:
@@ -163,5 +165,7 @@ def signature_from_evidence(s, inc) -> list[str]:
     b.limit_ranges = first.get("limitrange") if isinstance(first.get("limitrange"), list) else []
     b.pool_trend = first.get("pool_trend") if isinstance(first.get("pool_trend"), dict) else None
     b.caller_load = first.get("caller_load") if isinstance(first.get("caller_load"), dict) else None
+    b.source_view = first.get("source") if isinstance(first.get("source"), dict) else None
+    b.usage_history = first.get("usage_history") if isinstance(first.get("usage_history"), dict) else None
     found = D.findings(b, (b.deployment or {}).get("probes"), stamp)
     return signature(found, list(deps.values()), list(inc.signal_reasons or []))
