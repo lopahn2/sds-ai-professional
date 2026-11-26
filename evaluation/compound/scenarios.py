@@ -92,7 +92,8 @@ class C1MaskedLeak:
     pod_ip = "10.42.0.87"
 
     def stock_props(self, **overrides) -> dict:
-        return {**DB_PROPS, **overrides}
+        # The image's own default is the heavy allocation plan (1.5M rounds); the leak scenario runs the light one.
+        return {**DB_PROPS, "shopfront.stock.scoring-rounds": "2000", **overrides}
 
     def setup(self, run: Run) -> None:
         db = I.Postgres("lpcb-c1-db", "shop-db.platform.svc.cluster.local")
@@ -218,7 +219,7 @@ class C2SplitPrimary:
 
     def stock_props(self, **overrides) -> dict:
         return {**DB_PROPS, "spring.datasource.url": self.db_url, "spring.datasource.hikari.maximum-pool-size": "6",
-                "spring.datasource.hikari.minimum-idle": "6", **overrides}
+                "spring.datasource.hikari.minimum-idle": "6", "shopfront.stock.scoring-rounds": "2000", **overrides}
 
     def setup(self, run: Run) -> None:
         db0 = I.Postgres("lpcb-c2-db0", "stock-db-0")

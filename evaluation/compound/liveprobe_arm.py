@@ -21,7 +21,8 @@ ARM = {"arm_id": "liveprobe", "strategy": "adaptive", "roles": {
     "result_verifier": {"model": "gpt-6.2-sol", "effort": "low"},
     "evidence_curator": {"model": "gpt-6.2-sol", "effort": "medium"},
     "safety_verifier": {"model": "gpt-6.2-astra", "effort": "xhigh"}}}
-SIGNAL = {"C1": "pool_exhaustion", "C2": "upstream_5xx", "C3": "pool_exhaustion", "C3b": "pool_exhaustion", "C2b": "upstream_5xx"}
+SIGNAL = {"C1": "pool_exhaustion", "C2": "upstream_5xx", "C3": "pool_exhaustion", "C3b": "pool_exhaustion", "C2b": "upstream_5xx",
+          "C1c": "pool_exhaustion", "C2c": "upstream_5xx", "C3c": "pool_exhaustion"}
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -51,14 +52,15 @@ def wait_ready(kind_name: str, timeout: int = 300) -> None:
 
 
 def inject(scenario: str, marks: dict, observe: int) -> None:
-    if scenario == "C1":
+    if scenario in ("C1", "C1c"):
         time.sleep(90)
         k("-n", NS, "rollout", "restart", "deployment/shop-order")
         marks["decoy_order_rollout"] = stamp()
         time.sleep(60)
-        k("-n", NS, "patch", "configmap", "partner-gateway-state", "-p", '{"data":{"frozen":"SKU-0003,SKU-0007"}}')
+        frozen = "SKU-0005,SKU-0009" if scenario == "C1c" else "SKU-0003,SKU-0007"
+        k("-n", NS, "patch", "configmap", "partner-gateway-state", "-p", json.dumps({"data": {"frozen": frozen}}))
         marks["t0_partner_frozen"] = stamp()
-    elif scenario in ("C2", "C2b"):
+    elif scenario in ("C2", "C2b", "C2c"):
         time.sleep(90)
         psql("shop-db-node-0", "alter system set default_transaction_read_only = on")
         psql("shop-db-node-0", "select pg_reload_conf()")
@@ -70,7 +72,7 @@ def inject(scenario: str, marks: dict, observe: int) -> None:
         psql("shop-db-node-1", "select pg_promote(true, 60)")
         k("-n", NS, "label", "pod", "shop-db-node-1", "role=primary", "--overwrite")
         marks["t0_switchover"] = stamp()   # shop-db-node-0 keeps role=primary (the relabel that failed)
-    elif scenario in ("C3", "C3b"):
+    elif scenario in ("C3", "C3b", "C3c"):
         time.sleep(90)
         k("-n", NS, "apply", "-f", "-", input=render(scenario, "--fault-objects"))
         marks["limitrange_applied"] = stamp()
@@ -78,9 +80,10 @@ def inject(scenario: str, marks: dict, observe: int) -> None:
         if scenario == "C3":
             k("-n", NS, "patch", "configmap", "shop-stock-config", "-p", '{"data":{"LOGGING_LEVEL_COM_ACME":"INFO,DEBUG(sampled)"}}')
             k("-n", NS, "rollout", "restart", "deployment/shop-stock")
-        else:  # certificate rotation rolls the pods; no configuration change at all
+        else:  # certificate rotation (C3b) or node maintenance (C3c) rolls the pods; no configuration change
+            key = "certs.acme.io/rotated-at" if scenario == "C3b" else "maintenance.acme.io/drained-at"
             k("-n", NS, "patch", "deployment", "shop-stock", "-p",
-              '{"spec":{"template":{"metadata":{"annotations":{"certs.acme.io/rotated-at":"%s"}}}}}' % stamp())
+              json.dumps({"spec": {"template": {"metadata": {"annotations": {key: stamp()}}}}}))
         wait_ready("deployment/shop-stock", 300)
         marks["t0_restart_with_default_limit"] = stamp()
     time.sleep(observe)
@@ -97,7 +100,7 @@ def setup(scenario: str, marks: dict) -> None:
     else:
         raise RuntimeError(f"previous run still terminating: {left}")
     k("-n", NS, "apply", "-f", "-", input=render(scenario))
-    if scenario in ("C2", "C2b"):
+    if scenario in ("C2", "C2b", "C2c"):
         for _ in range(120):
             if "Running" in k("-n", NS, "get", "pod", "shop-db-node-0", "-o", "jsonpath={.status.phase}", check=False):
                 break
@@ -108,7 +111,7 @@ def setup(scenario: str, marks: dict) -> None:
         k("-n", NS, "rollout", "status", "statefulset/shop-db", "--timeout=300s", timeout=330)
     for name in ("shop-stock", "shop-order", "shop-traffic"):
         wait_ready(f"deployment/{name}")
-    db = "shop-db-node-0" if scenario in ("C2", "C2b") else "shop-db-0"
+    db = "shop-db-node-0" if scenario in ("C2", "C2b", "C2c") else "shop-db-0"
     for _ in range(60):  # traffic must really reach the database before any fault
         count = k("-n", NS, "exec", db, "-c", "postgres", "--", "psql", "-XqAt", "-U", "postgres", "-d", "shop",
                   "-c", "select count(*) from reservation_log", check=False).strip()
@@ -128,21 +131,21 @@ def fault_state(scenario: str) -> dict:
     restarts = k("-n", NS, "get", "pods", "-l", "app=shop-stock", "-o",
                  "jsonpath={range .items[*]}{.status.containerStatuses[0].restartCount} {end}", check=False).split()
     state: dict = {"stock_restarts": restarts}
-    if scenario == "C1":
+    if scenario in ("C1", "C1c"):
         state["held_allocations"] = q("shop-db-0", "select count(*) from partner_allocation where status = 'HOLD'")
         state["idle_in_transaction"] = q("shop-db-0", "select count(*) from pg_stat_activity where state = 'idle in transaction'")
         state["fault_in_place"] = state["held_allocations"] == "2"
-    elif scenario in ("C2", "C2b"):
+    elif scenario in ("C2", "C2b", "C2c"):
         state["old_primary_read_only"] = q("shop-db-node-0", "show default_transaction_read_only", "postgres")
         state["new_primary_in_recovery"] = q("shop-db-node-1", "select pg_is_in_recovery()", "postgres")
         state["service_endpoints"] = k("-n", NS, "get", "endpoints", "shop-db", "-o",
                                        "jsonpath={.subsets[*].addresses[*].targetRef.name}", check=False).split()
         state["fault_in_place"] = (state["old_primary_read_only"] == "on" and state["new_primary_in_recovery"] == "f"
                                    and len(state["service_endpoints"]) == 2)
-    elif scenario in ("C3", "C3b"):
+    elif scenario in ("C3", "C3b", "C3c"):
         state["stock_cpu_limits"] = k("-n", NS, "get", "pods", "-l", "app=shop-stock", "-o",
                                       "jsonpath={range .items[*]}{.spec.containers[0].resources.limits.cpu} {end}", check=False).split()
-        state["fault_in_place"] = ("300m" if scenario == "C3b" else "250m") in state["stock_cpu_limits"]
+        state["fault_in_place"] = {"C3b": "300m", "C3c": "280m"}.get(scenario, "250m") in state["stock_cpu_limits"]
     return state
 
 
@@ -174,7 +177,7 @@ def collect(out: Path) -> None:
 
 def cleanup(scenario: str) -> None:
     k("-n", NS, "delete", "-f", "-", "--ignore-not-found", "--wait=false", input=render(scenario), check=False)
-    if scenario in ("C3", "C3b"):
+    if scenario in ("C3", "C3b", "C3c"):
         k("-n", NS, "delete", "-f", "-", "--ignore-not-found", input=render(scenario, "--fault-objects"), check=False)
     k("-n", NS, "delete", "job", "-l", "app=partner-feed-sync", "--ignore-not-found", check=False)
 
@@ -223,6 +226,17 @@ def apply_primitive(name: str) -> str:
     if name in env:
         k("-n", NS, "set", "env", "deployment/shop-stock", env[name])
         return env[name] + settle("deployment/shop-stock")
+    if name in ("explicit_cpu_limit_2000m", "explicit_cpu_limit_1000m"):
+        cpu = name.rsplit("_", 1)[1]
+        k("-n", NS, "set", "resources", "deployment/shop-stock", f"--limits=cpu={cpu}")
+        return f"shop-stock limits.cpu={cpu}" + settle("deployment/shop-stock")
+    if name == "order_single_attempt":
+        k("-n", NS, "set", "env", "deployment/shop-order", "SHOPFRONT_ORDER_STOCK_RETRIES=0")
+        return "shop-order retries=0" + settle("deployment/shop-order")
+    if name == "order_retries_1_backoff":
+        k("-n", NS, "set", "env", "deployment/shop-order", "SHOPFRONT_ORDER_STOCK_RETRIES=1",
+          "SHOPFRONT_ORDER_STOCK_BACKOFFMS=300")
+        return "shop-order retries=1 backoff-ms=300" + settle("deployment/shop-order")
     if name == "probe_liveness_group":
         k("-n", NS, "patch", "deployment", "shop-stock", "--type", "json", "-p", json.dumps([
             {"op": "replace", "path": "/spec/template/spec/containers/0/livenessProbe/httpGet/path",
@@ -310,7 +324,7 @@ def operator_rounds(scenario: str, out: Path, record: dict, marks: dict, rounds:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", required=True, choices=("C1", "C2", "C2b", "C3", "C3b"))
+    parser.add_argument("--scenario", required=True, choices=("C1", "C1c", "C2", "C2b", "C2c", "C3", "C3b", "C3c"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--memory", action="store_true",
                         help="memory episode: the engine may retrieve verified resolutions of earlier eval incidents")

@@ -161,8 +161,11 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
                 {"readinessProbe": {"httpGet": {"path": "/actuator/health/readiness", "port": "http"}}},
                 {"requests": {"cpu": "200m", "memory": "256Mi"}, "limits": {"cpu": "500m", "memory": "384Mi"}})
     readiness = {"readinessProbe": {"httpGet": {"path": "/actuator/health/readiness", "port": "http"}, "periodSeconds": 5}}
-    if name == "C1":
-        stock = app(ns, "stock", STOCK_IMAGE, db_env(PREFIX + "db"), {
+    if name in ("C1", "C1c"):
+        # C1c: the same leak on another surface (other frozen SKUs, at T0 in liveprobe_arm, and a pool of 5)
+        pool = {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE": "5", "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE": "5"} \
+            if name == "C1c" else {}
+        stock = app(ns, "stock", STOCK_IMAGE, db_env(PREFIX + "db", {**pool, "SHOPFRONT_STOCK_SCORING_ROUNDS": "2000"}), {
             **readiness,
             "livenessProbe": {"httpGet": {"path": "/actuator/health", "port": "http"}, "initialDelaySeconds": 20,
                               "periodSeconds": 10, "timeoutSeconds": 1, "failureThreshold": 3}},
@@ -194,14 +197,16 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
             "   (the next */3 sync writes HOLD)",
             "observe; collect pod logs (current+previous), namespace events and Job logs for the bundle",
         ]
-    elif name in ("C2", "C2b"):
+    elif name in ("C2", "C2b", "C2c"):
         # C2b is the memory-round variant: the same stale-primary routing on another surface (another access
         # profile on the promoted node and another pool size).
         pool = "5" if name == "C2b" else "6"
+        profile = {"C2b": "analytics", "C2c": "etl"}.get(name, "reporting")
         stock = app(ns, "stock", STOCK_IMAGE, db_env(f"{PREFIX}db", {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE": pool,
-                                                                     "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE": pool}),
+                                                                     "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE": pool,
+                                                                     "SHOPFRONT_STOCK_SCORING_ROUNDS": "2000"}),
                     readiness, {"requests": {"cpu": "500m", "memory": "384Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}})
-        db = db_statefulset(ns, PREFIX + "db-node", 2, True, "analytics" if name == "C2b" else "reporting")
+        db = db_statefulset(ns, PREFIX + "db-node", 2, True, profile)
         svc = {"apiVersion": "v1", "kind": "Service", "metadata": meta(PREFIX + "db", ns, PREFIX + "db-node"),
                "spec": {"selector": {"app": PREFIX + "db-node", "role": "primary"}, "ports": [{"name": "pg", "port": 5432}]}}
         objects = [*db, svc, *stock, *order, loadgen(ns, [[0, [[6.0, "web", WEB], [0.25, "partner", PARTNER]]]])]
@@ -215,18 +220,21 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
             "write-conflict line with 'will retry in 300s'; the Job then completes",
             "observe; collect stock/order/db pod logs, events and the Job log",
         ]
-    elif name in ("C3", "C3b"):
+    elif name in ("C3", "C3b", "C3c"):
         # C3b is the memory-round variant: the same mechanism on another surface (a different LimitRange name
         # and value, and a certificate-rotation restart instead of a log-level reload).
         variant = name == "C3b"
-        stock = app(ns, "stock", STOCK_IMAGE, db_env(PREFIX + "db", {"SHOPFRONT_STOCK_PARTNER_LEDGER": "false",
-                                                                     "SHOPFRONT_STOCK_SCORING_ROUNDS": "1500000"}),
+        lr_name, lr_cpu, lr_req = {"C3b": ("team-quota-defaults", "300m", "150m"),
+                                   "C3c": ("workload-defaults", "280m", "100m")}.get(
+                                       name, ("namespace-defaults", "250m", "100m"))
+        # the heavy allocation plan (1.5M rounds) is the image's own stock-profile default
+        stock = app(ns, "stock", STOCK_IMAGE, db_env(PREFIX + "db", {"SHOPFRONT_STOCK_PARTNER_LEDGER": "false"}),
                     readiness, {"requests": {"cpu": "250m", "memory": "384Mi"}, "limits": {"memory": "512Mi"}},
                     annotations={"configmap.reloader.stakater.com/reload": "shop-stock-config"})
         limits = {"apiVersion": "v1", "kind": "LimitRange",
-                  "metadata": meta("team-quota-defaults" if variant else "namespace-defaults", ns, "platform-policy"),
-                  "spec": {"limits": [{"type": "Container", "default": {"cpu": "300m" if variant else "250m"},
-                                       "defaultRequest": {"cpu": "150m" if variant else "100m"}}]}}
+                  "metadata": meta(lr_name, ns, "platform-policy"),
+                  "spec": {"limits": [{"type": "Container", "default": {"cpu": lr_cpu},
+                                       "defaultRequest": {"cpu": lr_req}}]}}
         cfg = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": meta("shop-stock-config", ns, PREFIX + "stock"),
                "data": {"LOGGING_LEVEL_COM_ACME": "INFO"}}
         objects = [*db_statefulset(ns, PREFIX + "db", 1, False), cfg, *stock, *order,
@@ -246,7 +254,7 @@ def scenario(name: str, ns: str) -> tuple[list[dict], list[str], list[dict]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", required=True, choices=("C1", "C2", "C2b", "C3", "C3b"))
+    parser.add_argument("--scenario", required=True, choices=("C1", "C1c", "C2", "C2b", "C2c", "C3", "C3b", "C3c"))
     parser.add_argument("--namespace", default="dev")
     parser.add_argument("--steps", action="store_true", help="print the operator-side fault steps instead of YAML")
     parser.add_argument("--fault-objects", action="store_true", help="print objects the fault steps apply (C3 LimitRange)")
