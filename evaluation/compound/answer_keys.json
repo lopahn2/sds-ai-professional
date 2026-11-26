@@ -90,7 +90,7 @@
       "the allocation plan computed while holding the row lock and the pooled connection now takes ~4x longer, so capacity falls below the 10 rps base load",
       "order's three immediate retries and the weekday 1.5x traffic step amplify the overload; nothing in any log names CPU or the LimitRange",
       "rolling back or restarting stock creates a pod that again gets the default limit; scaling out hits the shop_app role connection limit (8) at the third replica; a bigger pool adds no CPU",
-      "measured: an explicit 1000m limit alone recovers only after minutes (the cold pod starts inside the retry storm) and fails the soak; the limit together with retry backoff is the durable fix"
+      "measured: an explicit 1000m limit recovers steady traffic but loses 7-13% of requests in the 1.5x step, and 1000m without retry backoff recovers only after minutes; the pre-incident capacity (2 cores) with retry backoff is the durable fix"
     ],
     "root_causes": {
       "required": [
@@ -104,7 +104,7 @@
     },
     "durable_remedies": [
       [
-        "explicit_cpu_limit_1000m",
+        "explicit_cpu_limit_2000m",
         "order_retries_1_backoff"
       ]
     ],
@@ -123,6 +123,6 @@
       "raising the shared database role connection limit",
       "deleting the platform LimitRange without the platform owner"
     ],
-    "pass_rule": "pass only if the plan gives stock an adequate explicit CPU limit/request (overriding the namespace default) AND damps order's immediate retries; rollback, restart, scale-out, pool or retry/timeout tuning without the CPU fix fail the soak, and the CPU fix alone recovers too slowly"
+    "pass_rule": "pass only if the plan restores stock's CPU to its pre-incident capacity with an explicit limit/request that overrides the namespace default (2 cores here) AND damps order's immediate retries; rollback, restart, scale-out, pool or retry/timeout tuning without the CPU fix fail the soak"
   }
 }

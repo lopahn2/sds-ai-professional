@@ -448,6 +448,7 @@ class C3ThrottledDefaults:
             "rollback_stock": lambda: self.rollout(run, "0.25", "stock-74c9d8f6b-k4r9t"),
             "restart_stock": lambda: self.rollout(run, "0.25", "stock-5f8b7c9d4-j7w2d"),
             "explicit_cpu_limit_1000m": lambda: self.rollout(run, "1.0", "stock-6c9d7b8f5-t2m8r"),
+            "explicit_cpu_limit_2000m": lambda: self.rollout(run, "2.0", "stock-6c9d7b8f5-h7q4z"),
             "pool_max_8": lambda: self.rollout(run, stock.cpus, "stock-6c9d7b8f5-b5n3k", props=self.stock_props(**{
                 "spring.datasource.hikari.maximum-pool-size": "8", "spring.datasource.hikari.minimum-idle": "8"})),
             "scale_stock_2": lambda: self.scale(run, 2),
