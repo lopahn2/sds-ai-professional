@@ -11,7 +11,9 @@ The AutoRAG ideas, mapped onto LiveProbe:
 - **Ground truth.** A document is relevant to an incident in two cases:
   1. Its metadata family (`applies_to` / `family`) matches the detection family of the incident: the
      watcher's `family_hint`, set before any retrieval, or else the family of the incident's own signal
-     reasons (`SIGNAL_FAMILY`). The watcher has no OOM class, so no OOM incident carries a family hint.
+     reasons (`SIGNAL_FAMILY`). The watcher had no OOM class, so no OOM incident carried a family hint.
+     An incident with neither also matches documents whose `applies_to` names one of its signal reasons
+     (a runbook written for one alert, such as `TargetProxyListenerUpdateRejected`, has no family).
   2. It was actually cited for that incident.
   A past-incident document is a candidate only if its incident closed before the query incident was created,
   so the evaluation never ranks a memory the engine could not have had.
@@ -31,7 +33,9 @@ The AutoRAG ideas, mapped onto LiveProbe:
   these hold:
   - the held-out macro objective gains at least `MIN_GAIN` over the active configuration;
   - held-out hit@k does not drop overall, and no family group with `MIN_GROUP_HOLDOUT`+ held-out queries
-    loses more than `HIT_TOLERANCE` of hit@k;
+    loses more than `HIT_TOLERANCE` of hit@k or more than `OBJECTIVE_TOLERANCE` of its objective. The
+    objective bar keeps the ranking of a family: on 2026-11-27 a candidate kept http_5xx hit@k but moved its
+    relevant runbook from first to second place (objective 0.691 -> 0.610), and a hit-only guard let it pass;
   - p95 latency of the live search stays within `LATENCY_FACTOR`× (or `LATENCY_SLACK_S` above) the current one;
   - the train and held-out splits reach `MIN_TRAIN` / `MIN_HOLDOUT` queries.
 
@@ -66,6 +70,7 @@ TRAIN_SHARE = 0.7
 MIN_TRAIN, MIN_HOLDOUT = 20, 10
 MIN_GAIN = 0.02
 HIT_TOLERANCE, MIN_GROUP_HOLDOUT, MIN_GROUP = 0.05, 5, 10   # non-inferiority per family; smaller groups pool
+OBJECTIVE_TOLERANCE = 0.05        # per-family loss of 0.5·nDCG + 0.5·precision a candidate may cause
 LATENCY_FACTOR, LATENCY_SLACK_S, LATENCY_SAMPLE = 1.5, 0.05, 20
 DATASET_LIMIT = 5000              # all finished production incidents (1,328 on 2026-11-27); bounds run time
 TERMINAL = ("resolved", "handed_off", "closed", "recovery_review", "failed")
@@ -91,6 +96,7 @@ SIGNAL_FAMILY = {
     "NoEndpoints": "endpoint_loss", "TargetServiceNoEndpoints": "endpoint_loss",
     "High5xx": "http_5xx", "OrderHigh5xxRate": "http_5xx", "InventoryHigh5xxRate": "http_5xx",
     "TargetHigh5xxRate": "http_5xx", "ApplicationException": "http_5xx",
+    "LivenessProbeFailed": "image_crash",
     "TargetWorkloadOOMKilled": "oom", "OOMKilled": "oom", "TargetWorkloadCrashLooping": "image_crash",
 }
 
@@ -221,6 +227,16 @@ def signal_families(reasons) -> list[str]:
     return out
 
 
+def signal_tokens(values) -> set[str]:
+    return {v.strip().lower() for v in values or [] if isinstance(v, str) and v.strip()}
+
+
+def by_signal_name(catalog: dict, signal_reasons) -> set[str]:
+    """Documents whose `applies_to` names one of the signal reasons (case-insensitive, exact name)."""
+    names = signal_tokens(signal_reasons)
+    return {k for k, d in catalog.items() if d.get("signals", set()) & names} if names else set()
+
+
 def families_of(family_hint, signal_reasons) -> tuple[set[str], str, bool]:
     """(detection families, evaluation group, whether they came from the signal reasons) of one incident.
 
@@ -254,9 +270,9 @@ def doc_catalog(s, kinds: list[str]) -> dict[str, dict]:
         if d.doc_key not in active:
             continue
         meta = d.meta or {}
-        fams = canonical_families([*(meta.get("applies_to") or []), *(meta.get("family") or [])])
-        out[d.doc_key] = {"kind": d.kind, "families": fams, "incident_id": d.incident_id,
-                          "closed_at": _aware(meta.get("closed_at"))}
+        tokens = [*(meta.get("applies_to") or []), *(meta.get("family") or [])]
+        out[d.doc_key] = {"kind": d.kind, "families": canonical_families(tokens), "incident_id": d.incident_id,
+                          "closed_at": _aware(meta.get("closed_at")), "signals": signal_tokens(tokens)}
     return out
 
 
@@ -297,7 +313,8 @@ def build_dataset(s, kinds: list[str], limit: int = DATASET_LIMIT) -> tuple[list
 
     out: list[Query] = []
     stats = {"incidents": len(incidents), "no_route": 0, "unlabeled": 0, "from_sealed": 0, "from_evidence": 0,
-             "label_family": 0, "label_signal": 0, "label_cited": 0, "families": {}}
+             "evidence_unreadable": 0, "label_family": 0, "label_signal": 0, "label_signal_name": 0,
+             "label_cited": 0, "families": {}}
     for inc in sorted(incidents, key=lambda i: i.id):
         if inc.id not in features:
             stats["no_route"] += 1
@@ -305,6 +322,12 @@ def build_dataset(s, kinds: list[str], limit: int = DATASET_LIMIT) -> tuple[list
         created = _aware(inc.created_at)
         fams, group, from_signal = families_of(inc.family_hint, inc.signal_reasons)
         by_family = {k for k, d in catalog.items() if d["families"] & fams and visible(d, inc.id, created)}
+        if not fams:
+            by_family = {k for k in by_signal_name(catalog, inc.signal_reasons) if visible(catalog[k], inc.id, created)}
+            if by_family:
+                group = "signal:" + sorted(t for t in signal_tokens(inc.signal_reasons)
+                                           if any(t in catalog[k]["signals"] for k in by_family))[0]
+                stats["label_signal_name"] += 1
         by_citation = {k for k in cited.get(inc.id, ()) if k in catalog and visible(catalog[k], inc.id, created)}
         relevant = frozenset(by_family | by_citation)
         if not relevant:
@@ -317,7 +340,7 @@ def build_dataset(s, kinds: list[str], limit: int = DATASET_LIMIT) -> tuple[list
             try:
                 findings, deps = observations_from_evidence(s, inc)
             except Exception:  # noqa: BLE001 - an incident whose evidence cannot be read is skipped
-                stats["unlabeled"] += 1
+                stats["evidence_unreadable"] += 1
                 continue
             stats["from_evidence"] += 1
         stats["label_family"] += bool(by_family)
@@ -422,26 +445,31 @@ def distance(a: RetrievalConfig, b: RetrievalConfig) -> int:
                                                           "past_incident_cap"))
 
 
-def hit_regressions(best: dict, cur: dict) -> list[str]:
-    """hit@k bars: no overall drop, no family group (with enough queries) losing more than the tolerance."""
+def regressions(best: dict, cur: dict) -> list[str]:
+    """Non-inferiority bars: hit@k does not drop overall, and no family group with enough queries loses more
+    than `HIT_TOLERANCE` of hit@k or more than `OBJECTIVE_TOLERANCE` of its objective (ranking quality)."""
     out = []
     if best.get("hit", 0) < cur.get("hit", 0):
         out.append(f"hit@k drops {cur.get('hit')} -> {best.get('hit')}")
     for g, cg in (cur.get("groups") or {}).items():
         bg = (best.get("groups") or {}).get(g)
-        if bg and cg.get("n", 0) >= MIN_GROUP_HOLDOUT and bg.get("hit", 0) < cg.get("hit", 0) - HIT_TOLERANCE:
+        if not bg or cg.get("n", 0) < MIN_GROUP_HOLDOUT:
+            continue
+        if bg.get("hit", 0) < cg.get("hit", 0) - HIT_TOLERANCE:
             out.append(f"hit@k of family {g} drops {cg.get('hit')} -> {bg.get('hit')}")
+        if "objective" in cg and "objective" in bg and bg["objective"] < cg["objective"] - OBJECTIVE_TOLERANCE:
+            out.append(f"objective of family {g} drops {cg['objective']} -> {bg['objective']}")
     return out
 
 
 def choose(results: dict, configs: list[RetrievalConfig], current: RetrievalConfig) -> RetrievalConfig:
-    """Best train objective among configurations meeting the hit@k bars on the train split (the current one
+    """Best train objective among configurations meeting the `regressions` bars on the train split (the current one
     always does). Ties: the fewest changes from the current configuration, then fewer documents."""
     by_key = {c.key(): c for c in configs}
     by_key.setdefault(current.key(), current)
     cur = results[current.key()]["train"]
     admissible = [c for c in by_key.values()
-                  if c.key() == current.key() or not hit_regressions(results[c.key()]["train"], cur)]
+                  if c.key() == current.key() or not regressions(results[c.key()]["train"], cur)]
     return max(admissible, key=lambda c: (round(results[c.key()]["train"].get("objective", 0.0), 4),
                                           -distance(c, current), -c.k, c.key()))
 
@@ -456,12 +484,13 @@ def decide(results: dict, best: RetrievalConfig, current: RetrievalConfig, laten
     gain = round(b.get("objective", 0) - c.get("objective", 0), 4)
     if gain < MIN_GAIN:
         reasons.append(f"held-out objective gain {gain} < {MIN_GAIN}")
-    reasons += [f"held-out {r}" for r in hit_regressions(b, c)]
+    reasons += [f"held-out {r}" for r in regressions(b, c)]
     cap = max(latency["current_p95_s"] * LATENCY_FACTOR, latency["current_p95_s"] + LATENCY_SLACK_S)
     if latency["best_p95_s"] > cap:
         reasons.append(f"p95 latency {latency['best_p95_s']}s > cap {round(cap, 4)}s")
     return (not reasons), (reasons or [f"held-out macro objective +{gain}, hit@k kept overall and per family "
-                                       f"(tolerance {HIT_TOLERANCE}), latency within cap"])
+                                       f"(tolerance {HIT_TOLERANCE}), family objectives within {OBJECTIVE_TOLERANCE}, "
+                                       f"latency within cap"])
 
 
 def _p95(values: list[float]) -> float:

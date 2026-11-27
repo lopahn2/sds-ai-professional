@@ -15,6 +15,7 @@ import re
 from .resolution_memory import signature
 
 QUERY_MODES = ("template", "findings")
+PROXY_LDS_REJECTED = "TargetProxyListenerUpdateRejected"   # incidents.PROXY_LDS_REJECTED
 
 # One phrase per structured observation token produced by `resolution_memory.signature`.
 FINDING_PHRASES = {
@@ -65,6 +66,8 @@ def template_query(workload: str, features: dict | None, findings, dependencies)
         parts.append("container OOMKilled exit code 137 memory limit")
     if f.get("latency_signal"):
         parts.append("high latency connection pool exhaustion slow responses")
+    if PROXY_LDS_REJECTED in (f.get("signal_reasons") or ()):
+        parts.append("Istio Envoy LDS listener update rejected NACK proxy compatibility route verification")
     tokens = _tokens(findings, dependencies, f)
     if tokens:
         parts.append("signature " + " ".join(tokens))

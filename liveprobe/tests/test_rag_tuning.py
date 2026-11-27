@@ -191,7 +191,7 @@ def test_selection_only_considers_configurations_meeting_the_bars_on_train():
            greedy.key(): {"train": {"objective": 0.8, "hit": 0.9, "groups": g(0.5)}},      # best score, regresses
            safe.key(): {"train": {"objective": 0.7, "hit": 0.9, "groups": g(0.9)}}}
     assert T.choose(res, [greedy, safe], cur) == safe
-    assert T.hit_regressions(res[greedy.key()]["train"], res[cur.key()]["train"]) == [
+    assert T.regressions(res[greedy.key()]["train"], res[cur.key()]["train"]) == [
         "hit@k of family (none) drops 0.9 -> 0.5"]
 
 
@@ -199,6 +199,10 @@ def test_signal_families_follow_the_watcher_and_cover_oom():
     from app.incidents import FAMILY_HINT, REASON_CLASS
     for reason, rclass in REASON_CLASS.items():                    # the watcher's own classes, unchanged
         assert T.signal_families([reason]) == sorted(T.canonical_families([FAMILY_HINT[rclass]])), reason
+    for reason, hint in FAMILY_HINT.items():                       # reasons that are their own class
+        if reason not in set(REASON_CLASS.values()):
+            assert T.signal_families([reason]) == sorted(T.canonical_families([hint])), reason
+    assert FAMILY_HINT.get(REASON_CLASS.get("TargetWorkloadOOMKilled", "TargetWorkloadOOMKilled")) == "oom"
     assert T.signal_families(["NetworkDrop", "TargetWorkloadOOMKilled", "TargetHigh5xxRate", "OOMKilled", 7]) == [
         "oom", "http_5xx"]
     assert T.families_of("endpoint_loss", ["TargetWorkloadOOMKilled"]) == ({"endpoint_loss"}, "endpoint_loss", False)
@@ -216,3 +220,28 @@ def test_split_holds_out_the_newest_share_of_every_family():
     train, holdout = T.split(dataset)
     assert {x.incident_id for x in holdout} == set(range(14, 20)) | set(range(114, 120)) | {204, 205, 206}
     assert len(train) + len(holdout) == len(dataset) and [x.incident_id for x in train] == sorted(x.incident_id for x in train)
+
+
+def test_a_family_ranking_drop_beyond_tolerance_blocks_application():
+    cur, new = T.DEFAULT, T.RetrievalConfig(query_mode="findings", mode="vector", k=2)
+    fast, big = {"current_p95_s": 0.04, "best_p95_s": 0.06}, {"train": 847, "holdout": 366}
+    grp = lambda h5, ep: {"http_5xx": {"n": 54, "hit": 0.98, "objective": h5},              # noqa: E731
+                          "endpoint_loss": {"n": 103, "hit": 0.96, "objective": ep}}
+    res = {cur.key(): {"holdout": {"objective": 0.65, "hit": 0.87, "groups": grp(0.6909, 0.3057)}},
+           new.key(): {"holdout": {"objective": 0.69, "hit": 0.97, "groups": grp(0.6099, 0.5028)}}}
+    ok, why = T.decide(res, new, cur, fast, big)                   # the 2026-11-27 case: hit kept, rank lost
+    assert not ok and why == ["held-out objective of family http_5xx drops 0.6909 -> 0.6099"]
+    res[new.key()]["holdout"]["groups"]["http_5xx"]["objective"] = 0.6450    # within 0.05
+    assert T.decide(res, new, cur, fast, big)[0]
+    small = {"objective": 0.9, "hit": 1.0, "groups": {"oom": {"n": 3, "hit": 1.0, "objective": 0.9}}}
+    assert T.regressions({**small, "groups": {"oom": {"n": 3, "hit": 1.0, "objective": 0.1}}}, small) == []
+
+
+def test_documents_named_after_a_signal_label_incidents_without_a_family():
+    catalog = {"istio.md": {"kind": "runbook", "families": set(), "signals": T.signal_tokens(
+                   ["TargetProxyListenerUpdateRejected", "LDS", "xDS"])},
+               "oom.md": {"kind": "runbook", "families": {"oom"}, "signals": {"oomkilled"}}}
+    assert T.by_signal_name(catalog, ["NetworkDrop", "TargetProxyListenerUpdateRejected"]) == {"istio.md"}
+    assert T.by_signal_name(catalog, ["targetproxylistenerupdaterejected"]) == {"istio.md"}
+    assert T.by_signal_name(catalog, ["TargetWorkloadOOMKilled"]) == set()   # exact names only
+    assert T.by_signal_name(catalog, None) == set()

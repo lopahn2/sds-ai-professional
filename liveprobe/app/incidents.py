@@ -37,7 +37,9 @@ REASON_CLASS = {
     "High5xx": "http5xx", "OrderHigh5xxRate": "http5xx",
     "InventoryHigh5xxRate": "http5xx", "TargetHigh5xxRate": "http5xx", "ApplicationException": "http5xx",
 }
-FAMILY_HINT = {"image": "image_pull", "crash": "crashloop", "endpoints": "endpoint_loss", "http5xx": "http_5xx"}
+FAMILY_HINT = {"image": "image_pull", "crash": "crashloop", "endpoints": "endpoint_loss", "http5xx": "http_5xx",
+               # reasons without a residue class (`ingest` uses the reason itself as the class)
+               "TargetWorkloadOOMKilled": "oom", "OOMKilled": "oom", "TargetWorkloadCrashLooping": "crashloop"}
 
 
 @dataclass

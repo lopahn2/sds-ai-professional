@@ -38,3 +38,9 @@ def test_unknown_mode_is_rejected():
     assert Q.build("template", "w", {}, [], []) == "w incident"
     with pytest.raises(ValueError):
         Q.build("hyde", "w", {}, [], [])
+
+
+def test_template_names_the_istio_listener_rejection():
+    q = Q.template_query("gateway", {"signal_reasons": ["TargetProxyListenerUpdateRejected"]}, [], [])
+    assert "Istio Envoy LDS listener update rejected NACK" in q
+    assert "Istio" not in Q.template_query("gateway", {"signal_reasons": ["TargetHigh5xxRate"]}, [], [])

@@ -15,7 +15,7 @@ def rendered():
     return list(yaml.safe_load_all(result.stdout))
 
 
-def test_liveprobe_has_observe_but_no_target_write_or_logs():
+def test_liveprobe_has_observe_and_log_read_but_no_target_write():
     objs = rendered()
     sa = {"kind": "ServiceAccount", "name": "liveprobe", "namespace": "liveprobe-system"}
     bound = []
@@ -34,7 +34,9 @@ def test_liveprobe_has_observe_but_no_target_write_or_logs():
     assert any("deployments" in rule["resources"] and "get" in rule["verbs"] for rule in bound)
     for rule in bound:
         assert not set(rule["verbs"]) & {"*", "patch", "update", "create", "delete", "deletecollection"}
-        assert not set(rule["resources"]) & {"*", "secrets", "pods/log", "pods/exec", "serviceaccounts/token"}
+        assert not set(rule["resources"]) & {"*", "secrets", "pods/exec", "serviceaccounts/token"}
+        if "pods/log" in rule["resources"]:      # read-only log tail, owner-approved 2026-11-26
+            assert rule["resources"] == ["pods/log"] and rule["verbs"] == ["get"]
 
 
 def test_admission_blocks_even_an_accidental_extra_role_binding():

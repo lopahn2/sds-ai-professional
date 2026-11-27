@@ -66,3 +66,7 @@ docs/evidence/
 dashboard/e2e/artifacts/
 chaos/measurements/
 docs/plans/**/*captures*/
+
+# local Docker client state and stray SQLite files from tests
+.docker/
+/:memory:*
