@@ -82,11 +82,11 @@ try {
     }
     return json({ code: 'not_found' }, 404);
   });
+  // The gateway signs a local operator in with the lp_operator_csrf cookie; there is no token form.
+  await page.context().addCookies([{name:'lp_operator_csrf',value:'a'.repeat(64)+'.'+'b'.repeat(64),url:base}]);
   await page.goto(base + '/');
 
-  // 정돈-03/07: 제품 목적 안내, 모델 '구성됨'과 '호출 성공'의 분리.
-  assert.match(await page.textContent('.purpose'), /별도 제품/);
-  assert.equal(await page.isVisible('#workspace'), false);
+  // 정돈-07: 모델 '구성됨'과 '호출 성공'의 분리.
   await page.waitForSelector('#readiness-checks dl');
   const readiness = await page.textContent('#readiness-checks');
   assert.match(readiness, /모델 실행 구성\(설치·설정\)/);
@@ -102,8 +102,6 @@ try {
   results.push('create_uses_active_envs_and_history_filter_marks_retired_stg');
 
   // 정돈-04: 서버 총건수·필터·페이지(as_of 고정).
-  await page.fill('#auth-bearer', 'synthetic-read-only');
-  await page.click('#auth-form button[type=submit]');
   await page.waitForFunction(() => document.querySelector('#list-count').textContent.includes('120'));
   assert.equal(await page.locator('#incident-list .incident-select').count(), 50);
   await page.click('#list-next');
@@ -132,25 +130,22 @@ try {
   results.push('stale_detail_response_discarded');
 
   // 정돈-06: 자동 갱신은 작성 중인 시험 기록·포커스·승인 확인(같은 지문)을 유지한다.
-  await page.fill('#approver-bearer', 'synthetic-approval-draft');
   await page.check('#approve-confirm');
-  await page.focus('#approver-bearer');
+  await page.focus('#approve-confirm');
   const before = state.listCalls.length;
   await page.clock.runFor(16000);
   await page.waitForTimeout(300);
   assert.ok(state.listCalls.length > before, 'auto refresh fetched the list');
-  assert.equal(await page.inputValue('#approver-bearer'), 'synthetic-approval-draft');
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'approver-bearer');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'approve-confirm');
   assert.equal(await page.isChecked('#approve-confirm'), true);
-  assert.equal(await page.isDisabled('#approve-submit'), false);      // 합성 초안 권한과 같은 지문 확인 유지, 전송은 하지 않는다.
-  results.push('auto_refresh_preserves_input_focus_and_confirmation');
+  assert.equal(await page.isDisabled('#approve-submit'), false);      // 같은 지문 확인 유지, 전송은 하지 않는다.
+  results.push('auto_refresh_preserves_focus_and_confirmation');
 
   // 정돈-06: 승인 대상 지문이 바뀌면 확인만 해제한다(자동 승인 없음).
   state.artifact = 'b'.repeat(64);
   await page.clock.runFor(16000);
   await page.waitForFunction(() => !document.querySelector('#approve-confirm').checked);
   assert.match(await page.textContent('#live-status'), /승인 확인을 해제/);
-  assert.equal(await page.inputValue('#approver-bearer'), 'synthetic-approval-draft');
   results.push('fingerprint_change_clears_confirmation_only');
 
   // 퇴역 stg 이력 조회: environment=stg를 서버로 그대로 보내고 과거 사건을 찾는다.
@@ -186,7 +181,6 @@ try {
   assert.match(await page.textContent('#next-action-body'), /dev 사용자 시험이 필요합니다/);
   assert.match(await page.textContent('#next-action-body'), /dev-prd\/v2/);
   assert.equal(await page.textContent('#user-test-form h4'), 'dev 사용자 시험 기록');
-  assert.match(await page.textContent('label[for="tester-bearer"]'), /^dev 시험자 인증 토큰\(tester\)/);
   assert.equal(await page.textContent('#user-test-submit'), 'dev 시험 기록');
   assert.deepEqual(await page.$$eval('#env-status .env-result h4', hs => hs.map(h => h.textContent)), ['dev', 'prd']);
   assert.equal(await page.isDisabled('#user-test-submit'), false);

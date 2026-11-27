@@ -80,13 +80,30 @@
 | 대시보드 단위 시험 `npm test` | 241/241 | 243/243 (새 시험 2) |
 | 모의 e2e 375·768·1440 | 통과 429 · 실패 3 · 건너뜀 9 | 통과 438 · 실패 3 · 건너뜀 9 |
 | naria 토큰 검사 | FAIL 2 (`room.css:164`, `styles.css:10`의 10px) | 같은 2건 |
-| Application 정적 화면 브라우저 시험 4개 | 4개 실패 | 같은 줄에서 4개 실패 |
 | 비밀값 정규식 검사(스테이징 파일 전체) | — | 0건 |
 
-- e2e에서 양쪽 모두 실패한 3건은 `p15-states.mock.spec.mjs:9`(알림 조회 실패 표시)를 세 화면 폭에서 돌린 것으로, 기준본에서도 실패한다. 병합본에서 늘어난 9건은 `visible-summaries.mock.spec.mjs` 3개를 세 화면 폭에서 돌린 것이다.
-- Application 정적 화면 시험은 다음 이유로 병합 전부터 실패한다. 그래서 병합한 정적 화면의 동작은 이 시험으로 확인하지 못했다. 확인한 것은 `node --check`(문법)와, 두 트리가 같은 지점에서 멈춘다는 사실까지다.
-  - 지금은 없어진 bearer 입력 화면을 전제로 한다(`test_ui_incident_ux_browser.mjs:91`, `test_ui_cleanup_browser.mjs:88`).
-  - 실행 인자가 필요하다(`test_ui_failure_browser.mjs`).
-  - 모듈 경로 문제가 있다(`test_human_browser.mjs`).
+- e2e에서 양쪽 모두 실패한 3건은 `p15-states.mock.spec.mjs:9`(알림 조회 실패 표시)를 세 화면 폭에서 돌린 것으로, 기준본에서도 실패했다. 병합본에서 늘어난 9건은 `visible-summaries.mock.spec.mjs` 3개를 세 화면 폭에서 돌린 것이다.
 - 백엔드 Python 코드는 이번 병합에서 바뀌지 않았다.
+
+### 정정과 후속 정리 (같은 날)
+
+처음 기록에는 "Application 정적 화면 시험 4개가 병합 전부터 없는 로그인 화면 때문에 실패한다"고 적었다. 이는 틀린 기록이었다.
+
+- **로그인 입력을 전제로 한 시험은 2개였다.**
+  - 대상은 `test_ui_incident_ux_browser.mjs`와 `test_ui_cleanup_browser.mjs`다.
+  - 현재 화면에 없는 다음 항목을 확인하는 줄을 지웠다: bearer 입력(`#auth-form`, `#auth-bearer`), 시험자·승인자 토큰 칸, 권한 지우기, "별도 제품" 문구, `Authorization: Bearer` 헤더.
+  - 시험 제출과 승인은 현재 방식인 로컬 운영자 쿠키(`lp_operator_csrf`)와 `X-LiveProbe-Operator-CSRF` 헤더로 확인한다.
+  - 두 시험 모두 끝까지 통과한다(점검 항목 9개와 9개).
+- **나머지 2개는 실제 시험이었다.**
+  - `test_human_browser.mjs`와 `test_ui_failure_browser.mjs`는 pytest 드라이버(`test_human_browser.py`, `test_ui_failure_api.py`)로 실행해야 하는데, 드라이버 없이 실행해서 실패했던 것이다.
+  - 드라이버로 실행하면 기준본은 둘 다 통과했다. 병합본에서는 `test_ui_failure_browser.mjs`가 실패했다. 이 병합으로 시험 명세표가 펼치기 없이 보이게 된 탓이다.
+  - 이 시험을 새 표시에 맞게 고쳤다. 시험표는 바로 보이고 보고서 지문과 오류 코드는 원문에만 있는지 확인한다. 이제 둘 다 통과한다.
+- **`p15-states.mock.spec.mjs:9`의 원인은 시험 쪽 요청 조건이었다.**
+  - 알림 패널과 "알림 조회 실패" 표시(`Shell.tsx`)는 실제로 있는 기능이다.
+  - 그런데 시험은 예전 `status` 조회만 실패시켰고, 현재 화면은 `/incidents?view=live`로 조회한다.
+  - 실패를 흉내 내는 조건을 현재 요청에 맞췄다. 이제 세 화면 폭에서 12/12 통과한다.
+  - 그 결과 모의 e2e 전체의 실패는 0건이다. 계산은 이렇다: 전체 실행에서 실패한 것은 `p15-states` 두 시험뿐이었고, 이 파일을 다시 돌려 모두 통과했다.
+- **`liveprobe/tests/test_application_evaluation_historical.py`는 그대로 둔다.**
+  - 이 시험은 공개 저장소에서 빠진 로컬 증거(`docs/evidence/plan-assessment-20261101/`, `docs/evidence/dashboard-detail-fix/`)를 읽는다.
+  - 증거가 있는 메인 체크아웃에서는 5/5 통과한다. 증거가 없는 복제본에서는 4건이 실패한다.
 - 운영 클러스터에는 배포하지 않았다. 반영하려면 대시보드와 Application 정적 화면 이미지를 따로 만들어야 한다.

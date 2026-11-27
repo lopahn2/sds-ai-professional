@@ -24,13 +24,15 @@ try {
     await expect(page.locator('#test-results')).toContainText('수정 후 시험이 통과하지 못했습니다');
     await expect(page.locator('#test-results')).not.toContainText('tests/test_main.py::test_run');
     await expect(page.locator('#test-results')).not.toContainText('e'.repeat(64));
-    await expect(page.locator('#test-details')).toBeEmpty();
-    await page.locator('#raw-tests > summary').click();
+    // 2026-11-15 display rule: the executed-test table is shown without opening the raw record; digests and codes stay raw.
     await expect(page.locator('#test-details')).toContainText('tests/test_main.py::test_run');
     await expect(page.locator('#test-details')).toContainText('수정 후');
     await expect(page.locator('#test-details')).toContainText('실패');
-    await expect(page.locator('#test-details')).toContainText('e'.repeat(64));
-    await expect(page.locator('#test-details')).toContainText('after_not_passed');
+    await expect(page.locator('#test-details')).not.toContainText('e'.repeat(64));
+    await expect(page.locator('#tests-raw')).toBeEmpty();
+    await page.locator('#raw-tests > summary').click();
+    await expect(page.locator('#tests-raw')).toContainText('e'.repeat(64));
+    await expect(page.locator('#tests-raw')).toContainText('after_not_passed');
     await expect(page.locator('#approve-submit')).toBeDisabled();
     await expect(page.locator('#user-test-submit')).toBeDisabled();
     const overflow=await page.locator('html').evaluate(e=>e.scrollWidth>e.clientWidth+1);

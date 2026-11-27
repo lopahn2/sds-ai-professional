@@ -86,20 +86,17 @@ try{
     await expect.poll(()=>state.detailCalls).toBeGreaterThan(before);
     await page.waitForTimeout(100);
   };
+  // The gateway signs a local operator in with the lp_operator_csrf cookie; there is no token form.
+  await page.context().addCookies([{name:'lp_operator_csrf',value:'a'.repeat(64)+'.'+'b'.repeat(64),url:base}]);
   await page.goto(base);
   await expect(page.locator('#readiness-body')).toContainText('실행기 최근 연결');
-  assert.equal(await page.isVisible('#workspace'),false);
-  assert.equal(await page.isVisible('#auth-form'),true);
   assert.equal(await page.isVisible('#readiness-checks'),true);
   await noRaw();
   await page.click('#raw-readiness > summary');
   await expect(page.locator('#readiness-raw')).toContainText('RAW_READINESS_MESSAGE');
   await page.click('#raw-readiness > summary');
   await expect(page.locator('#readiness-raw')).toBeEmpty();
-  await page.fill('#auth-bearer','synthetic-read');
-  await page.click('#auth-form button[type=submit]');
   await expect(page.locator('#incident-list button')).toHaveCount(rows.length);
-  assert.equal(await page.isVisible('#auth-form'),false);
   assert.equal(await page.isVisible('#create-form'),false);
   await select('automatic');await noRaw();
   await expect(page.locator('#incident-summary')).toContainText('연결이 반환되지 않아');
@@ -112,7 +109,7 @@ try{
   }
   assert.equal(await page.isVisible('#user-test-form'),false);
   assert.equal(await page.isVisible('#approve-form'),false);
-  checks.push('access_readiness_summary_incident_first_and_on_demand_create');
+  checks.push('readiness_summary_incident_first_and_on_demand_create');
 
   for(const [id,target,marker] of [['raw-collection','collection-logs','RAW_LOG_0'],['raw-analysis','analysis-raw','RAW_MODEL'],['raw-patch','patch-diff','RAW_AFTER'],['raw-tests','tests-raw','RAW_REPORT_DIGEST'],['raw-stages','stages-raw','RAW_EVENT'],['raw-artifacts','artifacts-raw','RAW_SOURCE_DIGEST'],['raw-environments','env-raw','RAW_ENV_MESSAGE'],['raw-incident','incident-raw','RAW_REASON']]){
     const summary=page.locator('#'+id+' > summary');
@@ -169,7 +166,6 @@ try{
   assert.equal(await page.isVisible('#approval-target'),false,'user test form precedes technical approval detail');
   if(OUT)await page.locator('#human-section').screenshot({path:path.join(OUT,'application-user-test.png')});
   await page.fill('#test-notes','작성 중인 시험 기록');
-  await page.fill('#tester-bearer','synthetic-test-draft');
   await page.selectOption('#test-passed','true');
   await page.click('#create-panel > summary');
   await page.selectOption('#create-environment','dev');
@@ -178,7 +174,6 @@ try{
   await page.focus('#test-notes');
   await tick();
   assert.equal(await page.inputValue('#test-notes'),'작성 중인 시험 기록');
-  assert.equal(await page.inputValue('#tester-bearer'),'synthetic-test-draft');
   assert.equal(await page.evaluate(()=>document.activeElement.id),'test-notes');
   await page.click('#refresh');
   await expect(page.locator('#create-service')).toHaveValue('order');
@@ -187,12 +182,11 @@ try{
   await page.click('#user-test-submit');
   await expect.poll(()=>state.posts.length).toBe(1);
   await expect(page.locator('#detail-title')).toContainText('완료');
-  assert.equal(state.posts[0].headers.authorization,'Bearer synthetic-test-draft');
+  assert.equal(state.posts[0].headers['x-liveprobe-operator-csrf'],'a'.repeat(64)+'.'+'b'.repeat(64));
   assert.deepEqual(state.posts[0].body,{release_id:'release-user',artifact_sha256:state.artifact,plan_sha256:'b'.repeat(64),image,passed:true,notes_ko:'작성 중인 시험 기록'});
   checks.push('applicable_user_test_drafts_focus_create_selections_and_exact_submission');
 
   await select('approve');
-  assert.equal(await page.inputValue('#tester-bearer'),'');
   assert.equal(await page.inputValue('#test-notes'),'');
   assert.equal(await page.inputValue('#test-passed'),'');
   await expect(page.locator('#approval-target')).toBeVisible();
@@ -207,36 +201,31 @@ try{
   await expect(page.locator('#approval-verification')).not.toContainText('RAW_HUMAN_NOTES');
   assert.equal(await page.isVisible('#user-test-form'),false);
   if(OUT)await page.locator('#human-section').screenshot({path:path.join(OUT,'application-approval.png')});
-  await page.fill('#approver-bearer','synthetic-approver');
   await page.check('#approve-confirm');
-  await page.focus('#approver-bearer');
+  await page.focus('#approve-confirm');
   await tick();
   assert.equal(await page.isChecked('#approve-confirm'),true);
-  assert.equal(await page.evaluate(()=>document.activeElement.id),'approver-bearer');
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'approve-confirm');
   state.artifact='c'.repeat(64);
   await tick();
   assert.equal(await page.isChecked('#approve-confirm'),false);
-  assert.equal(await page.inputValue('#approver-bearer'),'synthetic-approver');
   assert.equal(await page.isDisabled('#approve-submit'),true);
   await page.check('#approve-confirm');
   await page.click('#approve-submit');
   await expect.poll(()=>state.posts.length).toBe(2);
   await expect(page.locator('#detail-title')).toContainText('완료');
-  assert.equal(state.posts[1].headers.authorization,'Bearer synthetic-approver');
+  assert.equal(state.posts[1].headers['x-liveprobe-operator-csrf'],'a'.repeat(64)+'.'+'b'.repeat(64));
   assert.deepEqual(state.posts[1].body,{release_id:'release-approve',artifact_sha256:state.artifact,plan_sha256:'b'.repeat(64),image,user_test_id:'exact-user-test'});
   checks.push('approval_exact_artifact_verification_safety_confirmation_and_fingerprint_bound_payload');
 
-  // 다른 사건으로 이동할 때 사용자 시험 초안·권한과 열린 원문은 전부 제거된다.
+  // 다른 사건으로 이동할 때 사용자 시험 초안과 열린 원문은 전부 제거된다.
   rows.find(r=>r.id==='user').state='awaiting_user_test';
   await select('user');
   await page.fill('#test-notes','다른 사건으로 가져가면 안 되는 초안');
-  await page.fill('#tester-bearer','synthetic-not-retained');
   await page.click('#raw-incident > summary');
   await expect(page.locator('#incident-raw')).toContainText('RAW_REASON');
   await select('automatic');
   assert.equal(await page.inputValue('#test-notes'),'');
-  assert.equal(await page.inputValue('#tester-bearer'),'');
-  assert.equal(await page.inputValue('#approver-bearer'),'');
   assert.equal(await page.locator('details[data-raw][open]').count(),0);
   await noRaw();
   checks.push('different_incident_resets_raw_dom_and_sensitive_form_drafts');
@@ -270,16 +259,11 @@ try{
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth+1),`no overflow at ${width}`);
     if(OUT){await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:path.join(OUT,`application-ux-${width}.png`)});}
   }
-  await page.click('#access-panel > summary');
-  await page.click('#forget-auth');
-  assert.equal(await page.isVisible('#workspace'),false);
-  assert.equal(await page.inputValue('#create-reason'),'');
-  assert.equal(await page.textContent('#incident-raw'),'');
   await noRaw();
   assert.deepEqual(errors,[]);
   assert.equal(await page.evaluate(()=>window.__raw_xss),undefined);
   assert.ok(requests.every(url=>new URL(url).origin===base),'no external requests');
   assert.equal(state.posts.length,2,'only the explicitly tested synthetic attestations were sent');
-  checks.push('responsive_1440_768_375_and_forget_clears_data_no_page_errors_or_external_requests');
+  checks.push('responsive_1440_768_375_no_page_errors_or_external_requests');
 } finally {await browser.close();await new Promise(resolve=>server.close(resolve));}
 console.log(JSON.stringify({ok:true,checks_count:checks.length,checks}));

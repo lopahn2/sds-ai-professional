@@ -8,7 +8,8 @@ test('원천과 수치가 없으면 미관측으로 남고 빈 원문·흐름도
 });
 test('알림 조회 실패를 0건으로 꾸미지 않고 마지막 목록을 유지하다 복구한다',async({page,request})=>{
  const {items}=await(await request.get('/api/incidents?status=analyzing&limit=500')).json();const active=items[0];let failed=false;
- await page.route('**/api/incidents?*',r=>new URL(r.request().url()).searchParams.has('status')&&failed?r.fulfill({status:503,json:{detail:'모의 조회 실패'}}):r.continue());
+ // The header polls /incidents?view=live (older servers: status filters); fail exactly those reads.
+  await page.route('**/api/incidents?*',r=>{const q=new URL(r.request().url()).searchParams;return failed&&(['live','active'].includes(q.get('view'))||q.has('status'))?r.fulfill({status:503,json:{detail:'모의 조회 실패'}}):r.continue();});
  await page.goto('/');await page.getByRole('button',{name:/운영 알림/}).click();const panel=page.getByRole('region',{name:'진행 중 장애 목록'});await expect(panel.getByRole('link',{name:`${active.workload} 장애 ${active.id} 관제실 열기`})).toBeVisible();
  failed=true;await expect(panel).toContainText('알림 조회 실패',{timeout:10000});await expect(panel).toContainText('마지막 조회 기준');await expect(panel.getByRole('link',{name:`${active.workload} 장애 ${active.id} 관제실 열기`})).toBeVisible();await expect(panel.getByText('진행 중인 장애가 없습니다.',{exact:true})).toHaveCount(0);
  failed=false;await expect(panel).not.toContainText('알림 조회 실패',{timeout:10000});
