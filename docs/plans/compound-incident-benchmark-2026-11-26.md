@@ -627,6 +627,80 @@ Terra 6.1 xhigh 3회 평균은 C1 53.1초 $0.140404, C2 47.8초 $0.162661, C3 49
   - 각 1회 표본이다.
   - C2c 1라운드 실패는 시험 노드 용량 탓이다. 2라운드 비용은 그 환경 비용이기도 하다.
 
+## 6차: Codex 배치의 모델만 Claude로 치환 (2026-11-28 소유자 지시)
+
+### 조건
+
+- **소유자 지시:** 이전 목표의 LiveProbe 시험을 모델만 치환해 진행한다. astra는 Opus 5.5 xHigh, sol은 Opus 5.5 high, terra는 Sonnet 5.5 high, luna는 Haiku로 바꾼다.
+- **치환 기준:** 모델 이름 기준이다(소유자 선택).
+  - 현재 배치의 GPT 모델은 `gpt-6-luna`, `gpt-6.2-sol`, `gpt-6.2-astra` 셋이다. terra를 쓰는 자리는 없다.
+  - 그래서 Sonnet은 쓰이지 않는다.
+  - 다른 해석은 과제계획서 등급 이름(luna·terra·sol)을 기준으로 하는 것이었는데, 소유자가 고르지 않았다.
+- **치환 결과:** 3차·5차와 같은 Codex 배치에서 모델 ID만 바꿨다.
+
+| 원래 모델 | 치환 | 자리 |
+| --- | --- | --- |
+| `gpt-6.2-astra` | Opus 5.5 xhigh | 안전 검증, K8s 분석, 원인 추론, 반론 검토 |
+| `gpt-6.2-sol` | Opus 5.5 high | 결과 검증, 근거 정리, 진행 조정, K8s·로그 분석, 복구 계획, 그룹 검증 |
+| `gpt-6-luna` | Haiku 5.5, 추론 강도 유지(low) | 라우터, 신호 분석, 로그 요약 |
+
+  - 라우터 후보와 승격 사다리도 같은 표를 따른다. 사다리는 Haiku → Opus다.
+  - 원래 추론 강도가 low·medium이던 sol 자리도 지시대로 high가 된다.
+- **제품 변경:** `evalrun` arm에 `model_map`을 추가했다.
+  - 설정된 OpenAI 배치를 공급자 전환 전에 잡아 두고, 모델 ID만 표대로 바꾼다.
+  - 표에 없는 모델이 남으면 호출 전에 거부한다.
+  - `only_model`과 함께 쓸 수 없다.
+  - 단위 시험: `test_model_map_swaps_every_openai_model_id_and_keeps_unmapped_efforts`
+- **시험 장치:** `liveprobe_arm --provider claude-tiered`
+  - 다른 옵션은 이전과 같다. C1c·C3c는 `--memory --operator-rounds 2`, C2c는 `--memory --operator-rounds 3`이다.
+- **반영:** `liveprobe/liveprobe:claude-tiered-v14-20261128`, liveprobe-api 세대 132
+  - v13 위에 `evalrun.py` 하나만 얹었다. 파일 해시는 `862eddd5…`다.
+  - 반영 전 확인: 분석 중·열림·조치 중 사건 0건(`recovery_review` 23건만 있음), dev Running 19개, 노드 CPU 요청 2790m/4000m
+  - 롤백: `roll_v9.sh liveprobe/liveprobe:claude-tiered-v14-20261128 liveprobe/liveprobe:autorag-v13-20261127`
+- **이전 실행과 다른 점:** 기억 색인에는 그 뒤에 쌓인 문서가 들어 있다. AutoRAG v10~v13의 관측 해결 기억 같은 것이다. 모델 외 조건을 완전히 동결하지는 못했다.
+
+### 결과 (dev, 2026-11-27 15:30~17:21 UTC)
+
+| 시험 | 라운드별 LiveProbe | 운영자 조치(채점 규칙) | 3분 뒤 / 5분 확인 |
+| --- | --- | --- | --- |
+| C3c (사건 1799) | 선례 `resolution-1744` 유사도 1.0, NORMAL. 검증 `supported`. 두 층을 모두 원인으로 냈다(LimitRange 280m 한도·throttling 96%, 백오프 없는 재시도 3회로 부하 약 4배). $0.794433, 251.0초 | `explicit_cpu_limit_2000m`, `order_retries_1_backoff` | order 0/1,131, stock 0/1,152 / 0/2,965, 0/2,981 → **1라운드 해결** |
+| C1c (사건 1800) | 선례 없음, NORMAL. 누수 경로 `PartnerLedger.reserveShipped` 29행, DB에 묶인 liveness, 재시도 증폭을 짚었다. 진행 조정이 high→xhigh로 승격되며 $1.368로 NORMAL 비용 상한 $1.30을 넘었다. 그래서 그룹 검증 전에 멈췄다(미검증 인계). $1.368220, 380.7초 | 운영자가 먼저 교체형 롤아웃(maxSurge 0)으로 바꿨다(노드 CPU 요청 3790m/4000m, v7 C1c와 같은 환경 조치). 이어서 `restart_stock`, `patched_ledger`, `probe_liveness_group`, `order_retries_1_backoff` | order 0/714, stock 0/737 / 0/1,893, 0/1,959 → **1라운드 해결** |
+| C2c 1라운드 (사건 1801) | 선례 `resolution-1738` 유사도 0.75, NORMAL. 검증: writer Service 원인은 `supported`, pg_hba 원인은 `insufficient`(node-1의 실제 pg_hba.conf 미수집). $0.706208, 249.3초 | `relabel_old_primary`, `order_retries_1_backoff`. 실행하지 않은 것: pg_hba 허용("확인 결과 etl 전용 줄이 있으면"이라는 조건을 현재 근거가 답하지 못함), stock 재시작("위 두 변경 뒤에만") | stock 98.9%, order 97.1% 오류 → 미해결 |
+| C2c 2라운드 (사건 1802) | 1801의 선례를 이어받음(유사도 0.4), COMPLEX. 검증 `supported`. 원인: 풀 연결이 옛 primary node-0에 묶여 있음. node-1 init 스크립트가 TCP 로그인을 etl로 제한하므로 먼저 허용해야 한다. $1.097755, 327.6초 | 교체형 롤아웃으로 바꾼 뒤(노드 3890m/4000m) `allow_app_on_new_primary`, `restart_stock`. pg_hba 130행 `host all shop_app scram-sha-256`이 오류 없이 적재된 것을 확인했다. order 백오프는 1라운드부터 적용돼 있어 다시 넣지 않았다. | order 0/681, stock 0/699 / 0/1,933, 0/1,963 → **2라운드 해결** |
+
+- **모델 호출:** 23회 모두 치환표대로였다(Haiku 7회, Opus 16회).
+  - 승격 사다리가 두 번 동작했다. 로그 요약이 Haiku에서 Opus로(1799, 1800), 진행 조정이 high에서 xhigh로(1800) 올라갔다.
+  - 토큰(입력·출력): 1799 65,805·38,294, 1800 116,073·56,646, 1801 56,420·34,299, 1802 71,193·43,205
+- **로컬 soak**
+  - C1c `c1-soak-liveprobe-v14-tiered`: 적용한 네 조치 그대로 넣었다. soak 전체 0/2,500, 마지막 구간 0/1,803, 재시작 0회, 끝에서 Hikari active 0, durable → **통과**
+    - 로컬 C1 재현에 `order_retries_1_backoff`가 없어 dev 조치와 같은 값(재시도 1, 백오프 300ms)으로 추가했다.
+  - C3c: 적용 조합이 정답 조치(2000m + 재시도 1회·백오프)와 같다. `c3-soak-reference` 평상·1.5배·마지막 구간 모두 0건 실패 → **통과**
+  - C2c: 적용한 네 조치가 5차 Opus 회차와 같은 조합이다. `c2-soak-liveprobe-v12` 0/2,463, 옛 primary 쓰기 0건 → **통과**
+- 평가 잠금은 15:30에 걸고 17:20에 풀었다. 시험 객체 정리와 dev Running 19개를 확인했다.
+
+### 6차 판정과 비교
+
+| 시험 | Codex 혼합 (3차) | Opus 단일 (5차) | Claude 치환 (6차) | 단일 프롬프트 기준선 |
+| --- | --- | --- | --- | --- |
+| C1c | 성공 1라운드, $0.720890, 250.1초 | — | **성공 1라운드**, $1.368220, 380.7초 | Terra·Sonnet·Opus 모두 실패 |
+| C2c | 미측정(Codex 한도) | 성공 2라운드, $1.740172, 493.1초 | **성공 2라운드**, $1.803963, 576.9초 | 모두 실패 |
+| C3c | 성공 1라운드, $0.248942, 173.2초 | — | **성공 1라운드**, $0.794433, 251.0초 | 모두 실패 |
+
+- **해결:** 같은 모델 구성으로 세 시험 모두 성공했다(3/3).
+  - 5차까지의 한계는 "C1c·C3c는 Codex 혼합, C2c는 Opus 단일로 구성이 다르다"는 것이었다. 이번 회차로 이 한계가 없어졌다.
+- **비용·시간**
+  - 비용은 API 정가 기준 추정이다. 구독 CLI는 호출당 청구되지 않는다.
+  - 세 시험 분석 합계: $3.966616, 1,208.6초
+  - Codex 혼합 대비 C1c 1.9배, C3c 3.2배. sol 자리를 Opus high로 올린 몫이다.
+  - C2c는 Opus 단일과 비슷하다(+3.7%).
+  - 단일 모델 기준선은 Opus 1회 $1.82~1.97(CLI 기준)로도 해결하지 못했다.
+- **한계**
+  - 각 1회 표본이다.
+  - C1c는 그룹 비용 상한 때문에 검증 전에 멈춘 인계였다. 확정 조치는 맞았다.
+  - 두 시험(C1c, C2c 2라운드)에서 단일 노드 용량 때문에 운영자가 먼저 롤아웃 방식을 바꿨다.
+  - 기억 색인에는 이전 회차 뒤에 쌓인 문서가 있다.
+- **반영 상태:** liveprobe-api는 v14로 둔다. 바뀐 것은 평가 경로의 `model_map`뿐이고, 운영 사건 처리는 v13과 같다.
+
 ## 남은 일
 
 - **Claude 기준선 2·3회차:** Terra와 같은 3회 표본을 만들려면 회차당 약 120만 토큰이 든다. 소유자가 결정한다.

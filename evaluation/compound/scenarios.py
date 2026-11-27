@@ -175,6 +175,9 @@ class C1MaskedLeak:
             "db_idle_tx_timeout": lambda: run.dbs["shop"].psql(
                 "alter system set idle_in_transaction_session_timeout = '30s'; select pg_reload_conf();"),
             "order_single_attempt": lambda: self.order(run, {"shopfront.order.stock.retries": "0"}),
+            # same values as the dev primitive of liveprobe_arm (C1c tiered-Claude round 1 applied it)
+            "order_retries_1_backoff": lambda: self.order(run, {"shopfront.order.stock.retries": "1",
+                                                                 "shopfront.order.stock.backoff-ms": "300"}),
             "release_partner_holds": lambda: run.dbs["shop"].psql(
                 "update partner_allocation set status = 'OPEN';", db="shop", user="shop_app"),
         }
