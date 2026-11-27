@@ -89,6 +89,22 @@ def build_cfg(arm: dict):
         for grp_role, spec_role in FIXED_ROLE_MAP.items():
             cfg.llm.roles[grp_role] = roles[spec_role]
     anthropic = cfg.llm.provider in ("claude_cli", "anthropic_api")
+    only = arm.get("only_model")
+    if only:
+        # One-model lineup: every role, group role, router candidate and escalation step of the vendor uses `only`;
+        # each role keeps its reasoning effort. Escalation can then only raise the effort.
+        if only.startswith("claude") != anthropic:
+            raise ValueError(f"only_model {only!r} does not belong to provider {cfg.llm.provider!r}")
+        vendor = "anthropic" if anthropic else "openai"
+        same = lambda m: m.startswith("claude") == anthropic  # noqa: E731
+        if only not in cfg.router.model_quality or only not in cfg.router.model_throughput:
+            raise ValueError(f"only_model {only!r} has no router quality/throughput entry")
+        cfg.llm.roles = {r: RoleModel(model=only, effort=rm.effort) for r, rm in cfg.llm.roles.items()}
+        cfg.workflows.group_roles[vendor] = {r: RoleModel(model=only, effort=rm.effort)
+                                             for r, rm in cfg.workflows.group_roles[vendor].items()}
+        cfg.workflows.model_ladder[vendor] = [only]
+        cfg.router.model_quality = {m: q for m, q in cfg.router.model_quality.items() if not same(m) or m == only}
+        cfg.router.model_throughput = {m: t for m, t in cfg.router.model_throughput.items() if not same(m) or m == only}
     bad = sorted({rm.model for rm in cfg.llm.roles.values() if rm.model.startswith("claude") != anthropic})
     if bad:
         raise ValueError(f"arm roles {bad} do not belong to provider {cfg.llm.provider!r}")

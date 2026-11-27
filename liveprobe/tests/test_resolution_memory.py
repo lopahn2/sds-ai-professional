@@ -145,3 +145,16 @@ def test_observed_memory_is_fixed_vocabulary_and_stays_in_one_chunk():
     assert M.precedent([hit], sig)["similarity"] == 1.0 and M.steps_of(chunks[0].content) == [
         "roll the Deployment back to its previous revision"]
     assert set(M.ACTION_TEXT) >= {"rollout_undo", "rollout_restart", "set_memory_limit", "configmap_restore", "pod_delete"}
+
+
+def test_memory_channel_matches_by_signature_only():
+    cur = ["cpu_limit_binding", "limit_from_admission", "namespace_default_limits", "signal:X"]
+    docs = [{"doc": "observed-3.md", "kind": "past_incident", "source": "observed-resolution", "signature": cur},
+            {"doc": "resolution-7.md", "kind": "past_incident", "source": "verified-resolution", "signature": cur},
+            {"doc": "incident-9.md", "kind": "past_incident", "source": "closed-incident", "signature": cur},
+            {"doc": "observed-4.md", "kind": "past_incident", "source": "observed-resolution",
+             "signature": ["pool_saturated", "signal:X"]}]
+    assert M.best_memory(docs, cur)["doc"] == "resolution-7.md"              # verified wins the tie
+    assert M.best_memory(docs[:1], cur)["doc"] == "observed-3.md"
+    assert M.best_memory(docs[2:], cur) is None                              # summaries and non-matching memory
+    assert M.best_memory(docs, ["signal:X"]) is None                         # signals alone never match

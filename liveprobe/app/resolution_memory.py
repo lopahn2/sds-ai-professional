@@ -37,6 +37,7 @@ CONTINUED_JACCARD = 0.25         # inherited precedent: same workload, recent in
 CONTINUITY_MINUTES = 120
 MAX_STEPS = 6
 PRECEDENT_SOURCES = ("verified-resolution", "observed-resolution")
+MEMORY_KINDS = ("past_incident", "eval_memory")
 # One fixed sentence per allowlisted action type; parameters (images, values) never enter memory text.
 ACTION_TEXT = {
     "rollout_undo": "roll the Deployment back to its previous revision",
@@ -167,6 +168,23 @@ def precedent(hits: list[dict], current: list[str], threshold: float = MATCH_JAC
             best = {"ref": hit.get("ref"), "doc": hit.get("doc"), "similarity": round(score, 2), "signature": past,
                     "verified": verified}
     return best
+
+
+def best_memory(documents, current: list[str], threshold: float = MATCH_JACCARD) -> dict | None:
+    """Memory channel: the resolution document whose stored signature best matches the current one.
+
+    `documents` holds {"doc", "kind", "source", "signature"}. Memory is matched by signature, never by text
+    similarity. Memory that does not match is not shown: the first AutoRAG run measured it as noise in the
+    document top-k."""
+    best = None
+    for d in documents or []:
+        if d.get("source") not in PRECEDENT_SOURCES:
+            continue
+        score = similarity(current, d.get("signature") or [])
+        verified = d.get("source") == "verified-resolution"
+        if score >= threshold and (best is None or (score, verified, d["doc"]) > (best[0], best[1], best[2]["doc"])):
+            best = (score, verified, d)
+    return best[2] if best else None
 
 
 def steps_of(content: str) -> list[str]:

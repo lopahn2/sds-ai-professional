@@ -1052,6 +1052,7 @@ class Engine:
         hits = self._rag(self._rag_query(bundle, decision))
         from .resolution_memory import precedent as _precedent, signature as _signature
         signature = _signature(bundle.findings, bundle.dependencies, incident_view.get("signals"))
+        self._memory_precedent(signature, hits)
         match = _precedent(hits, signature)
         if match is None:
             match = self._inherit_precedent(iid, incident_view, signature, hits)
@@ -1390,6 +1391,44 @@ class Engine:
         from .rag_tuning import production_kinds
         return list(self.rag_kinds) if self.rag_kinds else production_kinds(self.cfg)
 
+    @staticmethod
+    def _memory_reference(s, doc: str, n: int, *, inherited: bool = False) -> dict | None:
+        """A resolution memory document as one citable reference: all active chunks in order (steps included)."""
+        from .models import RagChunk
+        chunks = list(s.scalars(select(RagChunk).where(RagChunk.doc == doc, RagChunk.retired_at.is_(None))
+                                .order_by(RagChunk.chunk_ix)))
+        if not chunks:
+            return None
+        first = chunks[0]
+        ref = {"ref": f"R{n}", "chunk_id": first.id, "doc": first.doc, "source": first.source, "chunk_ix": first.chunk_ix,
+               "score": 0.0, "hybrid_score": 0.0, "source_uri": None, "locator": first.locator, "section": first.section,
+               "license": "internal", "attribution": None, "content": "\n".join(c.content for c in chunks),
+               "channel": "memory"}
+        if inherited:
+            ref["inherited"] = True
+        return ref
+
+    def _memory_precedent(self, signature: list[str], hits: list[dict]) -> None:
+        """Memory channel: append the best signature-matching resolution memory to `hits` as a citable reference."""
+        from .models import RagChunk, RagDocument
+        from .resolution_memory import MEMORY_KINDS, best_memory
+        kinds = [k for k in self._rag_kinds_allowed() if k in MEMORY_KINDS]
+        if not kinds or not [t for t in signature if not t.startswith("signal:")]:
+            return
+        try:
+            with db.session() as s:
+                docs = [{"doc": d.doc_key, "kind": d.kind, "source": d.source,
+                         "signature": (d.meta or {}).get("signature") or []}
+                        for d in s.scalars(select(RagDocument).where(RagDocument.kind.in_(kinds)))]
+                best = best_memory(docs, signature)
+                if best is None or any(h.get("doc") == best["doc"] for h in hits):
+                    return
+                ref = self._memory_reference(s, best["doc"], len(hits) + 1)
+                if ref is not None:
+                    hits.append(ref)
+        except Exception as e:  # noqa: BLE001
+            log.warning("memory precedent lookup failed: %s", type(e).__name__)
+
     def _inherit_precedent(self, iid: int, incident_view: dict, signature: list[str], hits: list[dict]) -> dict | None:
         """A precedent used by a recent incident on the same workload, appended to `hits` as a citable reference."""
         from .resolution_memory import CONTINUITY_MINUTES, inherited_precedent
@@ -1412,14 +1451,10 @@ class Engine:
             if match is None:
                 return None
             if not any(h.get("doc") == match["doc"] for h in hits):
-                chunk = s.scalars(select(RagChunk).where(RagChunk.doc == match["doc"], RagChunk.retired_at.is_(None))
-                                  .order_by(RagChunk.chunk_ix)).first()
-                if chunk is None:
+                ref = self._memory_reference(s, match["doc"], len(hits) + 1, inherited=True)
+                if ref is None:
                     return None
-                hits.append({"ref": f"R{len(hits) + 1}", "chunk_id": chunk.id, "doc": chunk.doc, "source": chunk.source,
-                             "chunk_ix": chunk.chunk_ix, "score": 0.0, "hybrid_score": 0.0, "source_uri": None,
-                             "locator": chunk.locator, "section": chunk.section, "license": "internal",
-                             "attribution": None, "content": chunk.content, "inherited": True})
+                hits.append(ref)
         ref = next(h["ref"] for h in hits if h.get("doc") == match["doc"])
         return {**match, "ref": ref}
 
@@ -1441,8 +1476,11 @@ class Engine:
             return []
         try:
             with db.session() as s:
-                # Never None: an unrestricted search would also see evaluation memory.
-                hits = self.rag.search(s, query, kinds=self._rag_kinds_allowed(), **retrieval.search_kwargs())
+                # Document channel only (never None: an unrestricted search would also see evaluation memory).
+                # Resolution memory enters through the signature-matched memory channel (_memory_precedent).
+                from .resolution_memory import MEMORY_KINDS
+                hits = self.rag.search(s, query, kinds=[k for k in self._rag_kinds_allowed() if k not in MEMORY_KINDS],
+                                       **retrieval.search_kwargs())
         except Exception as e:  # noqa: BLE001
             log.warning("RAG search failed: %s", type(e).__name__)
             return []

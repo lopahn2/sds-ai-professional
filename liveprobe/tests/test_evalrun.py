@@ -576,3 +576,20 @@ def test_rollout_undo_uses_the_rollback_path_not_the_typed_executor(db_url):
         a1, a2 = undo.id, mem.id
     assert eng._kube_for(a1) == "OBSERVE"
     assert eng._kube_for(a2) == "EXECUTOR"
+
+
+def test_only_model_puts_every_role_router_candidate_and_ladder_on_one_model():
+    from app import router as R
+    arm = {"arm_id": "liveprobe-claude-opus", "strategy": "adaptive", "provider": "claude_cli",
+           "only_model": "claude-opus-5-5", "roles": {"router": {"model": "claude-opus-5-5", "effort": "low"}}}
+    cfg = evalrun.build_cfg(arm)
+    assert {rm.model for rm in cfg.llm.roles.values()} == {"claude-opus-5-5"}
+    assert cfg.llm.roles["router"].effort == "low" and cfg.llm.roles["safety_verifier"].effort == "xhigh"
+    group = cfg.workflows.group_roles["anthropic"]
+    assert {rm.model for rm in group.values()} == {"claude-opus-5-5"}
+    assert group["log_summarizer"].effort == "low" and group["cause_reasoner"].effort == "high"
+    assert cfg.workflows.model_ladder["anthropic"] == ["claude-opus-5-5"]
+    for level in ("SIMPLE", "NORMAL", "COMPLEX", "HIGH_RISK"):
+        assert R.score_models(level, cfg)["selected_model"] == "claude-opus-5-5"
+    with pytest.raises(ValueError):
+        evalrun.build_cfg({**arm, "only_model": "gpt-6-luna"})

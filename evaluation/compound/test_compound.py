@@ -71,6 +71,10 @@ def test_provider_arms_mirror_each_other():
     assert all(r["model"].startswith("gpt-") for r in codex["roles"].values())
     assert all(r["model"].startswith("claude-") for r in claude["roles"].values())
     assert {k: r["effort"] for k, r in codex["roles"].items()} == {k: r["effort"] for k, r in claude["roles"].items()}
+    opus = ARMS["claude-opus"]
+    assert opus["only_model"] == "claude-opus-5-5" and opus["provider"] == "claude_cli"
+    assert {r["model"] for r in opus["roles"].values()} == {"claude-opus-5-5"}
+    assert {k: r["effort"] for k, r in opus["roles"].items()} == {k: r["effort"] for k, r in claude["roles"].items()}
 
 
 def test_claude_baseline_prices_cache_writes_and_keeps_the_answer(monkeypatch):

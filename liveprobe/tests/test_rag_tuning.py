@@ -28,7 +28,9 @@ def test_configuration_is_bounded_and_validated():
     cfg = T.RetrievalConfig.from_dict({"query_mode": "findings", "mode": "vector", "k": 2})
     assert cfg.key() == "findings/vector/c30/k2/p1"          # rrf is not part of a single-list key
     space = T.candidates()
-    assert len(space) == 144 and len({c.key() for c in space}) == 144 and T.DEFAULT.key() in {c.key() for c in space}
+    assert len(space) == 48 and len({c.key() for c in space}) == 48 and T.DEFAULT.key() in {c.key() for c in space}
+    assert {c.past_incident_cap for c in space} == {1}                     # memory is not a tuned channel
+    assert T.document_kinds(["runbook", "public_doc", "past_incident", "eval_memory"]) == ["runbook", "public_doc"]
 
 
 def test_fusion_ties_and_diversity_match_the_ranking_policy():

@@ -13,7 +13,10 @@ The AutoRAG ideas, mapped onto LiveProbe:
   A past-incident document is a candidate only if its incident closed before the query incident was created,
   so the evaluation never ranks a memory the engine could not have had.
 - **Nodes and modules.** Query construction (`rag_query.QUERY_MODES`), retrieval mode (hybrid | vector |
-  lexical), RRF constant, candidate pool size, k and the past-incident cap. `SPACE` holds every combination.
+  lexical), RRF constant, candidate pool size and k. `SPACE` holds every combination. Only the document channel
+  (runbooks, public documents, reference guide) is tuned. Resolution memory reaches the prompt through the
+  signature-matched memory channel. The first run, with memory inside the document top-k, selected a
+  past-incident cap of 0: memory there was noise, and the cap also switched off the precedents.
 - **Metrics.** nDCG@k, precision@k (the share of documents put into the prompt that are relevant, i.e. noise
   and token cost), hit@k, MRR and capped recall. Per query: 0.5·nDCG@k + 0.5·precision@k. The objective is
   the macro average of that score over detection-family groups. Operations are dominated by one family
@@ -116,7 +119,12 @@ class RetrievalConfig:
 
 DEFAULT = RetrievalConfig()
 SPACE = {"query_mode": QUERY_MODES, "mode": R.MODES, "rrf_k": (20, 60), "candidates": (30, 60), "k": (2, 3, 4),
-         "past_incident_cap": (0, 1, 2)}
+         "past_incident_cap": (1,)}      # memory is not in the tuned channel; the cap stays at its default
+MEMORY_KINDS = ("past_incident", "eval_memory")
+
+
+def document_kinds(kinds: list[str]) -> list[str]:
+    return [k for k in kinds if k not in MEMORY_KINDS]
 
 
 def candidates() -> list[RetrievalConfig]:
@@ -475,6 +483,7 @@ def apply_config(s, cfg: RetrievalConfig, actor: str, reason: str, metrics_: dic
 def run(s, embedder, kinds: list[str], *, apply: bool = True, actor: str = "rag_autotune") -> dict:
     """One AutoRAG pass in session `s`. Writes the report; applies the winner only if `decide` says so."""
     started = time.perf_counter()
+    kinds = document_kinds(kinds)
     current = current_config(s)
     configs = candidates()
     dataset, stats = build_dataset(s, kinds)
