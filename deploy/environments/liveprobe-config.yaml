@@ -36,6 +36,10 @@ target_namespaces:
 # 퇴역 환경(stg)은 과거 사건·감사·CSV 조회 필터에만 쓴다. 새 감시·수집·조치 대상이 아니다.
 historical_namespaces:
 - stg
+# KW-03은 현재 리비전의 Pod와 PVC에 관련된 반복 kubelet FailedMount로 접수한다.
+workload_state_signals_enabled: true
+workload_state_signal_workloads:
+- lp-eval-kw03
 # 제한된 자율 복구: SIMPLE 분석이 검증되지 않은 이관으로 끝날 때 NORMAL Group으로 한 번 재분석한다.
 # 권한·데이터 경계(authority_boundary)에는 적용하지 않으며 시도 횟수는 RecoveryPolicy 상한을 따른다.
 recovery:

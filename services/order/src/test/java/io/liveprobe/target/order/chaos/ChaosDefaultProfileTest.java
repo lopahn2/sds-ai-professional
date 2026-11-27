@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.context.ApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -19,11 +21,16 @@ import io.liveprobe.target.order.DataPathHook;
 import io.liveprobe.target.order.OrderDbLookup;
 
 /** Contract 1.1 / 3: default profile has no chaos routes (404), no chaos beans and no DataSource. */
-@SpringBootTest(properties = "CHAOS_OPERATOR_TOKEN=default-profile-token-must-be-ignored-0123456789")
+@SpringBootTest
 @AutoConfigureMockMvc
 class ChaosDefaultProfileTest {
-    static final String TOKEN = "default-profile-token-must-be-ignored-0123456789";
+    static final String TOKEN = java.util.UUID.randomUUID().toString();
     static final String BODY = "{\"mode\":\"latency\",\"delay_ms\":100,\"duration_seconds\":1}";
+
+    @DynamicPropertySource
+    static void faultToken(DynamicPropertyRegistry registry) {
+        registry.add("CHAOS_OPERATOR_TOKEN", () -> TOKEN);
+    }
 
     @Autowired MockMvc mvc;
     @Autowired ApplicationContext ctx;

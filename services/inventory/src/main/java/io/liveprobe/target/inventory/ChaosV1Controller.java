@@ -175,10 +175,16 @@ public class ChaosV1Controller {
     @PostMapping("/reset")
     public ResponseEntity<Map<String, Object>> reset(HttpServletRequest request) {
         if (!auth.authorized(request)) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
-        if (!emptyResetBody(readBody(request))) {
+        JsonNode body = resetBody(readBody(request));
+        if (body == null) {
             return error(HttpStatus.BAD_REQUEST, Map.of("error", "invalid_request"));
         }
+        String expected = body.has("expected_operation_id") ? body.get("expected_operation_id").textValue() : null;
         synchronized (this) {
+            if (expected != null && (!STATUS_MODES.contains(mode) || !expected.equals(operationId)
+                    || !expiresAt.isAfter(Instant.ofEpochMilli(runtime.clock().getAsLong())))) {
+                return error(HttpStatus.CONFLICT, Map.of("error", "operation_not_current"));
+            }
             String previous = mode;
             String previousId = operationId;
             if (previous.equals("off")) {
@@ -190,18 +196,22 @@ public class ChaosV1Controller {
                 if (intentMode != null) previous = intentMode;
             }
             int released = clear();
-            ChaosController legacyController = legacy.getIfAvailable();
-            if (legacyController != null) released += legacyController.resetForV1();
-            boolean intentCleared = intents.delete();
+            boolean intentCleared = false;
+            if (expected == null) {
+                ChaosController legacyController = legacy.getIfAvailable();
+                if (legacyController != null) released += legacyController.resetForV1();
+                intentCleared = intents.delete();
+            }
             if (ChaosEvents.MODES.contains(previous)) events.request(previous, "reset");
             events.event("reset", previous, previousId, "released_connections", released,
                     "intent_cleared", intentCleared);
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("mode", "off");
-            body.put("previous_mode", previous);
-            body.put("released_connections", released);
-            body.put("intent_cleared", intentCleared);
-            return ResponseEntity.ok(body);
+            Map<String, Object> receipt = new LinkedHashMap<>();
+            receipt.put("mode", "off");
+            receipt.put("previous_mode", previous);
+            receipt.put("released_connections", released);
+            receipt.put("intent_cleared", intentCleared);
+            if (expected != null) receipt.put("reset_operation_id", previousId);
+            return ResponseEntity.ok(receipt);
         }
     }
 
@@ -503,14 +513,18 @@ public class ChaosV1Controller {
         return v >= lo && v <= hi ? v : null;
     }
 
-    static boolean emptyResetBody(String body) {
-        if (body == null) return false;
-        if (body.isBlank()) return true;
+    private static JsonNode resetBody(String body) {
+        if (body == null) return null;
+        if (body.isBlank()) return STRICT_JSON.createObjectNode();
         try {
             JsonNode node = STRICT_JSON.readTree(body);
-            return node != null && node.isObject() && node.isEmpty();
+            if (node == null || !node.isObject()) return null;
+            if (node.isEmpty()) return node;
+            String id = node.path("expected_operation_id").textValue();
+            return node.size() == 1 && id != null && id.matches("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+                    ? node : null;
         } catch (IOException e) {
-            return false;
+            return null;
         }
     }
 

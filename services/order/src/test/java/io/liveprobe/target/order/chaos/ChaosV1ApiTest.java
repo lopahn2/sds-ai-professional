@@ -14,6 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.SQLTransientConnectionException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -68,8 +71,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class ChaosV1ApiTest {
-    static final String TOKEN = "unit-test-operator-token-0123456789-abcdef";
-    static final String WRONG = "unit-test-WRONG-token-0123456789-abcdefgh";
+    static final String TOKEN = java.util.UUID.randomUUID().toString();
+    static final String WRONG = java.util.UUID.randomUUID().toString();
     static final ObjectMapper JSON = new ObjectMapper();
 
     static final Path STATE_DIR;
@@ -152,6 +155,18 @@ class ChaosV1ApiTest {
         long t0 = System.nanoTime();
         mvc.perform(get("/api/orders/check").param("item", "a")).andExpect(status().is(expectedStatus));
         return (System.nanoTime() - t0) / 1_000_000;
+    }
+
+    Connection acquireSetupConnection() throws SQLException {
+        // Retry fixture setup while keeping the actual application's connection timeout unchanged.
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (true) {
+            try {
+                return dataSource.getConnection();
+            } catch (SQLTransientConnectionException unavailable) {
+                if (System.nanoTime() >= deadline) throw unavailable;
+            }
+        }
     }
 
     static void await(long timeoutMs, java.util.function.BooleanSupplier cond) throws InterruptedException {
@@ -284,8 +299,12 @@ class ChaosV1ApiTest {
 
     @Test
     void latencyDelaysTheDataPathThenClearsOnExpiry(CapturedOutput out) throws Exception {
+        try (var connection = acquireSetupConnection()) {
+            assertThat(connection.isValid(1)).isTrue();
+        }
         long baseline = timeCheckMs(200);
-        MvcResult r = inject("{\"mode\":\"latency\",\"delay_ms\":300,\"duration_seconds\":1}");
+        int durationSeconds = 3;
+        MvcResult r = inject("{\"mode\":\"latency\",\"delay_ms\":300,\"duration_seconds\":" + durationSeconds + "}");
         assertThat(r.getResponse().getStatus()).isEqualTo(202);
         JsonNode b = json(r);
         assertThat(b.get("mode").asText()).isEqualTo("latency");
@@ -293,7 +312,7 @@ class ChaosV1ApiTest {
         assertThat(b.get("effect").asText()).isEqualTo("pending");
         assertThat(b.get("operation_id").asText()).matches("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}");
         Instant accepted = Instant.parse(b.get("accepted_at").asText());
-        assertThat(Instant.parse(b.get("expires_at").asText())).isEqualTo(accepted.plusSeconds(1));
+        assertThat(Instant.parse(b.get("expires_at").asText())).isEqualTo(accepted.plusSeconds(durationSeconds));
         assertThat(b.get("accepted_at").asText()).matches("\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z");
 
         JsonNode s = faultStatus();
@@ -306,7 +325,7 @@ class ChaosV1ApiTest {
         assertThat(active).isGreaterThanOrEqualTo(300);
         assertThat(baseline).isLessThan(300);
 
-        await(3000, () -> "off".equals(faults.activeMode()));
+        await(6000, () -> "off".equals(faults.activeMode()));
         assertThat(faultStatus().get("latency_delay_ms").asInt()).isZero();
         assertThat(timeCheckMs(200)).isLessThan(300);
         assertThat(gauge("liveprobe_chaos_active", "latency")).isZero();
@@ -352,16 +371,20 @@ class ChaosV1ApiTest {
 
     @Test
     void poolExhaustHoldsAllNConnectionsDataPath503ThenReleasesOnExpiry(CapturedOutput out) throws Exception {
+        try (var connection = acquireSetupConnection()) {
+            assertThat(connection.isValid(1)).isTrue();
+        }
         timeCheckMs(200); // warm the pool
         HikariPoolMXBean pool = dataSource.getHikariPoolMXBean();
         double timeoutsBefore = meters.get("hikaricp.connections.timeout").tag("pool", "order").counter().count();
 
-        MvcResult r = inject("{\"mode\":\"pool_exhaust\",\"duration_seconds\":3}");
+        int durationSeconds = 6;
+        MvcResult r = inject("{\"mode\":\"pool_exhaust\",\"duration_seconds\":" + durationSeconds + "}");
         assertThat(r.getResponse().getStatus()).isEqualTo(202);
         JsonNode b = json(r);
         assertThat(b.get("effect").asText()).isEqualTo("held");
         assertThat(Instant.parse(b.get("expires_at").asText()))
-                .isEqualTo(Instant.parse(b.get("accepted_at").asText()).plusSeconds(3));
+                .isEqualTo(Instant.parse(b.get("accepted_at").asText()).plusSeconds(durationSeconds));
         assertThat(b.get("held_connections").asInt()).isEqualTo(4);
         assertThat(b.get("pool_max").asInt()).isEqualTo(4);
         assertThat(pool.getActiveConnections()).isEqualTo(4);
@@ -380,10 +403,14 @@ class ChaosV1ApiTest {
             res.getResponse().setHeader("X-Elapsed-Ms", String.valueOf((System.nanoTime() - t0) / 1_000_000));
             return res;
         });
-        await(900, () -> pool.getThreadsAwaitingConnection() > 0
-                && meters.get("hikaricp.connections.pending").tag("pool", "order").gauge().value() > 0);
-        MvcResult slow = inflight.get(5, TimeUnit.SECONDS);
-        ex.shutdown();
+        MvcResult slow;
+        try {
+            await(900, () -> pool.getThreadsAwaitingConnection() > 0
+                    && meters.get("hikaricp.connections.pending").tag("pool", "order").gauge().value() > 0);
+            slow = inflight.get(5, TimeUnit.SECONDS);
+        } finally {
+            ex.shutdownNow();
+        }
         assertThat(slow.getResponse().getStatus()).isEqualTo(503);
         assertThat(Long.parseLong(slow.getResponse().getHeader("X-Elapsed-Ms"))).isGreaterThanOrEqualTo(900);
         JsonNode err = JSON.readTree(slow.getResponse().getContentAsString());
@@ -394,7 +421,7 @@ class ChaosV1ApiTest {
         assertThat(meters.get("order_db_lookups").tag("outcome", "db_error").counter().count()).isGreaterThanOrEqualTo(1);
 
         // Expiry releases every held connection; data path is back to 200.
-        await(5000, () -> "off".equals(faults.activeMode()));
+        await(8000, () -> "off".equals(faults.activeMode()));
         await(5000, () -> pool.getActiveConnections() == 0);
         assertThat(faultStatus().get("held_connections").asInt()).isZero();
         timeCheckMs(200);
@@ -484,7 +511,7 @@ class ChaosV1ApiTest {
 
     @Test
     void poolExhaustIs503PoolBusyAndReleasesPartialsWhenSomeoneElseHoldsAConnection() throws Exception {
-        try (var foreign = dataSource.getConnection()) {
+        try (var foreign = acquireSetupConnection()) {
             MvcResult r = inject("{\"mode\":\"pool_exhaust\",\"duration_seconds\":5}");
             assertThat(r.getResponse().getStatus()).isEqualTo(503);
             assertThat(json(r).get("error").asText()).isEqualTo("precondition_failed");
@@ -537,6 +564,23 @@ class ChaosV1ApiTest {
         mvc.perform(auth(post("/internal/chaos/v1/reset"), TOKEN)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.previous_mode").value("endpoint_off"));
         mvc.perform(get("/actuator/health/readiness")).andExpect(status().isOk());
+    }
+
+    @Test
+    void oldResetReceiptCannotClearAnotherOperation() throws Exception {
+        String fault = "{\"mode\":\"endpoint_off\",\"duration_seconds\":30}";
+        String oldId = json(inject(fault)).path("operation_id").asText();
+        String oldReset = "{\"expected_operation_id\":\"" + oldId + "\"}";
+        mvc.perform(auth(post("/internal/chaos/v1/reset"), TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON).content(oldReset))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.reset_operation_id").value(oldId));
+
+        String currentId = json(inject(fault)).path("operation_id").asText();
+        mvc.perform(auth(post("/internal/chaos/v1/reset"), TOKEN)
+                        .contentType(MediaType.APPLICATION_JSON).content(oldReset))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("operation_not_current"));
+        assertThat(faultStatus().path("operation_id").asText()).isEqualTo(currentId);
+        mvc.perform(get("/actuator/health/readiness")).andExpect(status().isServiceUnavailable());
     }
 
     // ------------------------------------------------------------------ crash (contract 2.1)

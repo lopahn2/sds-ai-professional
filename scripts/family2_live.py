@@ -74,6 +74,28 @@ def active_jobs(run=gate.run):
                   if (j.get("status", {}).get("active") or 0) > 0)
 
 
+class DevFaultAuthority:
+    """Preserve the Family 2 exclusivity checks for an already isolated dev fixture."""
+
+    def __init__(self, context, *, jobs=active_jobs, kubeconfig=None, check_scope=None):
+        self.jobs = jobs
+        self.check_scope = check_scope
+        options = {"kubeconfig": kubeconfig} if kubeconfig else {}
+        self.legacy = adapter.KubernetesTransport(context, **options)
+        self.transport = adapter.KubernetesTransport(context, lease_namespace="dev", **options)
+        self.lease = tx.KubernetesLease(self.transport, duration_seconds=LEASE_SECONDS, namespace="dev")
+
+    def check(self, *, owned=False):
+        if self.check_scope:
+            self.check_scope()
+        tx.require(not self.jobs(), "another Kubernetes Job is active")
+        tx.require(self.legacy.get(tx.LEASE) is None, "legacy Family 2 Lease exists")
+        if owned:
+            self.lease.assert_owned()
+        else:
+            tx.require(self.transport.get(tx.LEASE) is None, "existing dev Family 2 Lease")
+
+
 class ExclusiveAuthority:
     """Boolean exclusive-window attestation; re-evaluated at every call.
 

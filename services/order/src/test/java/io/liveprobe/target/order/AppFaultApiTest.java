@@ -3,15 +3,22 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
-@SpringBootTest(properties={"CHAOS_OPERATOR_TOKEN=" + AppFaultApiTest.TOKEN})
+@SpringBootTest
 @ActiveProfiles("chaos") @AutoConfigureMockMvc
 class AppFaultApiTest {
- static final String TOKEN="test-app-fault-token-0123456789-abcdef";
+ static final String TOKEN = java.util.UUID.randomUUID().toString();
  static final String PATH="/internal/chaos/v1/app-faults";
+ @DynamicPropertySource
+ static void faultToken(DynamicPropertyRegistry registry) {
+     registry.add("CHAOS_OPERATOR_TOKEN", () -> TOKEN);
+ }
+
  @Autowired MockMvc mvc;
  @Test void cpuWorkersStopWhenFaultClears() throws Exception {
   mvc.perform(post(PATH).header("Authorization","Bearer "+TOKEN).contentType("application/json").content("{\"fault\":\"cpu_spin\",\"on\":true,\"params\":{\"threads\":2}}")).andExpect(status().isOk());

@@ -1,0 +1,54 @@
+rule_files:
+  - recording.yml
+  - alerts.yml
+evaluation_interval: 15s
+tests:
+  - name: only live proxy rejections with known Pod identity page the target environment
+    interval: 15s
+    input_series:
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="dev",pod="gateway",pod_uid="dev-proxy",instance="dev:15090"}'
+        values: '6 6 6 7+0x12'
+      - series: 'up{job="envoy-stats",namespace="dev",pod="gateway",pod_uid="dev-proxy",instance="dev:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="prd",pod="gateway",pod_uid="prd-proxy",instance="prd:15090"}'
+        values: '0 0 0 1+0x12'
+      - series: 'up{job="envoy-stats",namespace="prd",pod="gateway",pod_uid="prd-proxy",instance="prd:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="stg",pod="gateway",pod_uid="retired-proxy",instance="stg:15090"}'
+        values: '0 0 0 1+0x12'
+      - series: 'up{job="envoy-stats",namespace="stg",pod="gateway",pod_uid="retired-proxy",instance="stg:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="dev",pod="restarted",pod_uid="restart-proxy",instance="restart:15090"}'
+        values: '6 6 6 0+0x12'
+      - series: 'up{job="envoy-stats",namespace="dev",pod="restarted",pod_uid="restart-proxy",instance="restart:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="dev",pod="unknown-id",instance="unknown:15090"}'
+        values: '0 0 0 1+0x12'
+      - series: 'up{job="envoy-stats",namespace="dev",pod="unknown-id",instance="unknown:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="dev",pod="gone",pod_uid="gone-proxy",instance="gone:15090"}'
+        values: '0 0 1 stale _x12'
+      - series: 'up{job="envoy-stats",namespace="dev",pod="gone",pod_uid="gone-proxy",instance="gone:15090"}'
+        values: '1+0x15'
+      - series: 'envoy_listener_manager_lds_update_rejected{job="envoy-stats",namespace="dev",pod="unscrapable",pod_uid="unavailable-proxy",instance="down:15090"}'
+        values: '0 0 1 _x12'
+      - series: 'up{job="envoy-stats",namespace="dev",pod="unscrapable",pod_uid="unavailable-proxy",instance="down:15090"}'
+        values: '1 1 1 0+0x12'
+      - series: 'pilot_total_xds_rejects{job="kubernetes-pods",namespace="istio-system",type="lds"}'
+        values: '6 6 6 7+0x12'
+      - series: 'istio_requests_total{job="envoy-stats",namespace="dev",pod="gateway",pod_uid="dev-proxy",response_code="200"}'
+        values: '0+10x15'
+    alert_rule_test:
+      - eval_time: 15s
+        alertname: TargetProxyListenerUpdateRejected
+        exp_alerts: []
+      - eval_time: 45s
+        alertname: TargetProxyListenerUpdateRejected
+        exp_alerts:
+          - exp_labels: {namespace: dev, pod: gateway, pod_uid: dev-proxy, severity: warning, liveprobe_scope: p18}
+            exp_annotations: {summary: 'gateway rejected an Envoy listener update. Route impact is unobserved.'}
+          - exp_labels: {namespace: prd, pod: gateway, pod_uid: prd-proxy, severity: warning, liveprobe_scope: p18}
+            exp_annotations: {summary: 'gateway rejected an Envoy listener update. Route impact is unobserved.'}
+      - eval_time: 3m
+        alertname: TargetProxyListenerUpdateRejected
+        exp_alerts: []

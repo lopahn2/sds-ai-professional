@@ -81,12 +81,19 @@ public class ChaosV1Controller {
         if (denied != null) return denied;
         byte[] raw = readBody(request);
         if (raw == null) return ResponseEntity.badRequest().body(INVALID);
+        String expected = null;
         String text = new String(raw, StandardCharsets.UTF_8).trim();
         if (!text.isEmpty()) {
             JsonNode n = parse(raw);
-            if (n == null || !n.isObject() || n.size() != 0) return ResponseEntity.badRequest().body(INVALID);
+            if (n == null || !n.isObject()) return ResponseEntity.badRequest().body(INVALID);
+            if (!n.isEmpty()) {
+                expected = n.path("expected_operation_id").textValue();
+                if (n.size() != 1 || expected == null || !expected.matches("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")) {
+                    return ResponseEntity.badRequest().body(INVALID);
+                }
+            }
         }
-        ChaosFaultService.Result r = faults.reset();
+        ChaosFaultService.Result r = faults.reset(expected);
         return ResponseEntity.status(r.status()).body(r.body());
     }
 

@@ -116,24 +116,37 @@ tests:
             exp_annotations:
               summary: "Container order in order-b cannot pull its image (ImagePullBackOff)"
 
-  - name: no-endpoints alert fires when a target service loses every ready address
-    interval: 15s
+  - name: no-endpoints alert requires ten minutes of continuous loss
+    interval: 30s
     input_series:
       - series: 'kube_endpoint_info{namespace="liveprobe-target",endpoint="inventory"}'
-        values: '1x8'
+        values: '1x32'
       - series: 'kube_endpoint_address{namespace="liveprobe-target",endpoint="inventory",ip="10.0.0.1",ready="false"}'
-        values: '1x8'
+        values: '1x32'
       - series: 'kube_endpoint_info{namespace="liveprobe-target",endpoint="order"}'
-        values: '1x8'
+        values: '1x32'
       - series: 'kube_endpoint_address{namespace="liveprobe-target",endpoint="order",ip="10.0.0.2",ready="true"}'
-        values: '1x8'
+        # Ready at 5m, missing before and afterward. Readiness must reset the timer.
+        values: '_x9 1 stale _x20'
     alert_rule_test:
       - alertname: TargetServiceNoEndpoints
-        eval_time: 1m
+        eval_time: 9m30s
+        exp_alerts: []
+      - alertname: TargetServiceNoEndpoints
+        eval_time: 10m
         exp_alerts:
           - exp_labels: {severity: critical, namespace: liveprobe-target, endpoint: inventory}
             exp_annotations:
               summary: "Service inventory has no ready endpoints"
+      - alertname: TargetServiceNoEndpoints
+        eval_time: 15m30s
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: liveprobe-target, endpoint: inventory}
+            exp_annotations:
+              summary: "Service inventory has no ready endpoints"
+          - exp_labels: {severity: critical, namespace: liveprobe-target, endpoint: order}
+            exp_annotations:
+              summary: "Service order has no ready endpoints"
 
   - name: order 5xx alert above 0.1/s
     interval: 15s

@@ -26,6 +26,10 @@ rules:
   - apiGroups: [""]
     resources: ["limitranges", "resourcequotas"]
     verbs: ["get", "list"]
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    resourceNames: ["v1beta1.metrics.k8s.io"]
+    verbs: ["get"]
   # Read-only: the kubelet tail covers the container a restart replaced (owner-approved 2026-11-26).
   - apiGroups: [""]
     resources: ["pods/log"]
@@ -54,6 +58,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -49,6 +50,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 public class ChaosFaultService implements DataPathHook {
     private static final Logger log = LoggerFactory.getLogger(ChaosFaultService.class);
     static final List<String> MODES = List.of("crash", "oom", "latency", "pool_exhaust", "endpoint_off");
+    private static final Set<String> IN_PROCESS_MODES = Set.of("latency", "pool_exhaust", "endpoint_off");
     static final int MAX_DURATION_S = 30;
     static final int MAX_DELAY_MS = 1500;
     static final int MAX_SLEEPERS = 32;
@@ -349,14 +351,18 @@ public class ChaosFaultService implements DataPathHook {
         event("expired", m, op, "chaos fault expired");
     }
 
-    public synchronized Result reset() {
+    public synchronized Result reset(String expectedOperationId) {
+        if (expectedOperationId != null && (!IN_PROCESS_MODES.contains(mode)
+                || !expectedOperationId.equals(operationId) || !expiresAt.isAfter(Instant.now()))) {
+            return new Result(HttpStatus.CONFLICT, Map.of("error", "operation_not_current"));
+        }
         ++generation;
         String previous = mode;
         String op = operationId;
-        boolean intentCleared = intents.exists();
+        boolean intentCleared = expectedOperationId == null && intents.exists();
         int released = undo(previous, op);
-        intents.delete();
-        if (intents.exists()) {
+        if (expectedOperationId == null) intents.delete();
+        if (expectedOperationId == null && intents.exists()) {
             count(previous, "rejected");
             return new Result(HttpStatus.SERVICE_UNAVAILABLE,
                     Map.of("error", "precondition_failed", "reason", "state_dir_unavailable"));
@@ -368,6 +374,7 @@ public class ChaosFaultService implements DataPathHook {
         body.put("previous_mode", previous);
         body.put("released_connections", released);
         body.put("intent_cleared", intentCleared);
+        if (expectedOperationId != null) body.put("reset_operation_id", op);
         return new Result(HttpStatus.OK, body);
     }
 
@@ -394,7 +401,7 @@ public class ChaosFaultService implements DataPathHook {
     }
 
     public synchronized Map<String, Object> status() {
-        String visible = ("crash".equals(mode) || "oom".equals(mode)) ? "off" : mode;
+        String visible = IN_PROCESS_MODES.contains(mode) ? mode : "off";
         boolean off = "off".equals(visible);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("mode", visible);

@@ -137,7 +137,11 @@ def render(images):
                 'egress': [{'to': [peer('istio-system', {'app': 'istiod'})],
                             'ports': [{'protocol': 'TCP', 'port': p} for p in (15012, 15017, 443)]}]}))
         docs.extend([
-            obj('Role', 'liveprobe-config-reader', ns, rules=[{'apiGroups': [''], 'resources': ['configmaps'], 'verbs': ['get', 'list']}]),
+            obj('Role', 'liveprobe-config-reader', ns, rules=[
+                {'apiGroups': [''], 'resources': ['configmaps'], 'verbs': ['get', 'list']},
+                {'apiGroups': [''], 'resources': ['persistentvolumeclaims'], 'verbs': ['get']},
+                {'apiGroups': ['autoscaling'], 'resources': ['horizontalpodautoscalers'], 'verbs': ['list']},
+            ]),
             obj('RoleBinding', 'liveprobe-config-reader', ns,
                 roleRef={'apiGroup': 'rbac.authorization.k8s.io', 'kind': 'Role', 'name': 'liveprobe-config-reader'},
                 subjects=[{'kind': 'ServiceAccount', 'namespace': 'liveprobe-system', 'name': 'liveprobe'}]),

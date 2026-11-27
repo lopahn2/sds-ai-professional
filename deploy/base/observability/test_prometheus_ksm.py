@@ -21,7 +21,8 @@ SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount/"
 REQUIRED_KSM = [
     "kube_pod_status_phase", "kube_pod_status_ready", "kube_pod_container_status_restarts_total",
     "kube_pod_container_status_waiting_reason", "kube_pod_container_status_terminated_reason",
-    "kube_pod_container_status_last_terminated_reason", "kube_pod_container_resource_limits",
+    "kube_pod_container_status_last_terminated_reason", "kube_pod_container_status_last_terminated_timestamp",
+    "kube_pod_container_resource_limits",
     "kube_deployment_spec_replicas", "kube_deployment_status_replicas_available",
     "kube_deployment_status_replicas_unavailable", "kube_endpoint_info", "kube_endpoint_address",
 ]

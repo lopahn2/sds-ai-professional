@@ -21,12 +21,17 @@ class TransportError(tx.UnsafeState):
 
 class KubernetesTransport:
     """Explicit context and resource allowlist; suppress API exception contents."""
-    def __init__(self, context, client_factory=None):
-        tx.require(context == gate.CONTEXT, "wrong Kubernetes context")
+    def __init__(self, context, client_factory=None, *, lease_namespace=tx.TARGET, kubeconfig=None):
+        expected = "liveprobe-oom-isolated" if kubeconfig else gate.CONTEXT
+        tx.require(context == expected, "wrong Kubernetes context")
+        tx.require(lease_namespace in (tx.TARGET, "dev"), "Lease namespace not allowed")
+        self.lease_namespace = lease_namespace
+        self.lease_only = kubeconfig is not None
         if client_factory is None:
             try:
                 from kubernetes import client, config
-                api_client = config.new_client_from_config(context=context)
+                options = {"config_file": str(kubeconfig), "persist_config": False} if kubeconfig else {}
+                api_client = config.new_client_from_config(context=context, **options)
             except Exception as exc:
                 raise TransportError("Kubernetes client/context unavailable (details suppressed)") from None
             client_factory = lambda kind: (client.CoordinationV1Api(api_client) if kind == "lease" else
@@ -48,7 +53,7 @@ class KubernetesTransport:
     def get(self, name):
         tx.require(name == tx.LEASE, "Lease name not allowed")
         try:
-            result = self.lease_api.read_namespaced_lease(name, tx.TARGET)
+            result = self.lease_api.read_namespaced_lease(name, self.lease_namespace)
         except Exception as exc:
             if getattr(exc, "status", None) == 404:
                 return None
@@ -57,24 +62,24 @@ class KubernetesTransport:
 
     def create(self, body):
         tx.require(body.get("metadata", {}).get("name") == tx.LEASE and
-                   body["metadata"].get("namespace") == tx.TARGET and
+                   body["metadata"].get("namespace") == self.lease_namespace and
                    body.get("kind") == "Lease", "Lease create scope invalid")
-        return self._call(self.lease_api.create_namespaced_lease, tx.TARGET, body)
+        return self._call(self.lease_api.create_namespaced_lease, self.lease_namespace, body)
 
     def delete(self, name, uid):
         tx.require(name == tx.LEASE and bool(uid), "Lease delete scope invalid")
         # The server, not the client read, enforces UID identity atomically.
-        self._call(self.lease_api.delete_namespaced_lease, name, tx.TARGET,
+        self._call(self.lease_api.delete_namespaced_lease, name, self.lease_namespace,
                    body={"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": uid}})
 
     def object(self, namespace, kind, name):
-        tx.require((namespace, kind, name) in tx.OBJECTS, "object read scope invalid")
+        tx.require(not self.lease_only and (namespace, kind, name) in tx.OBJECTS, "object read scope invalid")
         method = (self.apps.read_namespaced_deployment if kind == "deployment" else
                   self.core.read_namespaced_config_map)
         return self._call(method, name, namespace)
 
     def patch(self, namespace, kind, name, operations):
-        tx.require((namespace, kind, name) in tx.OBJECTS, "object patch scope invalid")
+        tx.require(not self.lease_only and (namespace, kind, name) in tx.OBJECTS, "object patch scope invalid")
         field = "/spec/template" if kind == "deployment" else "/data"
         tx.require(len(operations) == 4 and
                    [(op.get("op"), op.get("path")) for op in operations] ==

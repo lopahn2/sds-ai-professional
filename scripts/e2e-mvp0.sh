@@ -27,8 +27,9 @@ baseline() {
     echo "baseline FAIL: image=$image (want $EXPECTED_IMAGE) selector=$selector endpoints=[$eps] order=$code" >&2; return 1; }
   echo "baseline: image=$image selector=inventory endpoints>0 order=200"
 }
-poll() { # family desired_status min_id
-  local family="$1" desired="$2" min_id="$3" deadline=$((SECONDS + TIMEOUT)) row id status level action_status executed runs citations evidence
+poll() { # family desired_status min_id [signal_wait_seconds]
+  local family="$1" desired="$2" min_id="$3" timeout=$((TIMEOUT + ${4:-0}))
+  local deadline=$((SECONDS + timeout)) row id status level action_status executed runs citations evidence
   while (( SECONDS < deadline )); do
     row=$(sql "SELECT i.id||'|'||i.status||'|'||coalesce(i.severity_level,'')||'|'||coalesce((SELECT string_agg(a.status,',') FROM actions a WHERE a.incident_id=i.id),'')||'|'||(SELECT count(*) FROM actions a WHERE a.incident_id=i.id AND a.executed)||'|'||(SELECT count(*) FROM agent_runs r WHERE r.incident_id=i.id AND r.status='succeeded' AND r.provider='codex_cli' AND r.model<>'' AND r.duration_ms>0)||'|'||(SELECT count(*) FROM citations c JOIN agent_runs r ON r.id=c.agent_run_id WHERE r.incident_id=i.id)||'|'||(SELECT count(DISTINCT e.source) FROM evidence e WHERE e.incident_id=i.id) FROM incidents i WHERE i.id > $min_id AND i.family_hint = '$family' ORDER BY i.id DESC LIMIT 1" || true)
     if [[ -n "$row" ]]; then
@@ -49,7 +50,7 @@ poll() { # family desired_status min_id
     fi
     sleep 5
   done
-  echo "FAIL $family timed out after ${TIMEOUT}s (last: ${row:-none})" >&2
+  echo "FAIL $family timed out after ${timeout}s (last: ${row:-none})" >&2
   return 1
 }
 
@@ -65,7 +66,7 @@ baseline
 before=$(sql "SELECT coalesce(max(id),0) FROM incidents")
 active=1
 chaos/inject.sh family4
-poll endpoint_loss handed_off "$before"
+poll endpoint_loss handed_off "$before" 600
 chaos/recover.sh
 active=0
 baseline

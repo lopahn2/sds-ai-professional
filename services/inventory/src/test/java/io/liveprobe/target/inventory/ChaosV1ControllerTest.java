@@ -532,6 +532,25 @@ class ChaosV1ControllerTest {
         mvc.perform(get("/actuator/health/liveness")).andExpect(status().isOk());
     }
 
+    @Test
+    void oldResetReceiptCannotClearAnotherOperation() throws Exception {
+        String fault = "{\"mode\":\"endpoint_off\",\"duration_seconds\":30}";
+        String oldId = json(mvc.perform(inject(fault)).andExpect(status().isAccepted()).andReturn())
+                .path("operation_id").asText();
+        String oldReset = "{\"expected_operation_id\":\"" + oldId + "\"}";
+        mvc.perform(post("/internal/chaos/v1/reset").header("Authorization", AUTH)
+                        .contentType(MediaType.APPLICATION_JSON).content(oldReset))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.reset_operation_id").value(oldId));
+
+        String currentId = json(mvc.perform(inject(fault)).andExpect(status().isAccepted()).andReturn())
+                .path("operation_id").asText();
+        mvc.perform(post("/internal/chaos/v1/reset").header("Authorization", AUTH)
+                        .contentType(MediaType.APPLICATION_JSON).content(oldReset))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error").value("operation_not_current"));
+        assertEquals(currentId, faultStatus().path("operation_id").asText());
+        mvc.perform(get("/actuator/health/readiness")).andExpect(status().isServiceUnavailable());
+    }
+
     // ------------------------------------------------------------------------------------------------ §2.1 crash
 
     @Test

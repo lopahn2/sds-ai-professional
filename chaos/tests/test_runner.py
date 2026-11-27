@@ -1,4 +1,5 @@
 """Fault runner safety tests; no Kubernetes calls."""
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -15,6 +16,92 @@ spec.loader.exec_module(runner)
 
 
 class RunnerTests(unittest.TestCase):
+    def test_kubelet_fallback_keeps_the_resource_gate(self):
+        node_name = "fixture"
+        stamp = datetime.now(timezone.utc)
+        snapshot = {"items": [{"metadata": {"name": node_name}, "status": {
+            "allocatable": {"cpu": "2", "memory": "4194304Ki"},
+            "conditions": [{"type": key, "status": value} for key, value in {
+                "Ready": "True", "MemoryPressure": "False", "DiskPressure": "False", "PIDPressure": "False",
+            }.items()],
+        }}]}
+        report = {"node": {"nodeName": node_name,
+                           "cpu": {"time": stamp.isoformat(), "usageNanoCores": 300_000_001},
+                           "memory": {"time": stamp.isoformat(), "workingSetBytes": 530 * 1_048_576 + 1}}}
+
+        def api(*args, **kwargs):
+            if args == ("get", "nodes", "-o", "json"):
+                return json.dumps(snapshot)
+            if args == ("top", "node", "--no-headers"):
+                raise runner.Stop("metrics unavailable")
+            if args == ("get", "--raw", "/api/v1/nodes/fixture/proxy/metrics/resource"):
+                raise runner.Stop("resource metrics unavailable")
+            self.assertEqual(args, ("get", "--raw", "/api/v1/nodes/fixture/proxy/stats/summary"))
+            return json.dumps(report)
+
+        with patch.object(runner, "kubectl", side_effect=api):
+            self.assertEqual(runner.node_gate(), {"cpu_m": 301, "cpu_cap_m": 2000, "mem_mi": 531,
+                                                   "alloc_mi": 4096, "metrics_source": "kubelet_summary"})
+            report["node"]["cpu"]["usageNanoCores"] = 1_400_000_000
+            with self.assertRaisesRegex(runner.Stop, "node stop gate breached"):
+                runner.node_gate()
+            report["node"]["cpu"]["time"] = (stamp - timedelta(seconds=90)).isoformat()
+            with self.assertRaisesRegex(runner.Stop, "node metrics unavailable"):
+                runner.node_gate()
+            report["node"]["cpu"]["time"] = stamp.isoformat()
+            report["node"]["nodeName"] = "another-node"
+            with self.assertRaisesRegex(runner.Stop, "node metrics unavailable"):
+                runner.node_gate()
+
+    def test_kubelet_resource_requires_fresh_node_samples_and_keeps_the_gate(self):
+        node_name = "fixture"
+        now = 1_795_445_000
+        node = {"items": [{"metadata": {"name": node_name}, "status": {
+            "allocatable": {"cpu": "2", "memory": "4194304Ki"},
+            "conditions": [{"type": key, "status": value} for key, value in {
+                "Ready": "True", "MemoryPressure": "False", "DiskPressure": "False", "PIDPressure": "False",
+            }.items()],
+        }}]}
+
+        def sample(cpu, ago, memory="5.55745281e+08", error="0", memory_age=None):
+            memory_time = now - (memory_age if memory_age is not None else ago)
+            return (f"node_cpu_usage_seconds_total {cpu} {(now - ago) * 1000}\n"
+                    f"node_memory_working_set_bytes {memory} {memory_time * 1000}\n"
+                    f"resource_scrape_error {error}\n"
+                    "container_memory_working_set_bytes{node=\"other\"} 999999999999\n")
+
+        def gate(readings):
+            readings = iter(readings)
+
+            def api(*args, **kwargs):
+                if args == ("get", "nodes", "-o", "json"):
+                    return json.dumps(node)
+                if args in (("top", "node", "--no-headers"),
+                            ("get", "--raw", "/api/v1/nodes/fixture/proxy/stats/summary")):
+                    raise runner.Stop("metrics unavailable")
+                self.assertEqual(args, ("get", "--raw", "/api/v1/nodes/fixture/proxy/metrics/resource"))
+                self.assertEqual(kwargs["timeout"], 16)
+                return next(readings)
+
+            with patch.object(runner, "kubectl", side_effect=api), \
+                    patch.object(runner.time, "time", return_value=now), patch.object(runner.time, "sleep") as sleep:
+                try:
+                    return runner.node_gate()
+                finally:
+                    self.assertLessEqual(sleep.call_count, 2)
+
+        first = sample("100.0", 30)
+        healthy = sample("103.000001", 20, memory="5.55745280e+08")
+        self.assertEqual(gate([first, first, healthy]), {"cpu_m": 301, "cpu_cap_m": 2000, "mem_mi": 531,
+                                                       "alloc_mi": 4096, "metrics_source": "kubelet_resource"})
+        for readings in ([first, sample("114", 20)], [first, sample("103", 20, memory=2147483649)]):
+            with self.subTest(readings=readings), self.assertRaisesRegex(runner.Stop, "node stop gate breached"):
+                gate(readings)
+        for readings in ([sample("100", 61)], [sample("100", 30, error="1")], [sample("100", 30, memory_age=31)],
+                         [first, sample("99", 20)], [first, first, first]):
+            with self.subTest(readings=readings), self.assertRaisesRegex(runner.Stop, "node metrics unavailable"):
+                gate(readings)
+
     def test_only_operator_owned_cases(self):
         self.assertEqual(runner.case_file("F1-01")["injection"]["mode"], "bad_image")
         self.assertEqual(runner.case_file("F4-15")["injection"]["mode"], "selector_mismatch")
@@ -34,6 +121,19 @@ class RunnerTests(unittest.TestCase):
     def test_selector_requires_zero_ready_endpoints(self):
         with patch.object(runner, "endpoints", side_effect=[1, 0]), patch.object(runner.time, "sleep"):
             self.assertEqual(runner.signal("order", "selector_mismatch", set()), {"ready_endpoints": 0})
+
+    def test_selector_rollback_replaces_the_whole_map(self):
+        baseline = {"order": {"selector": {"app": "order"}}}
+        for current in ({"app": "order", "extra": "wrong"}, None):
+            with self.subTest(current=current), patch.object(runner, "obj", return_value={"spec": {
+                **({"selector": current} if current else {}),
+            }}), patch.object(runner, "kubectl") as kubectl:
+                runner.restore(baseline, "order", "selector_mismatch")
+                args = kubectl.call_args.args
+                self.assertEqual(args[:5], ("patch", "service", "order", "--type=json", "-p"))
+                self.assertEqual(json.loads(args[5]), [
+                    {"op": "add", "path": "/spec/selector", "value": {"app": "order"}},
+                ])
 
     def test_preflight_failure_never_injects_or_creates_case_journal(self):
         with tempfile.TemporaryDirectory() as folder, \

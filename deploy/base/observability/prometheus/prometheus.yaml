@@ -74,7 +74,7 @@ data:
         metric_relabel_configs:
           - source_labels: [__name__]
             action: keep
-            regex: kube_pod_(info|owner|status_phase|status_ready|container_info|container_status_(restarts_total|ready|running|waiting|waiting_reason|terminated|terminated_reason|last_terminated_reason|last_terminated_exitcode)|container_resource_(limits|requests))|kube_deployment_(spec_replicas|status_replicas|status_replicas_(available|unavailable|ready|updated)|status_condition|metadata_generation|status_observed_generation)|kube_replicaset_(owner|spec_replicas|status_ready_replicas)|kube_endpoint_(info|address|ports)|kube_service_info|kube_node_(info|status_(condition|capacity|allocatable))|kube_namespace_status_phase
+            regex: kube_pod_(info|owner|status_phase|status_ready|container_info|container_status_(restarts_total|ready|running|waiting|waiting_reason|terminated|terminated_reason|last_terminated_reason|last_terminated_exitcode|last_terminated_timestamp)|container_resource_(limits|requests))|kube_deployment_(spec_replicas|status_replicas|status_replicas_(available|unavailable|ready|updated)|status_condition|metadata_generation|status_observed_generation)|kube_replicaset_(owner|spec_replicas|status_ready_replicas)|kube_endpoint_(info|address|ports)|kube_service_info|kube_node_(info|status_(condition|capacity|allocatable))|kube_namespace_status_phase
       # P15: all namespace pod/container series plus the root cgroup (node CPU/memory).
       # TLS and nodes/metrics-only authorization remain; retained metric names are bounded.
       - job_name: kubelet-cadvisor
@@ -156,10 +156,17 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+          - source_labels: [__meta_kubernetes_pod_uid]
+            target_label: pod_uid
         metric_relabel_configs:
           - source_labels: [__name__]
             action: keep
+            regex: istio_requests_total|istio_request_duration_milliseconds_(bucket|sum|count)|envoy_listener_manager_lds_update_rejected
+          # Keep the established request series on their original label sets.
+          - source_labels: [__name__]
             regex: istio_requests_total|istio_request_duration_milliseconds_(bucket|sum|count)
+            target_label: pod_uid
+            replacement: ""
   # KAN-64 recording rules: plumbing only. They pre-aggregate the measured target series into small,
   # bounded `liveprobe:*` series (by namespace/app/pod/container) for dashboards and for the later
   # KAN-66 Family rules. No alert is defined here; KAN-66 owns the 4-Family alerts and thresholds.
@@ -234,7 +241,8 @@ data:
                 unless
                 count by (namespace, endpoint) (kube_endpoint_address{namespace="liveprobe-target", ready="true"})
               )
-            for: 30s
+            # Pod replacement can leave a Service briefly without a ready address.
+            for: 10m
             labels:
               severity: critical
             annotations:

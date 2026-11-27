@@ -5,6 +5,7 @@ require('./campaign-http.js');
 require('./campaign-resources.js');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
+const {randomUUID} = require('node:crypto');
 const {once} = require('node:events');
 const {createApplication} = require('../server.js');
 
@@ -107,8 +108,9 @@ test('회원 가입·이름 검색·가짜 로그인', async t=>{
 });
 test('비밀번호 입력은 저장하지 않고 거절한다',async t=>{
   const {request,logs}=await setup(t);
-  const res=await request('/api/members','POST',{name:'회원',password:'저장하면안됨'});
+  const rejectedInput=randomUUID();
+  const res=await request('/api/members','POST',{name:'회원',password:rejectedInput});
   assert.equal(res.status,400);
-  assert.ok(!JSON.stringify(logs).includes('저장하면안됨'));
+  assert.ok(!JSON.stringify(logs).includes(rejectedInput));
 });
 

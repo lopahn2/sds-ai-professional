@@ -5,8 +5,11 @@ No ground-truth fields leave this process. Do not run alongside another fault wo
 The 44 target-API cases are verified by KAN-96's separate evidence, not this runner.
 """
 import argparse
+from datetime import datetime, timezone
+from decimal import Decimal, DecimalException
 import fcntl
 import json
+from math import ceil
 import os
 from pathlib import Path
 import re
@@ -27,6 +30,13 @@ MODES = {"bad_image", "selector_mismatch"}
 
 class Stop(RuntimeError):
     pass
+
+
+class NodeGateStop(Stop):
+    def __init__(self, snapshot, breaches):
+        super().__init__("KAN-117 node stop gate breached")
+        self.snapshot = snapshot
+        self.breaches = breaches
 
 
 def kubectl(*args, timeout=35, stdin=None):
@@ -78,27 +88,99 @@ def pg_sessions():
     return int(output.stdout.strip())
 
 
+def kubelet_node_usage(node_name):
+    data = json.loads(kubectl("get", "--raw", f"/api/v1/nodes/{node_name}/proxy/stats/summary"))
+    node = data["node"]
+    cpu, memory = node["cpu"], node["memory"]
+    now = datetime.now(timezone.utc)
+    for sample in (cpu, memory):
+        observed = datetime.fromisoformat(sample["time"].replace("Z", "+00:00"))
+        if not -5 <= (now - observed).total_seconds() <= 60:
+            raise ValueError("sample outside the observation window")
+    cpu_nanos, memory_bytes = cpu["usageNanoCores"], memory["workingSetBytes"]
+    if (node.get("nodeName") != node_name or type(cpu_nanos) is not int or cpu_nanos < 0
+            or type(memory_bytes) is not int or memory_bytes <= 0):
+        raise ValueError("node resource observations incomplete")
+    return (cpu_nanos + 999_999) // 1_000_000, (memory_bytes + 1_048_575) // 1_048_576
+
+
+def kubelet_resource_sample(node_name):
+    # The authenticated API server proxy binds these node-wide metrics to the named node.
+    resource = kubectl("get", "--raw", f"/api/v1/nodes/{node_name}/proxy/metrics/resource", timeout=16)
+    cpu_metric, memory_metric = "node_cpu_usage_seconds_total", "node_memory_working_set_bytes"
+    expected = {cpu_metric, memory_metric, "resource_scrape_error"}
+    metrics = {}
+    for line in resource.splitlines():
+        fields = line.split()
+        if fields and fields[0] in expected:
+            if fields[0] in metrics:
+                raise ValueError("ambiguous node resource metrics")
+            metrics[fields[0]] = fields[1:]
+    cpu, cpu_time = metrics[cpu_metric]
+    memory, memory_time = metrics[memory_metric]
+    error, = metrics["resource_scrape_error"]
+    if Decimal(error) != 0:
+        raise ValueError("resource scrape did not succeed")
+    timestamp = int(cpu_time)
+    cpu, memory = Decimal(cpu), Decimal(memory)
+    if (timestamp != int(memory_time) or not -5000 <= time.time() * 1000 - timestamp <= 60_000
+            or not cpu.is_finite() or cpu < 0 or not memory.is_finite() or memory <= 0):
+        raise ValueError("node resource samples invalid or stale")
+    return timestamp, cpu, memory
+
+
+def kubelet_resource_usage(node_name):
+    first_time, first_cpu, first_memory = kubelet_resource_sample(node_name)
+    for _ in range(2):
+        time.sleep(10)
+        timestamp, cpu, memory = kubelet_resource_sample(node_name)
+        if timestamp == first_time:
+            continue
+        elapsed_ms = timestamp - first_time
+        if (elapsed_ms < 5000 or time.time() * 1000 - first_time > 60_000
+                or cpu < first_cpu):
+            raise ValueError("node resource counters not comparable")
+        return ceil((cpu - first_cpu) * 1_000_000 / elapsed_ms), ceil(max(first_memory, memory) / 1_048_576)
+    raise ValueError("node resource metrics did not advance")
+
+
 def node_gate():
     node = json.loads(kubectl("get", "nodes", "-o", "json"))["items"]
     if len(node) != 1:
         raise Stop("node count is not one")
     status = node[0]["status"]
     cond = {v["type"]: v["status"] for v in status["conditions"]}
-    top = kubectl("top", "node", "--no-headers").split()
-    if len(top) < 5 or not re.fullmatch(r"\d+m", top[1]) or not re.fullmatch(r"\d+Mi", top[3]):
-        raise Stop("node metrics unavailable")
-    cpu, mem = int(top[1][:-1]), int(top[3][:-2])
+    try:
+        top = kubectl("top", "node", "--no-headers").split()
+        if (len(top) != 5 or top[0] != node[0]["metadata"]["name"]
+                or not re.fullmatch(r"\d+m", top[1]) or not re.fullmatch(r"\d+Mi", top[3])):
+            raise ValueError("unexpected top response")
+        cpu, mem = int(top[1][:-1]), int(top[3][:-2])
+        source = "metrics_api"
+    except (Stop, ValueError, subprocess.TimeoutExpired):
+        try:
+            cpu, mem = kubelet_node_usage(node[0]["metadata"]["name"])
+            source = "kubelet_summary"
+        except (Stop, KeyError, AttributeError, TypeError, ValueError, subprocess.TimeoutExpired):
+            try:
+                cpu, mem = kubelet_resource_usage(node[0]["metadata"]["name"])
+                source = "kubelet_resource"
+            except (Stop, KeyError, TypeError, ValueError, DecimalException, subprocess.TimeoutExpired):
+                raise Stop("node metrics unavailable") from None
     alloc = status["allocatable"]["memory"]
     if not alloc.endswith("Ki"):
         raise Stop("unknown node memory unit")
     capacity = int(alloc[:-2]) / 1024
     # KAN-117 gate was written for a 2-CPU node (1400m = 70%). Keep the same 70% ratio for the actual CPU count.
     cpu_cap = int(status["allocatable"]["cpu"].rstrip("m")) * (1 if status["allocatable"]["cpu"].endswith("m") else 1000)
-    if (cpu >= cpu_cap * .7 or mem >= capacity * .7 or capacity - mem < 2048 or
-            cond.get("Ready") != "True" or any(cond.get(x) != "False" for x in
-            ("MemoryPressure", "DiskPressure", "PIDPressure"))):
-        raise Stop("KAN-117 node stop gate breached")
-    return {"cpu_m": cpu, "cpu_cap_m": cpu_cap, "mem_mi": mem, "alloc_mi": round(capacity)}
+    sample = {"cpu_m": cpu, "cpu_cap_m": cpu_cap, "mem_mi": mem, "alloc_mi": round(capacity), "metrics_source": source}
+    breached = {"cpu": cpu >= cpu_cap * .7, "memory": mem >= capacity * .7,
+                "memory_headroom": capacity - mem < 2048, "not_ready": cond.get("Ready") != "True"}
+    breached.update({condition: cond.get(condition) != "False"
+                     for condition in ("MemoryPressure", "DiskPressure", "PIDPressure")})
+    if any(breached.values()):
+        raise NodeGateStop(sample, [name for name, failed in breached.items() if failed])
+    return sample
 
 
 def snapshot():
@@ -160,11 +242,12 @@ def restore(before, target, mode):
             kubectl("set", "image", f"deployment/{target}", f"{target}={before[target]['image']}")
         kubectl("rollout", "status", f"deployment/{target}", "--timeout=120s", timeout=135)
     else:
-        current = obj("service", target)["spec"]["selector"]
+        current = obj("service", target)["spec"].get("selector")
         if current != before[target]["selector"]:
-            # JSON merge patch restores exactly the pre-injection selector.
-            kubectl("patch", "service", target, "--type=merge", "-p",
-                    json.dumps({"spec": {"selector": before[target]["selector"]}}))
+            # Replace the selector map so extra keys introduced during the trial are removed.
+            kubectl("patch", "service", target, "--type=json", "-p", json.dumps([
+                {"op": "add", "path": "/spec/selector", "value": before[target]["selector"]},
+            ]))
 
 
 def signal(target, mode, old_uids, duration=90):

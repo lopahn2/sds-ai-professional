@@ -194,6 +194,17 @@ class ActionBounds(unittest.TestCase):
         committed = json.loads((ROOT / 'deploy/environments/actions.json').read_text())
         self.assertEqual(committed, {'apiVersion': 'v1', 'kind': 'List', 'items': items})
 
+    def test_registered_deployment_owners_are_matched_by_workload_name(self):
+        items = runpy.run_path(str(ROOT / 'scripts/render-p18-actions.py'))['render']()
+        policy = next(i for i in items if i['metadata']['name'] == 'safe-action-executor-bounds'
+                      and i['kind'] == 'ValidatingAdmissionPolicy')
+        owner_check = policy['spec']['validations'][-1]['expression']
+        self.assertIn("(oldObject.metadata.name == 'catalog' && "
+                      "oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') in [\"catalog\",\"samsung-trade\"])", owner_check)
+        self.assertIn("(oldObject.metadata.name == 'delivery' && "
+                      "oldObject.metadata.labels[?'app.kubernetes.io/part-of'].orValue('') in [\"delivery\",\"samsung-delivery\"])", owner_check)
+        self.assertNotIn("oldObject.metadata.name == 'business-api'", owner_check)
+
     def test_observability_rules_watch_only_active_environments(self):
         # 활성 환경 dev/prd만 새로 기록·경보한다. 커밋된 선언은 렌더러 출력과 같아야 한다.
         import yaml
@@ -202,10 +213,37 @@ class ActionBounds(unittest.TestCase):
         self.assertNotIn('stg', cm['data']['recording.yml'])
         self.assertIn('namespace=~"liveprobe-target|dev|prd"', cm['data']['recording.yml'])
         group = next(g for g in yaml.safe_load(cm['data']['alerts.yml'])['groups'] if g['name'] == 'p18-environments')
-        self.assertEqual(len(group['rules']), 7)
+        self.assertEqual(len(group['rules']), 9)
         for rule in group['rules']:
             self.assertIn('namespace=~"dev|prd"', rule['expr'])
             self.assertNotIn('stg', rule['expr'])
+        no_endpoints = next(rule for rule in group['rules'] if rule['alert'] == 'TargetServiceNoEndpoints')
+        self.assertEqual(no_endpoints['for'], '10m')
+        oom = next(rule for rule in group['rules'] if rule['alert'] == 'TargetWorkloadOOMKilled')
+        self.assertEqual(oom['for'], '0s')
+        self.assertIn('and on (namespace,pod,uid,container)', oom['expr'])
+        self.assertIn('time() - kube_pod_container_status_last_terminated_timestamp{namespace=~"dev|prd"} < 120', oom['expr'])
+        listeners = next(rule for rule in group['rules'] if rule['alert'] == 'TargetProxyListenerUpdateRejected')
+        self.assertIn('increase(envoy_listener_manager_lds_update_rejected', listeners['expr'])
+        self.assertIn('on (namespace,pod,pod_uid,instance)', listeners['expr'])
+        proxy_job = next(job for job in yaml.safe_load(cm['data']['prometheus.yml'])['scrape_configs']
+                         if job['job_name'] == 'envoy-stats')
+        self.assertIn({'source_labels': ['__meta_kubernetes_pod_uid'], 'target_label': 'pod_uid'},
+                      proxy_job['relabel_configs'])
+        self.assertIn('envoy_listener_manager_lds_update_rejected', proxy_job['metric_relabel_configs'][0]['regex'])
+        route_alert = next(rule for rule in group['rules'] if rule['alert'] == 'TargetRouteSlowRequests')
+        error_alert = next(rule for rule in group['rules'] if rule['alert'] == 'TargetHigh5xxRate')
+        self.assertIn('sum by (namespace, app, method, uri)', error_alert['expr'])
+        self.assertIn('or on (namespace, app)', error_alert['expr'])
+        self.assertIn('> 0.04', error_alert['expr'])
+        self.assertEqual(error_alert['for'], '15s')
+        route_group = next(g for g in yaml.safe_load(cm['data']['recording.yml'])['groups']
+                           if g['name'] == 'p18-business-route-latency')
+        rule, = route_group['rules']
+        self.assertIn(rule['record'], route_alert['expr'])
+        self.assertIn('sum by (namespace, app, method, uri)', rule['expr'])
+        self.assertIn('le="0.5"', rule['expr'])
+        self.assertIn('le="+Inf"', rule['expr'])
 
 
 if __name__ == '__main__':

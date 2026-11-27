@@ -43,15 +43,17 @@ def field_value(item, index):
 class KubernetesLease:
     """Create-only Lease; existing (including expired) is a hard stop.
 
-    Adapter get/create/delete must enforce context=rancher-desktop and namespace
-    liveprobe-target, suppress error bodies, and use UID preconditions on delete.
+    The adapter must enforce the selected context and namespace, suppress
+    error bodies, and use UID preconditions on delete.
     No renewal or stale-lease takeover is permitted.
     """
-    def __init__(self, adapter, duration_seconds=3600):
+    def __init__(self, adapter, duration_seconds=3600, *, namespace=TARGET):
         require(type(duration_seconds) is int and 60 <= duration_seconds <= 3600,
                 "Lease duration out of bounds")
+        require(namespace in (TARGET, "dev"), "Lease namespace not allowed")
         self.adapter = adapter
         self.duration_seconds = duration_seconds
+        self.namespace = namespace
         self.uid = None
         self.holder = None
 
@@ -60,7 +62,7 @@ class KubernetesLease:
         require(self.adapter.get(LEASE) is None, "existing Lease: manual recovery required")
         self.holder = str(uuid.uuid4())
         request = {"apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
-                   "metadata": {"name": LEASE, "namespace": TARGET},
+                   "metadata": {"name": LEASE, "namespace": self.namespace},
                    "spec": {"holderIdentity": self.holder, "leaseDurationSeconds": self.duration_seconds}}
         try:
             created = self.adapter.create(request)  # Kubernetes POST, never apply/replace
@@ -69,7 +71,7 @@ class KubernetesLease:
             # delete or retry: ownership is uncertain and needs operator review.
             raise UnsafeState("Lease create uncertain: manual review required") from None
         require(created["metadata"]["name"] == LEASE and
-                created["metadata"]["namespace"] == TARGET and
+                created["metadata"]["namespace"] == self.namespace and
                 created["spec"]["holderIdentity"] == self.holder and
                 created["metadata"].get("uid"), "Lease acknowledgement uncertain")
         self.uid = created["metadata"]["uid"]
@@ -78,6 +80,7 @@ class KubernetesLease:
         current = self.adapter.get(LEASE)
         require(self.uid is not None and current is not None and
                 current["metadata"]["uid"] == self.uid and
+                current["metadata"]["namespace"] == self.namespace and
                 current["spec"]["holderIdentity"] == self.holder,
                 "Lease ownership lost")
 
