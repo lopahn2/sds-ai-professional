@@ -193,3 +193,26 @@ def test_selection_only_considers_configurations_meeting_the_bars_on_train():
     assert T.choose(res, [greedy, safe], cur) == safe
     assert T.hit_regressions(res[greedy.key()]["train"], res[cur.key()]["train"]) == [
         "hit@k of family (none) drops 0.9 -> 0.5"]
+
+
+def test_signal_families_follow_the_watcher_and_cover_oom():
+    from app.incidents import FAMILY_HINT, REASON_CLASS
+    for reason, rclass in REASON_CLASS.items():                    # the watcher's own classes, unchanged
+        assert T.signal_families([reason]) == sorted(T.canonical_families([FAMILY_HINT[rclass]])), reason
+    assert T.signal_families(["NetworkDrop", "TargetWorkloadOOMKilled", "TargetHigh5xxRate", "OOMKilled", 7]) == [
+        "oom", "http_5xx"]
+    assert T.families_of("endpoint_loss", ["TargetWorkloadOOMKilled"]) == ({"endpoint_loss"}, "endpoint_loss", False)
+    assert T.families_of(None, ["NetworkDrop", "TargetWorkloadOOMKilled"]) == ({"oom"}, "oom", True)
+    assert T.families_of("application", ["NetworkDrop"]) == (set(), "(none)", False)
+
+
+def test_split_holds_out_the_newest_share_of_every_family():
+    def q(i, hours, group):
+        return T.Query(i, T0 + timedelta(hours=hours), "w", {}, [], [], frozenset({"a"}), group=group)
+    old_oom = [q(i, i, "oom") for i in range(20)]                               # a month older than the rest
+    new_ep = [q(100 + i, 720 + i, "endpoint_loss") for i in range(20)]
+    small = [q(200 + i, 960 + i, g) for i, g in enumerate(["x"] * 3 + ["y"] * 4)]  # pool into `other`
+    dataset = old_oom + new_ep + small
+    train, holdout = T.split(dataset)
+    assert {x.incident_id for x in holdout} == set(range(14, 20)) | set(range(114, 120)) | {204, 205, 206}
+    assert len(train) + len(holdout) == len(dataset) and [x.incident_id for x in train] == sorted(x.incident_id for x in train)

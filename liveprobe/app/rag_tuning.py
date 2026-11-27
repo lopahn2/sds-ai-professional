@@ -3,12 +3,15 @@ retrieval configuration with the same metrics, apply the best one when it clearl
 
 The AutoRAG ideas, mapped onto LiveProbe:
 
-- **Dataset, built automatically.** Each finished production incident becomes one query. The query is rebuilt
-  from what the engine had at analysis time: router features, findings and dependencies from the sealed
-  collection (or the stored evidence rows). Evaluation incidents (`eval/` fingerprints) are never used.
+- **Dataset, built automatically.** Each finished production incident becomes one query, all of them up to
+  `DATASET_LIMIT`. The first runs read only the newest 600 and never saw the OOM incidents, which are all older
+  than a month. The query is rebuilt from what the engine had at analysis time: router features, findings and
+  dependencies from the sealed collection (or the stored evidence rows). Evaluation incidents (`eval/`
+  fingerprints) are never used: they are the benchmark's yardstick.
 - **Ground truth.** A document is relevant to an incident in two cases:
-  1. Its metadata family (`applies_to` / `family`) matches the detection family of the incident
-     (`family_hint`, set by the watcher before any retrieval).
+  1. Its metadata family (`applies_to` / `family`) matches the detection family of the incident: the
+     watcher's `family_hint`, set before any retrieval, or else the family of the incident's own signal
+     reasons (`SIGNAL_FAMILY`). The watcher has no OOM class, so no OOM incident carries a family hint.
   2. It was actually cited for that incident.
   A past-incident document is a candidate only if its incident closed before the query incident was created,
   so the evaluation never ranks a memory the engine could not have had.
@@ -21,9 +24,11 @@ The AutoRAG ideas, mapped onto LiveProbe:
   and token cost), hit@k, MRR and capped recall. Per query: 0.5·nDCG@k + 0.5·precision@k. The objective is
   the macro average of that score over detection-family groups. Operations are dominated by one family
   (endpoint loss was 64% of the first dataset), and a plain mean hid regressions of the other families.
-- **Strategy and deployment.** Choose on the older 70% (time order): the best objective among the
-  configurations that already meet the hit@k bars below on that split. Confirm on the newer 30%. Apply
-  automatically only when all of these hold:
+- **Strategy and deployment.** Split each family group in time order: its older 70% trains, its newer 30% is
+  held out. A single global time split put every OOM incident on the train side, so the held-out bars never
+  saw that family. Choose on the train split: the best objective among the configurations that already meet
+  the hit@k bars below on that split. Confirm on the held-out split. Apply automatically only when all of
+  these hold:
   - the held-out macro objective gains at least `MIN_GAIN` over the active configuration;
   - held-out hit@k does not drop overall, and no family group with `MIN_GROUP_HOLDOUT`+ held-out queries
     loses more than `HIT_TOLERANCE` of hit@k;
@@ -62,7 +67,7 @@ MIN_TRAIN, MIN_HOLDOUT = 20, 10
 MIN_GAIN = 0.02
 HIT_TOLERANCE, MIN_GROUP_HOLDOUT, MIN_GROUP = 0.05, 5, 10   # non-inferiority per family; smaller groups pool
 LATENCY_FACTOR, LATENCY_SLACK_S, LATENCY_SAMPLE = 1.5, 0.05, 20
-DATASET_LIMIT = 600
+DATASET_LIMIT = 5000              # all finished production incidents (1,328 on 2026-11-27); bounds run time
 TERMINAL = ("resolved", "handed_off", "closed", "recovery_review", "failed")
 PRODUCTION_KINDS = ["runbook", "public_doc", "past_incident"]
 CACHE_TTL_S = 60.0
@@ -76,6 +81,18 @@ FAMILY_ALIASES = {
     "http_5xx": ("http_5xx", "http5xx", "upstream_failure", "cascading_5xx"),
 }
 _ALIAS = {alias: fam for fam, names in FAMILY_ALIASES.items() for alias in names}
+
+# Signal reason -> detection family, for incidents the watcher gave no family hint. The first block is the
+# watcher's own classification (incidents.REASON_CLASS -> FAMILY_HINT; a test keeps the two in step). The
+# second block holds reasons the watcher does not classify.
+SIGNAL_FAMILY = {
+    "ImagePullBackOff": "image_crash", "ErrImagePull": "image_crash", "InvalidImageName": "image_crash",
+    "TargetWorkloadImagePullFailing": "image_crash", "CrashLoopBackOff": "image_crash",
+    "NoEndpoints": "endpoint_loss", "TargetServiceNoEndpoints": "endpoint_loss",
+    "High5xx": "http_5xx", "OrderHigh5xxRate": "http_5xx", "InventoryHigh5xxRate": "http_5xx",
+    "TargetHigh5xxRate": "http_5xx", "ApplicationException": "http_5xx",
+    "TargetWorkloadOOMKilled": "oom", "OOMKilled": "oom", "TargetWorkloadCrashLooping": "image_crash",
+}
 
 
 @dataclass(frozen=True)
@@ -194,6 +211,28 @@ def canonical_families(values) -> set[str]:
     return out
 
 
+def signal_families(reasons) -> list[str]:
+    """Detection families of signal reasons, in the order the signals were observed."""
+    out: list[str] = []
+    for r in reasons or []:
+        fam = SIGNAL_FAMILY.get(r) if isinstance(r, str) else None
+        if fam and fam not in out:
+            out.append(fam)
+    return out
+
+
+def families_of(family_hint, signal_reasons) -> tuple[set[str], str, bool]:
+    """(detection families, evaluation group, whether they came from the signal reasons) of one incident.
+
+    The watcher's family hint wins. Without one, the incident's own signal reasons decide, and the group is
+    the family of the earliest classified signal."""
+    fams = canonical_families([family_hint])
+    if fams:
+        return fams, sorted(fams)[0], False
+    ordered = signal_families(signal_reasons)
+    return set(ordered), (ordered[0] if ordered else "(none)"), bool(ordered)
+
+
 def _aware(value) -> datetime | None:
     if isinstance(value, str):
         try:
@@ -258,13 +297,13 @@ def build_dataset(s, kinds: list[str], limit: int = DATASET_LIMIT) -> tuple[list
 
     out: list[Query] = []
     stats = {"incidents": len(incidents), "no_route": 0, "unlabeled": 0, "from_sealed": 0, "from_evidence": 0,
-             "label_family": 0, "label_cited": 0, "families": {}}
+             "label_family": 0, "label_signal": 0, "label_cited": 0, "families": {}}
     for inc in sorted(incidents, key=lambda i: i.id):
         if inc.id not in features:
             stats["no_route"] += 1
             continue
         created = _aware(inc.created_at)
-        fams = canonical_families([inc.family_hint])
+        fams, group, from_signal = families_of(inc.family_hint, inc.signal_reasons)
         by_family = {k for k, d in catalog.items() if d["families"] & fams and visible(d, inc.id, created)}
         by_citation = {k for k in cited.get(inc.id, ()) if k in catalog and visible(catalog[k], inc.id, created)}
         relevant = frozenset(by_family | by_citation)
@@ -282,12 +321,11 @@ def build_dataset(s, kinds: list[str], limit: int = DATASET_LIMIT) -> tuple[list
                 continue
             stats["from_evidence"] += 1
         stats["label_family"] += bool(by_family)
+        stats["label_signal"] += bool(by_family) and from_signal
         stats["label_cited"] += bool(by_citation)
-        for f in fams or {"(none)"}:
-            stats["families"][f] = stats["families"].get(f, 0) + 1
+        stats["families"][group] = stats["families"].get(group, 0) + 1
         out.append(Query(inc.id, created, inc.workload, features[inc.id], list(findings or []), list(deps or []),
-                         relevant, {"family": sorted(by_family), "cited": sorted(by_citation)},
-                         group=sorted(fams)[0] if fams else "(none)"))
+                         relevant, {"family": sorted(by_family), "cited": sorted(by_citation)}, group=group))
     return out, stats
 
 
@@ -326,8 +364,17 @@ def _mean(rows: list[dict]) -> dict:
 
 
 def split(dataset: list[Query]) -> tuple[list[Query], list[Query]]:
-    cut = int(len(dataset) * TRAIN_SHARE)
-    return dataset[:cut], dataset[cut:]
+    """Time split inside every family group (`groups_of`): the older `TRAIN_SHARE` trains, the rest is held out."""
+    group = groups_of(dataset)
+    by: dict[str, list[Query]] = {}
+    for q in dataset:
+        by.setdefault(group[q.incident_id], []).append(q)
+    train_ids: set[int] = set()
+    for qs in by.values():
+        qs = sorted(qs, key=lambda q: (q.created_at, q.incident_id))
+        train_ids.update(q.incident_id for q in qs[:int(len(qs) * TRAIN_SHARE)])
+    return ([q for q in dataset if q.incident_id in train_ids],
+            [q for q in dataset if q.incident_id not in train_ids])
 
 
 def groups_of(dataset: list[Query]) -> dict[int, str]:
