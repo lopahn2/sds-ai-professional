@@ -13,6 +13,17 @@ it cannot propose or approve a change by itself.
 
 Evaluation incidents (fingerprint `eval/`) are indexed under the separate `eval_memory` kind, which production
 retrieval never asks for, so benchmark memory cannot leak into live analysis.
+
+Incidents the engine itself resolved are memory too. An allowlisted action succeeded and the accountability
+check explained the recovery. These become `observed-resolution` documents built from fixed vocabulary only:
+signature, signal names, one sentence per action type and the fact of observed recovery, with no summary,
+log or model text. The detection family stays in metadata only (prompts never see label-like keys). They inform analysis, but only an operator-verified resolution lets a
+precedent lower the analysis group.
+
+Continuity: a follow-up incident on the same workload, after an operator acted on the previous one, has a
+different signature by construction (the action changed the state). It inherits the previous incident's
+precedent at a lower similarity bar, without lowering the group. The precedent's verified steps travel as
+check items that analysts must confirm or refute against current evidence, never as instructions.
 """
 from __future__ import annotations
 
@@ -22,7 +33,24 @@ from datetime import datetime, timezone
 from .redact import redact
 
 MATCH_JACCARD = 0.5
+CONTINUED_JACCARD = 0.25         # inherited precedent: same workload, recent incident that used it
+CONTINUITY_MINUTES = 120
 MAX_STEPS = 6
+PRECEDENT_SOURCES = ("verified-resolution", "observed-resolution")
+# One fixed sentence per allowlisted action type; parameters (images, values) never enter memory text.
+ACTION_TEXT = {
+    "rollout_undo": "roll the Deployment back to its previous revision",
+    "rollout_restart": "restart the Deployment rollout",
+    "set_memory_limit": "raise the container memory limit",
+    "configmap_restore": "restore the previous ConfigMap content",
+    "pod_delete": "delete the failing Pod so its controller recreates it",
+    "scale": "scale the Deployment replicas",
+}
+_SIGNAL_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_STEP_LINE = re.compile(r"^\d+\. (.+)$", re.M)
+CHECK_NOTE = ("Steps of a verified precedent. Confirm or refute each against current evidence; when the evidence "
+              "that would decide a step was not collected, list it as a verification step. A precedent alone "
+              "never justifies an action.")
 SIGNATURE_LINE = re.compile(r"^signature: (.*)$", re.M)
 TEXT = re.compile(r"[^\w\s.,:;()/=+\-%'\"#<>\[\]가-힣]")
 
@@ -123,22 +151,70 @@ def resolution_documents(s) -> list:
     return out
 
 
-def precedent(hits: list[dict], current: list[str]) -> dict | None:
-    """The closest verified resolution among the retrieved hits, if its signature matches the current one."""
+def precedent(hits: list[dict], current: list[str], threshold: float = MATCH_JACCARD) -> dict | None:
+    """The closest resolution memory among the retrieved hits, if its signature matches the current one.
+
+    Operator-verified resolutions win ties over observed ones; `verified` says which kind matched."""
     best = None
     for hit in hits or []:
-        if hit.get("source") != "verified-resolution":
+        if hit.get("source") not in PRECEDENT_SOURCES:
             continue
         m = SIGNATURE_LINE.search(str(hit.get("content") or ""))
         past = m.group(1).split() if m else []
         score = similarity(current, past)
-        if score >= MATCH_JACCARD and (best is None or score > best["similarity"]):
-            best = {"ref": hit.get("ref"), "doc": hit.get("doc"), "similarity": round(score, 2), "signature": past}
+        verified = hit.get("source") == "verified-resolution"
+        if score >= threshold and (best is None or (score, verified) > (best["similarity"], best["verified"])):
+            best = {"ref": hit.get("ref"), "doc": hit.get("doc"), "similarity": round(score, 2), "signature": past,
+                    "verified": verified}
     return best
+
+
+def steps_of(content: str) -> list[str]:
+    """Verified steps of a memory document (the numbered lines under `verified fix:`)."""
+    text = str(content or "")
+    tail = text.split("verified fix:", 1)[1] if "verified fix:" in text else ""
+    return [s.strip() for s in _STEP_LINE.findall(tail)][:MAX_STEPS]
+
+
+def precedent_checks(match: dict | None, hits: list[dict]) -> dict | None:
+    """Check items for the analysts and the hand-off, from the matched precedent's verified steps."""
+    if not match:
+        return None
+    hit = next((h for h in hits or [] if h.get("ref") == match.get("ref")), None)
+    steps = steps_of(hit.get("content") if hit else "")
+    if not steps:
+        return None
+    return {"ref": match["ref"], "doc": match.get("doc"), "similarity": match.get("similarity"),
+            "inherited": bool(match.get("inherited")), "note": CHECK_NOTE, "items": steps}
+
+
+def inherited_precedent(previous: list[dict], current: list[str], allowed_kinds: list[str] | None,
+                        threshold: float = CONTINUED_JACCARD) -> dict | None:
+    """Precedent carried over from a recent incident on the same workload.
+
+    `previous` holds {"incident_id", "precedent": {...doc, signature}, "kind"} for recent incidents, newest first.
+    Only a document of a kind the current search may see is inherited (production never sees `eval_memory`)."""
+    for prev in previous or []:
+        p = prev.get("precedent") or {}
+        kind = prev.get("kind")
+        if not p.get("doc") or (allowed_kinds is not None and kind not in allowed_kinds):
+            continue
+        score = similarity(current, p.get("signature") or [])
+        if score >= threshold:
+            return {"doc": p["doc"], "similarity": round(score, 2), "signature": list(p.get("signature") or []),
+                    "verified": bool(p.get("verified", True)), "inherited": True,
+                    "from_incident": prev.get("incident_id")}
+    return None
 
 
 def signature_from_evidence(s, inc) -> list[str]:
     """Recompute the signature from an incident's first stored collection (hand-offs recorded before signatures)."""
+    found, deps = observations_from_evidence(s, inc)
+    return signature(found, deps, list(inc.signal_reasons or []))
+
+
+def observations_from_evidence(s, inc) -> tuple[list[dict], list[dict]]:
+    """(findings, dependencies) recomputed from the incident's first stored collection."""
     from sqlalchemy import select
     from . import evidence_depth as D
     from .evidence import Bundle
@@ -168,4 +244,49 @@ def signature_from_evidence(s, inc) -> list[str]:
     b.source_view = first.get("source") if isinstance(first.get("source"), dict) else None
     b.usage_history = first.get("usage_history") if isinstance(first.get("usage_history"), dict) else None
     found = D.findings(b, (b.deployment or {}).get("probes"), stamp)
-    return signature(found, list(deps.values()), list(inc.signal_reasons or []))
+    return found, list(deps.values())
+
+
+_OBSERVED_CACHE: dict[int, tuple] = {}
+
+
+def observed_memory_text(inc, action_type: str, signature_tokens: list[str]) -> str:
+    signals = [x for x in (inc.signal_reasons or []) if isinstance(x, str) and _SIGNAL_NAME.match(x)]
+    # Signature and steps first: if the text ever spans two chunks, the precedent line and its steps stay together.
+    lines = [f"# Observed resolution of incident {inc.id} ({inc.namespace}/{inc.workload})",
+             f"signature: {' '.join(signature_tokens)}",
+             "verified fix:",
+             f"1. {ACTION_TEXT[action_type]}",
+             f"signals: {' '.join(signals)}",
+             "cause: not recorded (automatic action, observed recovery)",
+             "verification: original symptom cleared after the action"]
+    return "\n".join(lines) + "\n"
+
+
+def observed_resolution_documents(s) -> list:
+    """Engine-resolved production incidents whose recovery followed a succeeded allowlisted action."""
+    from sqlalchemy import select
+    from .models import Action, Incident
+    from .rag_ingest import Document
+
+    out = []
+    incidents = s.scalars(select(Incident).where(Incident.status == "resolved", Incident.closed_at.is_not(None),
+                                                 ~Incident.fingerprint.like("eval/%")))
+    for inc in incidents:
+        act = s.scalars(select(Action).where(Action.incident_id == inc.id, Action.executed.is_(True),
+                                             Action.status == "succeeded").order_by(Action.id.desc())).first()
+        if act is None or act.type not in ACTION_TEXT:
+            continue
+        cached = _OBSERVED_CACHE.get(inc.id)
+        if cached is None:
+            # A resolved incident's evidence never changes, so the signature is computed once per process.
+            cached = (signature_from_evidence(s, inc),)
+            _OBSERVED_CACHE[inc.id] = cached
+        tokens = cached[0]
+        out.append(Document(key=f"observed-{inc.id}.md", title=f"Observed resolution {inc.id}", kind="past_incident",
+                            source="observed-resolution", license="internal", source_uri=f"incident://{inc.id}",
+                            incident_id=inc.id, text=observed_memory_text(inc, act.type, tokens),
+                            meta={"closed_at": inc.closed_at.isoformat(), "signature": tokens,
+                                  "family": [inc.family_hint] if inc.family_hint else [],
+                                  "action_type": act.type}))
+    return out

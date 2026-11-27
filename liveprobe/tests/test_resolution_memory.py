@@ -84,3 +84,64 @@ def test_static_source_facts_do_not_enter_the_signature():
     static = [{"kind": "source_connection_leak"}, {"kind": "caller_retry_without_backoff"},
               {"kind": "dependency_access_config"}]
     assert M.signature(static + CPU, [], ["X"]) == M.signature(CPU, [], ["X"])
+
+
+def _hit(ref, source, sig, steps=("set explicit cpu limit",)):
+    body = "\n".join([f"# r {ref}", f"signature: {' '.join(sig)}", "verified fix:",
+                      *[f"{i}. {s}" for i, s in enumerate(steps, 1)]])
+    return {"ref": ref, "source": source, "content": body + "\n", "doc": f"{ref}.md"}
+
+
+def test_precedent_accepts_observed_memory_and_prefers_operator_verified():
+    sig = M.signature(CPU, [], ["X"])
+    hits = [_hit("R1", "observed-resolution", sig), _hit("R2", "verified-resolution", sig)]
+    best = M.precedent(hits, sig)
+    assert best["ref"] == "R2" and best["verified"] is True
+    only_observed = M.precedent(hits[:1], sig)
+    assert only_observed["ref"] == "R1" and only_observed["verified"] is False
+    assert M.precedent([_hit("R3", "closed-incident", sig)], sig) is None
+    partial = sig[:1] + ["pool_saturated"]
+    assert M.precedent(hits, partial) is None and M.precedent(hits, partial, threshold=0.2)["ref"] == "R2"
+
+
+def test_precedent_checks_carry_the_verified_steps_as_items_to_confirm():
+    sig = M.signature(CPU, [], ["X"])
+    hits = [_hit("R1", "verified-resolution", sig, ["re-point the writer service", "allow the app role on the promoted node"])]
+    checks = M.precedent_checks(M.precedent(hits, sig), hits)
+    assert checks["items"] == ["re-point the writer service", "allow the app role on the promoted node"]
+    assert "never justifies an action" in checks["note"] and checks["inherited"] is False
+    assert M.precedent_checks(None, hits) is None
+    assert M.steps_of("no steps here") == []
+
+
+def test_continuity_inherits_at_a_lower_bar_and_only_visible_kinds():
+    past = ["cpu_limit_binding", "limit_from_admission", "namespace_default_limits"]
+    current = ["cpu_limit_binding", "recent_restart", "pool_saturated", "liveness_restart"]   # 1 / 6 shared
+    assert M.similarity(current, past) < M.MATCH_JACCARD
+    prev = [{"incident_id": 41, "precedent": {"doc": "resolution-7.md", "signature": past}, "kind": "past_incident"}]
+    assert M.inherited_precedent(prev, current, ["runbook", "past_incident"]) is None          # 0.17 < 0.25
+    closer = ["cpu_limit_binding", "limit_from_admission", "recent_restart"]
+    got = M.inherited_precedent(prev, closer, ["runbook", "past_incident"])
+    assert got == {"doc": "resolution-7.md", "similarity": 0.5, "signature": past, "verified": True,
+                   "inherited": True, "from_incident": 41}
+    eval_prev = [{**prev[0], "kind": "eval_memory"}]
+    assert M.inherited_precedent(eval_prev, closer, ["runbook", "public_doc", "past_incident"]) is None
+    assert M.inherited_precedent(eval_prev, closer, ["runbook", "eval_memory"])["from_incident"] == 41
+
+
+def test_observed_memory_is_fixed_vocabulary_and_stays_in_one_chunk():
+    from app.rag import chunk_markdown
+    inc = SimpleNamespace(id=1501, namespace="liveprobe-target", workload="shop-inventory-service-long-name",
+                          signal_reasons=["ImagePullBackOff", "bad name; rm -rf"], family_hint="image_pull")
+    sig = ["cpu_limit_binding", "dependency_errors", "dependency_multi_endpoint", "liveness_restart",
+           "namespace_default_limits", "pool_resets", "pool_saturated", "recent_restart", "signal:ImagePullBackOff"]
+    text = M.observed_memory_text(inc, "rollout_undo", sig)
+    assert "1. roll the Deployment back to its previous revision" in text
+    assert "image_pull" not in text and "rm -rf" not in text and "signals: ImagePullBackOff" in text
+    assert text.index("signature:") < text.index("verified fix:") < text.index("signals:")
+    chunks = chunk_markdown("observed-1501.md", text)
+    assert len(chunks) == 1 and "verified fix:" in chunks[0].content
+    hit = {"ref": "R1", "source": "observed-resolution", "content": chunks[0].content}
+    assert M.precedent([hit], sig)["similarity"] == 1.0 and M.steps_of(chunks[0].content) == [
+        "roll the Deployment back to its previous revision"]
+    assert set(M.ACTION_TEXT) >= {"rollout_undo", "rollout_restart", "set_memory_limit", "configmap_restore", "pod_delete"}

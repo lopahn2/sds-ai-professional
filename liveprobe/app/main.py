@@ -72,8 +72,9 @@ def _start_background() -> None:
             while True:
                 try:
                     with db.session() as s:
-                        from .resolution_memory import resolution_documents
-                        result = index_documents(s, emb, [*closed_incident_documents(s), *resolution_documents(s)])
+                        from .resolution_memory import observed_resolution_documents, resolution_documents
+                        result = index_documents(s, emb, [*closed_incident_documents(s), *resolution_documents(s),
+                                                          *observed_resolution_documents(s)])
                         STATE["rag_chunks"] = s.scalar(select(func.count()).select_from(RagChunk)
                                                         .where(RagChunk.retired_at.is_(None)))
                     if result.documents:
@@ -84,6 +85,10 @@ def _start_background() -> None:
                     break
 
         threading.Thread(target=ingest_closed, name="rag-closed-ingest", daemon=True).start()
+        # AutoRAG: evaluate retrieval configurations on production incidents, apply a clear winner (app/rag_tuning.py).
+        from .rag_tuning import loop as autotune_loop, production_kinds
+        threading.Thread(target=autotune_loop, args=(rag_ingest_stop, emb, production_kinds(cfg)),
+                         name="rag-autotune", daemon=True).start()
     except Exception as e:  # noqa: BLE001
         log.error("RAG init failed: %s: %s", type(e).__name__, e)
 

@@ -12,6 +12,10 @@ Ranking policy (hybrid, see tests/test_rag.py):
   4. diversity: at most one chunk per document; at most `MAX_PER_KIND[kind]` hits of one kind
      (past incidents are capped at 1 so repeated similar incidents cannot push runbooks out of top-k).
 `Hit.score` stays the cosine similarity (MVP-0 citation contract); `hybrid_score` is the fused score.
+
+`mode` (hybrid | vector | lexical), `rrf_k`, `candidates`, `k` and the per-kind caps are parameters: the active
+values come from the retrieval configuration that `rag_tuning` evaluates and selects. The defaults are the
+ranking above. `pool` / `fuse` / `diversify` are shared by live search and offline evaluation.
 """
 from __future__ import annotations
 
@@ -34,7 +38,9 @@ log = logging.getLogger(__name__)
 
 CANDIDATES = 30
 RRF_K = 60
-MAX_PER_KIND = {"past_incident": 1}
+MODES = ("hybrid", "vector", "lexical")
+# Verified-resolution memory of evaluation runs gets the same cap as production memory.
+MAX_PER_KIND = {"past_incident": 1, "eval_memory": 1}
 _WORD = re.compile(r"[a-z0-9\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]+")
 _STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "with", "by", "at",
          "be", "it", "as", "from", "this", "that", "그리고", "또는", "및", "에서", "으로", "대한", "관련"}
@@ -230,53 +236,93 @@ def lexical_statement(query: str, *, kinds: list[str] | None = None, candidates:
             .where(*filters).order_by(rank.desc(), RagChunk.id).limit(candidates))
 
 
-def search(s: Session, embedder: Embedder, query: str, k: int = 3, *, kinds: list[str] | None = None,
-           candidates: int = CANDIDATES, max_per_kind: dict[str, int] | None = None) -> list[Hit]:
-    if k <= 0:
-        return []
-    qv = embedder.embed([query])[0]
-    max_per_kind = MAX_PER_KIND if max_per_kind is None else max_per_kind
-    active = RagChunk.retired_at.is_(None)
+def pool(s: Session, qv: list[float], query: str, *, kinds: list[str] | None = None,
+         candidates: int = CANDIDATES, mode: str = "hybrid") -> tuple[list[int], list[int], dict[int, tuple]]:
+    """Ranked vector and lexical candidate ids and, for their union, (doc, kind, document incident id, distance)."""
     kind_col = func.coalesce(RagDocument.kind, literal_column("'runbook'"))
-    base_filter = [active]
+    base_filter = [RagChunk.retired_at.is_(None)]
     if kinds:
         base_filter.append(kind_col.in_(kinds))
-
     dist = RagChunk.embedding.cosine_distance(qv)
-    vec_rows = s.execute(
-        select(RagChunk.id, dist.label("d"))
-        .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
-        .where(*base_filter).order_by(dist, RagChunk.id).limit(candidates)).all()
-    vec_rank = {r.id: i + 1 for i, r in enumerate(vec_rows)}
-
-    lex_rank: dict[int, int] = {}
-    lexical = lexical_statement(query, kinds=kinds, candidates=candidates)
+    vec_ids: list[int] = []
+    if mode != "lexical":
+        vec_ids = [r.id for r in s.execute(
+            select(RagChunk.id, dist.label("d"))
+            .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
+            .where(*base_filter).order_by(dist, RagChunk.id).limit(candidates)).all()]
+    lex_ids: list[int] = []
+    lexical = lexical_statement(query, kinds=kinds, candidates=candidates) if mode != "vector" else None
     if lexical is not None:
-        lex_rows = s.execute(lexical).all()
-        lex_rank = {r.id: i + 1 for i, r in enumerate(lex_rows)}
+        lex_ids = [r.id for r in s.execute(lexical).all()]
+    ids = set(vec_ids) | set(lex_ids)
+    meta: dict[int, tuple] = {}
+    if ids:
+        for r in s.execute(select(RagChunk.id, RagChunk.doc, kind_col.label("kind"), RagDocument.incident_id,
+                                  dist.label("d"))
+                           .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
+                           .where(RagChunk.id.in_(ids))).all():
+            meta[r.id] = (r.doc, r.kind, r.incident_id, float(r.d))
+    return vec_ids, lex_ids, meta
 
-    ids = set(vec_rank) | set(lex_rank)
-    if not ids:
-        return []
-    rows = s.execute(
-        select(RagChunk, RagDocument, dist.label("d"))
-        .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
-        .where(RagChunk.id.in_(ids))).all()
-    scored = []
-    for ch, doc, d in rows:
-        fused = sum(1.0 / (RRF_K + r[ch.id]) for r in (vec_rank, lex_rank) if ch.id in r)
-        scored.append((fused, float(d), ch, doc))
-    scored.sort(key=lambda t: (-t[0], t[1], t[2].id))
 
-    hits: list[Hit] = []
+def fuse(vec_ids: list[int], lex_ids: list[int], dist: dict[int, float], *, mode: str = "hybrid",
+         rrf_k: int = RRF_K, candidates: int = CANDIDATES) -> tuple[list[tuple[float, float, int]], dict, dict]:
+    """Reciprocal rank fusion over the first `candidates` of each list. Ties: smaller distance, then smaller id."""
+    if mode not in MODES:
+        raise ValueError(f"unknown retrieval mode {mode!r}")
+    vec = vec_ids[:candidates] if mode != "lexical" else []
+    lex = lex_ids[:candidates] if mode != "vector" else []
+    vec_rank = {cid: i + 1 for i, cid in enumerate(vec)}
+    lex_rank = {cid: i + 1 for i, cid in enumerate(lex)}
+    scored = [(sum(1.0 / (rrf_k + r[cid]) for r in (vec_rank, lex_rank) if cid in r), dist[cid], cid)
+              for cid in set(vec_rank) | set(lex_rank)]
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return scored, vec_rank, lex_rank
+
+
+def diversify(scored: list[tuple[float, float, int]], doc_of, kind_of, k: int,
+              max_per_kind: dict[str, int]) -> list[tuple[float, float, int]]:
+    """At most one chunk per document and at most `max_per_kind[kind]` documents of one kind, in fused order."""
+    out: list[tuple[float, float, int]] = []
     per_kind: dict[str, int] = {}
     seen_docs: set[str] = set()
-    for fused, d, ch, doc in scored:
-        kind = doc.kind if doc else "runbook"
-        if ch.doc in seen_docs or (kind in max_per_kind and per_kind.get(kind, 0) >= max_per_kind[kind]):
+    for item in scored:
+        cid = item[2]
+        doc, kind = doc_of(cid), kind_of(cid)
+        if doc in seen_docs or (kind in max_per_kind and per_kind.get(kind, 0) >= max_per_kind[kind]):
             continue
-        seen_docs.add(ch.doc)
+        seen_docs.add(doc)
         per_kind[kind] = per_kind.get(kind, 0) + 1
+        out.append(item)
+        if len(out) >= k:
+            break
+    return out
+
+
+def search(s: Session, embedder: Embedder, query: str, k: int = 3, *, kinds: list[str] | None = None,
+           candidates: int = CANDIDATES, max_per_kind: dict[str, int] | None = None, mode: str = "hybrid",
+           rrf_k: int = RRF_K) -> list[Hit]:
+    if k <= 0:
+        return []
+    if mode not in MODES:
+        raise ValueError(f"unknown retrieval mode {mode!r}")
+    qv = embedder.embed([query])[0]
+    max_per_kind = MAX_PER_KIND if max_per_kind is None else max_per_kind
+    vec_ids, lex_ids, meta = pool(s, qv, query, kinds=kinds, candidates=candidates, mode=mode)
+    if not meta:
+        return []
+    scored, vec_rank, lex_rank = fuse(vec_ids, lex_ids, {cid: m[3] for cid, m in meta.items()}, mode=mode,
+                                      rrf_k=rrf_k, candidates=candidates)
+    chosen = diversify(scored, lambda cid: meta[cid][0], lambda cid: meta[cid][1], k, max_per_kind)
+    if not chosen:
+        return []
+    rows = {ch.id: (ch, doc) for ch, doc in s.execute(
+        select(RagChunk, RagDocument).outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
+        .where(RagChunk.id.in_([cid for _, _, cid in chosen]))).all()}
+    hits: list[Hit] = []
+    for fused, d, cid in chosen:
+        ch, doc = rows[cid]
+        kind = meta[cid][1]
         # A stored chunk snapshot (even an empty/partial one) is authoritative.
         # Never fill its missing historical values from a mutable document row.
         prov = ch.provenance
@@ -292,8 +338,6 @@ def search(s: Session, embedder: Embedder, query: str, k: int = 3, *, kinds: lis
             title=prov.get("title"), source_uri=prov.get("source_uri"),
             license=prov.get("license"), attribution=prov.get("attribution"),
             version_hash=prov.get("version_hash"), retrieved_at=prov.get("retrieved_at")))
-        if len(hits) >= k:
-            break
     return hits
 
 
@@ -311,5 +355,6 @@ class RAG:
         return search(s, self.embedder, query, k, **kw)
 
 
-__all__ = ["Chunk", "Embedder", "FastEmbedder", "Hit", "RAG", "chunk_markdown", "front_matter", "index_runbooks",
-           "lexical_query", "lexical_statement", "load_runbooks", "search", "content_hash", "field", "text"]
+__all__ = ["Chunk", "Embedder", "FastEmbedder", "Hit", "RAG", "chunk_markdown", "diversify", "front_matter", "fuse",
+           "index_runbooks", "lexical_query", "lexical_statement", "load_runbooks", "pool", "search", "content_hash",
+           "field", "text"]

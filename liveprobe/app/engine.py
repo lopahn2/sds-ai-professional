@@ -1053,7 +1053,17 @@ class Engine:
         from .resolution_memory import precedent as _precedent, signature as _signature
         signature = _signature(bundle.findings, bundle.dependencies, incident_view.get("signals"))
         match = _precedent(hits, signature)
-        if match and decision.level == "COMPLEX":
+        if match is None:
+            match = self._inherit_precedent(iid, incident_view, signature, hits)
+            if match:
+                runlog.emit(iid, "note", f"앞 사건 #{match.get('from_incident')}의 선례 {match['ref']}를 이어받음 "
+                            f"(유사도 {match['similarity']}, 그룹은 유지)", {"precedent": match, "signature": signature})
+        from .resolution_memory import precedent_checks as _checks
+        checks = _checks(match, hits)
+        if checks:
+            # Shown to every role through the incident block; a hypothesis to check, never an instruction.
+            incident_view = {**incident_view, "precedent_checks": checks}
+        if match and decision.level == "COMPLEX" and match.get("verified") and not match.get("inherited"):
             # A verified precedent turns discovery into confirmation: the lighter group checks it against the
             # current evidence. It is cited like any reference and never authorizes a change by itself.
             from dataclasses import replace as _replace
@@ -1062,9 +1072,9 @@ class Engine:
                                            f"(유사도 {match['similarity']}) → NORMAL 그룹으로 확인"),
                                 policy={**R.score_models("NORMAL", self.cfg), "precedent": match})
             self._record_decision(iid, decision)
-        if match:
-            runlog.emit(iid, "note", f"검증된 선례 {match['ref']} 일치 (유사도 {match['similarity']})",
-                        {"precedent": match, "signature": signature})
+        if match and not match.get("inherited"):
+            runlog.emit(iid, "note", f"{'검증된' if match.get('verified') else '관측된'} 선례 {match['ref']} 일치 "
+                        f"(유사도 {match['similarity']})", {"precedent": match, "signature": signature})
         store = EvidenceStore(compact_summary(bundle), hits)
         if self.capture is not None:
             self.capture["store"] = store
@@ -1102,7 +1112,8 @@ class Engine:
                    "counter_evidence": res.get("counter_evidence", []), "verification": res.get("verification"),
                    "budget": res.get("budget"), "confidence": res.get("confidence"),
                    "investigations": inquiry.attempts, "signature": signature,
-                   **({"precedent": match} if match else {})}
+                   "retrieval": getattr(self, "_retrieval_key", None),
+                   **({"precedent": match} if match else {}), **({"precedent_checks": checks} if checks else {})}
         with db.session() as s:
             s.get(Incident, iid).summary = res.get("summary")
         proposal = res.get("action") or {}
@@ -1370,29 +1381,56 @@ class Engine:
 
     # ----------------------------------------------------------------- RAG
     def _rag_query(self, b: Bundle, d: R.Decision) -> str:
-        f = d.features
-        parts = [f"{b.workload} incident"]
-        if f.get("waiting_reasons"):
-            parts.append("pods " + " ".join(f["waiting_reasons"]) + " image pull failure after rollout")
-        if f.get("service_selector_matches_zero_pods") or f.get("service_has_no_endpoints"):
-            parts.append("service has no endpoints selector mismatch")
-        if f.get("dependent_callers_failing"):
-            parts.append("callers return 5xx " + " ".join(f["dependent_callers_failing"]))
-        if f.get("oom_killed"):
-            parts.append("container OOMKilled exit code 137 memory limit")
-        if f.get("latency_signal"):
-            parts.append("high latency connection pool exhaustion slow responses")
-        from .resolution_memory import signature as _signature
-        tokens = [t for t in _signature(b.findings, b.dependencies, f.get("signal_reasons") or [])
-                  if not t.startswith("signal:")]
-        if tokens:
-            parts.append("signature " + " ".join(tokens))
-        return "; ".join(parts)
+        # Query construction is a node of the retrieval configuration that rag_tuning evaluates and applies.
+        from .rag_query import build
+        from .rag_tuning import active_config
+        return build(active_config().query_mode, b.workload, d.features, b.findings, b.dependencies)
+
+    def _rag_kinds_allowed(self) -> list[str]:
+        from .rag_tuning import production_kinds
+        return list(self.rag_kinds) if self.rag_kinds else production_kinds(self.cfg)
+
+    def _inherit_precedent(self, iid: int, incident_view: dict, signature: list[str], hits: list[dict]) -> dict | None:
+        """A precedent used by a recent incident on the same workload, appended to `hits` as a citable reference."""
+        from .resolution_memory import CONTINUITY_MINUTES, inherited_precedent
+        from .models import RagChunk, RagDocument
+        try:
+            created = datetime.fromisoformat(str(incident_view.get("created_at")))
+        except ValueError:
+            return None
+        previous = []
+        with db.session() as s:
+            for prev in s.scalars(select(Incident).where(
+                    Incident.namespace == incident_view.get("namespace"), Incident.workload == incident_view.get("workload"),
+                    Incident.id < iid, Incident.created_at >= created - timedelta(minutes=CONTINUITY_MINUTES))
+                    .order_by(Incident.id.desc()).limit(5)):
+                p = (prev.handoff or {}).get("precedent") or {}
+                if p.get("doc"):
+                    kind = s.scalar(select(RagDocument.kind).where(RagDocument.doc_key == p["doc"]))
+                    previous.append({"incident_id": prev.id, "precedent": p, "kind": kind})
+            match = inherited_precedent(previous, signature, self._rag_kinds_allowed())
+            if match is None:
+                return None
+            if not any(h.get("doc") == match["doc"] for h in hits):
+                chunk = s.scalars(select(RagChunk).where(RagChunk.doc == match["doc"], RagChunk.retired_at.is_(None))
+                                  .order_by(RagChunk.chunk_ix)).first()
+                if chunk is None:
+                    return None
+                hits.append({"ref": f"R{len(hits) + 1}", "chunk_id": chunk.id, "doc": chunk.doc, "source": chunk.source,
+                             "chunk_ix": chunk.chunk_ix, "score": 0.0, "hybrid_score": 0.0, "source_uri": None,
+                             "locator": chunk.locator, "section": chunk.section, "license": "internal",
+                             "attribution": None, "content": chunk.content, "inherited": True})
+        ref = next(h["ref"] for h in hits if h.get("doc") == match["doc"])
+        return {**match, "ref": ref}
 
     def _rag(self, query: str) -> list[dict]:
         from copy import deepcopy
         from .runtime_resume import fingerprint
-        key = fingerprint({'query': query, 'kinds': self.rag_kinds, 'references': self.cfg.use_reference_guide})
+        from .rag_tuning import active_config
+        retrieval = active_config()
+        self._retrieval_key = retrieval.key()
+        key = fingerprint({'query': query, 'kinds': self.rag_kinds, 'references': self.cfg.use_reference_guide,
+                           'retrieval': retrieval.key()})
         if self._workflow_run_id is not None:
             with db.session() as s:
                 row = s.get(WorkflowRun, self._workflow_run_id)
@@ -1403,9 +1441,8 @@ class Engine:
             return []
         try:
             with db.session() as s:
-                kinds = self.rag_kinds or (None if self.cfg.use_reference_guide else
-                                           ["runbook", "public_doc", "past_incident"])
-                hits = self.rag.search(s, query, k=3, **({"kinds": kinds} if kinds else {}))
+                # Never None: an unrestricted search would also see evaluation memory.
+                hits = self.rag.search(s, query, kinds=self._rag_kinds_allowed(), **retrieval.search_kwargs())
         except Exception as e:  # noqa: BLE001
             log.warning("RAG search failed: %s", type(e).__name__)
             return []
