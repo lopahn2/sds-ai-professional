@@ -35,33 +35,33 @@ const fixture = (id: number) => JSON.parse(readFileSync(new URL(`../e2e/fixtures
 const strip = (n: FlowNode): FlowNode => { const { at: _a, card: _c, ...rest } = n; return rest as FlowNode; };
 const legacy = (d: Narrative): Narrative => ({ ...d, handoff_view: undefined, flow: { ...d.flow, nodes: d.flow.nodes.map(strip) } });
 const card = (d: Narrative, nodeId: string, extra: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(StepCard, {
-  n: d.flow.nodes.find(x => x.id === nodeId)!, data: d, open: true, flash: false, onToggle() {}, onDetail() {}, handoff: d.handoff_view ?? null,
+  n: d.flow.nodes.find(x => x.id === nodeId)!, data: d, flash: false, onDetail() {}, handoff: d.handoff_view ?? null,
   thread: [], local: [], targetRole: null, closed: false, finished: false, draft: '', onDraft() {}, onSend: async () => {}, name: (r: string) => r, onJump() {}, ...extra,
 }));
 const ev = (seq: number, kind: string, detail: Record<string, unknown> = {}) => ({ seq, kind, actor: 'x', summary: `s${seq}`, detail, at: `2026-10-11T12:00:${String(seq).padStart(2, '0')}Z` });
 
-test('판단 과정은 요청 시 제공하고 기본 단계에는 요약과 진입점만 표시한다', () => {
+test('판단 과정과 사유는 기본 표시하고 판단 원문만 숨긴다', () => {
   const d = fixture(990); const html = card(d, 'router');
   const keys = [...html.matchAll(/data-step-key="([a-z]+)"/g)].map(m => m[1]);
-  assert.deepEqual(keys, []);
-  assert.ok(html.includes('판단 과정 보기'));
+  assert.deepEqual(keys, (d.flow.nodes.find(n=>n.id==='router')!.card as any).steps.map((s:any)=>s.key));
+  assert.ok(html.includes('decision-context'));
   const full = detail(d, 'router');
   assert.ok(full.includes('판단 사유 원문') && full.includes('AI 분류 의견 원문'));
   assert.ok(!html.includes('The rule engine identifies'), '판단 원문은 상세보기에서만 보인다');
 });
 
-// P20: 역할별 모델 배치는 이 과제의 핵심이라 그룹 카드에서 기본 표시한다(이전 계약: 상세에서만 표시).
-test('그룹 단계는 역할별 모델 배치와 진행 기록을 기본 표시하고 담당 업무·예산은 펼침과 상세에 둔다', () => {
+// P20: 역할별 모델 배치는 이 과제의 핵심이라 그룹 카드에서 기본 표시한다.
+// 2026-11-15 표시 원칙: 역할 구성·선택 이유·예산도 펼치기 없이 보이고 원문만 상세에 둔다.
+test('그룹 단계는 역할별 모델 배치·진행 기록·역할 구성·예산을 펼치기 없이 표시한다', () => {
   const d = fixture(971); const n = d.flow.nodes.find(x => x.id === 'group')!;
   assert.equal(n.card?.kind, 'group'); if (n.card?.kind !== 'group') return;
   const html = card(d, 'group');
-  assert.ok(html.includes('복잡 그룹') && html.includes('역할 구성·선택 이유 보기'));
-  assert.equal((html.match(/data-role="/g) ?? []).length, n.card.roles.length, '역할마다 한 줄, 접힌 담당 업무 목록은 DOM에 없다');
+  assert.ok(html.includes('복잡 그룹') && html.includes('역할 구성') && !html.includes('역할 구성·선택 이유 보기'));
+  assert.equal((html.match(/data-role="/g) ?? []).length, n.card.roles.length, '역할별 모델 배치는 역할마다 한 줄');
   for (const r of n.card.roles) assert.ok(html.includes(r.model!) && html.includes(r.role_ko), r.role);
   assert.ok(html.includes('aria-label="역할별 모델 배치"') && html.includes('aria-label="Group 진행 기록"'));
-  assert.ok(!html.includes(n.card.roles[0].job_ko), '담당 업무 설명은 펼치기 전에는 없다');
-  const closed = card(d, 'group', { open: false });
-  assert.equal((closed.match(/data-role="/g) ?? []).length, n.card.roles.length, '접힌 카드에서도 모델 배치가 보인다');
+  assert.ok(html.includes(n.card.roles[0].job_ko), '담당 업무 설명도 기본 표시한다');
+  for (const t of ['예산', '진행 기록']) assert.ok(html.includes(t), t);
   const full = detail(d, 'group');
   for (const t of ['역할 구성', '예산', '진행 기록', '반론 검토', 'Group 종료: 검증 통과']) assert.ok(full.includes(t), t);
 });

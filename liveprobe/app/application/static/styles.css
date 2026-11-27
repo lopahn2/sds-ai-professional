@@ -30,3 +30,10 @@ details[open]>:not(summary){animation:app-enter var(--nds-motion-expand) var(--n
 @keyframes app-enter{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @media(max-width:700px){.workspace{grid-template-columns:minmax(0,1fr)}#auth-form label{flex-basis:100%}}
 @media(prefers-reduced-motion:reduce){.workspace:not([hidden]),details[open]>:not(summary){animation:none}button,.incident-select{transition:none}button:not(:disabled):active{transform:none}}
+/* 제목 → 문제·원인 설명 → 요청 시 원문. 의미 정보는 접지 않는다. */
+#readiness-details { grid-column: 1 / -1; width: 100%; }
+#readiness-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; max-width: none; }
+.list-filter-extra { display: grid; gap: 8px; grid-column: 1 / -1; }
+.analysis-summary, .incident-problem { white-space: pre-wrap; line-height: 1.7; }
+#incident-summary > .facts:first-child { border-left: 3px solid var(--accent); padding-left: 12px; }
+@media(max-width:700px) { #readiness-checks { grid-template-columns: minmax(0, 1fr); gap: 0; } }

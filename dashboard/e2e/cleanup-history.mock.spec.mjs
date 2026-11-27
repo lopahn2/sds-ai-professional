@@ -14,7 +14,7 @@ test('목록 환경·출처 필터는 서버로 전송되고 페이지 밖 사�
   await expect(page.locator('.incident-row')).toHaveCount(1);
   await expect(page.locator('.incident-row').first()).toContainText('#1976');
   await expect.poll(() => seen.at(-1)?.environment).toBe('prd');
-  await page.getByText('상세 필터', {exact:true}).click();
+  await expect(page.locator('.history-more')).toBeVisible();   // detail filters are always shown
   await expect(page.getByText('최대 50건')).toHaveCount(0);
   await page.getByRole('combobox', { name: '출처 필터' }).selectOption('evaluation');
   await expect(page.locator('.incident-list .empty')).toHaveText('조건에 맞는 장애가 없습니다.');
@@ -41,7 +41,6 @@ test('비용은 부분 누락을 0으로 합치지 않고 확인분과 미수집
     await page.locator(`.incident-row[href="/incidents/${item.id}"]`).click();
     await expect(page.locator('.headline-facts')).toContainText(expected[index][1]);
     await tab(page, '대화');
-    await page.getByText('사건 원문·모델 비용 보기', { exact: true }).click();
     await expect(page.getByText('기록 비용', { exact: true }).locator('..')).toContainText(expected[index][0]);
   }
   await layout(page); await capture(page, info, 'cleanup-costs');
@@ -56,7 +55,6 @@ test('과거 사건 조회는 해석을 시작하지 않고, 해석은 확인 �
   await page.route(`**/api/incidents/${i.id}/narrative`, r => r.fulfill({ json: n }));
   await page.route(`**/api/incidents/${i.id}/interpretations`, r => { posts++; body = r.request().postDataJSON(); return r.fulfill({ status: 202, json: { status: 'accepted', incident_id: i.id } }); });
   await page.goto(`/incidents/${i.id}`); await tab(page, '대화');
-  await page.getByText('운영자 지시·한글 해석 안내', {exact: true}).click();
   await expect(page.getByRole('button', {name: '한글 해석 요청 (3개 항목)'})).toBeVisible();
   await page.waitForTimeout(1500);
   expect(posts).toBe(0);                                             // viewing alone never requests interpretation
@@ -95,7 +93,7 @@ test('검토 원장 CSV 링크는 화면 조건과 같고 조건 일치 전체 �
 
 test('기간과 서비스 범위는 검색과 페이지 주소에 함께 남는다', async ({ page }) => {
   await page.goto('/incidents');
-  await page.getByText('상세 필터', {exact:true}).click();
+  await expect(page.locator('.history-more')).toBeVisible();   // detail filters are always shown
   await page.getByLabel('시작일 (한국시간)').fill('2026-10-01');
   await page.getByLabel('종료일 (포함)').fill('2026-10-02');
   await page.getByLabel('시스템 ID').fill('samsung-trade');

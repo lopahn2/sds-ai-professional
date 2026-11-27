@@ -87,10 +87,11 @@ test('결정이 필요 없는 진행 중 장애에는 지금 할 일 띠가 없�
 async function openHistory(page, id) {
   await page.goto(`/incidents/${id}`);
   await page.getByRole('button', {name:'전체 대화·이력', exact:true}).filter({visible:true}).first().click();
-  const history = page.getByText(/지난 분석 단계 \d+개 보기/);
-  await history.click();
+  // Past analysis steps are listed without a disclosure since the 2026-11-15 display rule.
+  await expect(page.getByText(/지난 분석 단계 \d+개 보기/)).toHaveCount(0);
 }
-const expand = async card => { await card.getByRole('button', { name: '펼치기' }).click(); };
+// Step cards are always open; nothing to expand.
+const expand = async card => { await expect(card.getByRole('button', { name: '펼치기' })).toHaveCount(0); };
 
 test('그룹 카드는 접힌 상태에서도 역할별 모델과 추론 강도를 보여 준다', async ({ page, request }) => {
   const n = await (await request.get('/api/incidents/971/narrative')).json();
@@ -104,12 +105,11 @@ test('그룹 카드는 접힌 상태에서도 역할별 모델과 추론 강도�
   expect(new Set(roles.map(r => r.model)).size).toBeGreaterThan(1);
 });
 
-test('수준 판단 카드는 주 분석 모델과 선택 이유를, 펼치면 후보 점수 표를 보여 준다', async ({ page }) => {
+test('수준 판단 카드는 주 분석 모델과 선택 이유, 후보 점수 표를 기본 표시한다', async ({ page }) => {
   await openHistory(page, 971);
   const card = page.locator('.step-card.type-router');
   await expect(card.locator('.model-choice')).toContainText('주 분석 모델');
   await expect(card.locator('.model-choice')).toContainText('gpt-5.6-terra');
-  await expect(card.getByRole('table', { name: '분석 모델 후보 점수' })).toHaveCount(0);
   await expand(card);
   const table = card.getByRole('table', { name: '분석 모델 후보 점수' });
   await expect(table.getByRole('row').nth(1)).toContainText('0.82');

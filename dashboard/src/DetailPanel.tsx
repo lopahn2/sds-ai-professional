@@ -94,7 +94,7 @@ export function DetailPanel({ target, data, handoff, onClose, events = [], strea
     body = <>
       {['agent', 'verify', 'router'].includes(n.type) && <ExecutionStream key={n.call_id || n.id} node={n} view={stepExecution(n, events)} state={streamState} error={streamError} receivedAt={receivedAt} />}
       <dl className="kv">
-        <dt>단계</dt><dd>{FLOW_TYPE_KO[n.type] ?? '단계'} · {snapshot ? '저장 당시 ' : ''}{flowStatusKo(n.status)}</dd>
+        <dt>단계</dt><dd>{FLOW_TYPE_KO[n.type] ?? '단계'} · {snapshot || streamState === 'record' ? '저장 당시 ' : ''}{flowStatusKo(n.status)}</dd>
         <dt>시각</dt><dd>{n.at ? clock(n.at) : '미기록'}</dd>
         {(n.role || n.model) && <><dt>모델 · 추론 강도</dt><dd><span className="mono">{n.model || '미기록'}</span> · {effortKo(n.effort)}</dd>
           <dt>입력 / 출력 토큰</dt><dd>{numberKo(n.tokens?.in)} / {numberKo(n.tokens?.out)}</dd>
@@ -105,12 +105,11 @@ export function DetailPanel({ target, data, handoff, onClose, events = [], strea
       <Disclosure key={n.id} label="단계 응답 전체 원문 보기">{() => <pre className="raw-text">{JSON.stringify(n, null, 2)}</pre>}</Disclosure>
       <Raw label="결론 원문" text={n.conclusion_raw} />
       {c?.kind === 'evidence' && <><h4>수집 {c.total}건 · 성공 {c.ok} · 실패 {c.failed}</h4>
-        {evidence.map(({ it, rows }) => <details key={it.id} className="detail-input" data-evidence-id={it.id}>
-          <summary><b>{it.source_ko}</b> · <code>{it.target}</code> · {it.ok ? `원문 ${rows.length}줄` : '수집 실패'}</summary>
+        {evidence.map(({ it, rows }) => <section key={it.id} className="detail-input" data-evidence-id={it.id}>
+          <h4>{it.source_ko} · {it.target} · {it.ok ? `원문 ${rows.length}줄` : '수집 실패'}</h4>
           {it.summary_ko && <p>{it.summary_ko}</p>}
-          {it.error && <Raw label="실패 사유 원문" text={it.error} />}
-          {rows.length ? rows.map(r => <RawRow r={r} key={r.id} />) : <p className="muted">이 항목의 원문은 현재 응답에 없습니다.</p>}
-        </details>)}</>}
+          <>{it.error && <Raw label="실패 사유 원문" text={it.error} />}{rows.length ? rows.map(r => <RawRow r={r} key={r.id} />) : <p className="muted">이 항목의 원문은 현재 응답에 없습니다.</p>}</>
+        </section>)}</>}
       {c?.kind === 'routing' && <><Raw label="판단 사유 원문" text={c.reason_raw} /><Raw label="AI 분류 의견 원문" text={c.llm?.rationale_raw} />{c.model_policy && <><h4>분석 모델 후보</h4><ul className="reason-list">{c.model_policy.candidates.map(m => <li key={m.model}><span className="mono">{m.model}</span> · {m.eligible ? '적격' : '부적격'} · 점수 {m.score ?? '미기록'} · {m.reason_ko}</li>)}</ul></>}</>}
       {c?.kind === 'group' && <>
         <dl className="kv"><dt>Group</dt><dd>{c.group_ko}</dd><dt>판단</dt><dd>{c.decision.level_ko} · {c.decision.decided_by_ko}{c.decision.confidence == null ? '' : ` · 신뢰도 ${c.decision.confidence.toFixed(2)}`}</dd><dt>상태</dt><dd>{c.status_ko}</dd></dl>
@@ -123,7 +122,7 @@ export function DetailPanel({ target, data, handoff, onClose, events = [], strea
       {c?.kind === 'agent' && <><Raw label="요약 원문" text={c.summary_raw} />{c.candidates.length > 0 && <><h4>원인 후보 원문</h4><ol className="reason-list">{c.candidates.map((x, i) => <li key={i}>{x.cause_ko && <p>{x.cause_ko}</p>}<span className="raw-inline">{x.cause_raw}</span> · {x.confidence == null ? '신뢰도 미기록' : `신뢰도 ${x.confidence.toFixed(2)}`}{x.verifier ? ` · 검증 ${({ supported: '근거로 지지', unconfirmed: '미확인', contradicted: '반박됨', insufficient: '근거 부족' } as Record<string, string>)[x.verifier] ?? x.verifier}` : ''}</li>)}</ol></>}<Raw label="오류 원문" text={c.error} /></>}
       {c?.kind === 'signal' && <Raw label="감지 사유 원문" text={c.reason} />}
       {translated.length > 0 && <><h4>해석 {translated.length}건</h4>
-        {translated.map(r => <details key={r.id} className="detail-input"><summary>{KIND_KO[r.kind] ?? '기록'} · <code>{r.id}</code></summary><p>{r.ko}</p><pre className="raw-text">{r.raw}</pre></details>)}</>}
+        {translated.map(r => <section key={r.id} className="detail-input"><h4>{KIND_KO[r.kind] ?? '기록'} · <code>{r.id}</code></h4><p>{r.ko}</p><pre className="raw-text">{r.raw}</pre></section>)}</>}
       {n.type === 'outcome' && handoff && <><Raw label="인계 요약 원문" text={handoff.summary_raw} />{handoff.next_steps_raw.length > 0 && <><h4>권장 조치(원문)</h4><ul className="reason-list">{handoff.next_steps_raw.map((s, i) => <li key={i} className="mono">{s}</li>)}</ul></>}</>}
       {inputs.length > 0 && <><h4>입력 근거 원문</h4>{inputs.map(x => <details key={x.ref} className="detail-input"><summary><code>{x.ref}</code> · {x.rows.length ? `${x.rows.length}줄` : '원문 없음'}</summary>{x.rows.map(r => <pre className="raw-text" key={r.id}>{r.raw}</pre>)}</details>)}</>}
       {!shown && <p className="muted">{snapshot ? '저장된 시점에 확정 결론 원문이 없었습니다.' : n.status === 'planned' || n.status === 'running' ? '확정 결론 원문은 단계가 완료된 뒤 표시됩니다.' : '이 단계에 연결된 원문 기록이 없습니다.'}</p>}

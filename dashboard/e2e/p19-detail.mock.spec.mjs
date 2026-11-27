@@ -67,7 +67,8 @@ test('단계 전체의 중복 ref·빈 스냅샷·실패 원문을 각각 분리
   });
   await page.goto('/incidents/990');await ready(page);const {panel}=await open(page);
   await expect(panel.locator('[data-evidence-id]')).toHaveCount(4);
-  for(const id of [901,902,903,904])await panel.locator(`[data-evidence-id="${id}"] summary`).click();
+  // The detail panel is the explicit raw view: each evidence row shows its raw records without a second disclosure.
+  for(const id of [901,902,903,904])await expect(panel.locator(`[data-evidence-id="${id}"] summary`)).toHaveCount(0);
   await expect(panel.locator('[data-evidence-id="901"]')).toContainText(special);
   for(const id of [902,903,904])await expect(panel.locator(`[data-evidence-id="${id}"]`)).toContainText('원문은 현재 응답에 없습니다.');
   await expect(panel.locator('[data-evidence-id="904"]')).toContainText('HTTP 503 <실패> & 원문 사유');await expect(panel).not.toContainText('공통 최신값 혼입 금지');

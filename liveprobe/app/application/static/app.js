@@ -87,6 +87,17 @@ function errorKo(e) {
   if (!e) return null;
   return codeKo(typeof e === 'string' ? e : obj(e).code);
 }
+const TECHNICAL = /https?:\/\/|\b(?:kubectl|curl|wget|Traceback|sha256|resourceVersion)\b|\b\w*(?:Error|Exception)\b|[{}]|<\/?[a-z]|\b\d{1,3}(?:\.\d{1,3}){3}\b|[a-f\d]{32,}/i;
+function reading(text, fallback='설명 미기록') {
+  return typeof text==='string' && /[가-힣]/.test(text) && !TECHNICAL.test(text) ? text.trim() || fallback : fallback;
+}
+function incidentProblem(incident) {
+  return label(CODE_LABELS,incident.reason,reading(incident.reason,'감지 증상 요약 미기록'));
+}
+function analysisFinding(data) {
+  const roles=list(data.analysis?.roles).filter(x=>['analyst','specialist'].includes(x.role));
+  return roles.map(x=>reading(x.result?.summary_ko,'')).filter(Boolean).join('\n') || '아직 원인이 확인되지 않았습니다.';
+}
 const envLabel = env => isRetired(env) ? 'stg (퇴역·이력)' : ACTIVE_ENVIRONMENTS.includes(env) ? env : '환경 확인 필요';
 const count = n => Number.isFinite(n) && n >= 0 ? n : '미관측';
 function stamp(v) {
@@ -143,10 +154,9 @@ function showError(error) {
 }
 function resetIncidentView() {
   resetRaw($('incident-detail'));
-  setRecordVisibility(false);
   for (const id of ['test-notes','test-passed']) $(id).value='';
   $('approve-confirm').checked=false; confirmedFor=null;
-  for (const id of ['incident-summary','next-action-body','approve-digest','approval-verification','human-records','env-status','test-results','patch-overview','collection-meta','analysis-overview']) put(id);
+  for (const id of ['incident-summary','next-action-body','approve-digest','approval-verification','human-records','env-status','test-results','patch-overview','collection-meta','analysis-overview','stage-timeline','evidence-table','analysis-roles','patch-summary','patch-files','patch-tests','test-details','artifacts','release-explain']) put(id);
 }
 function operatorCsrf() {
   return document.cookie?.match(/(?:^|;\s*)lp_operator_csrf=([a-f0-9]{64}\.[a-f0-9]{64})(?:;|$)/)?.[1];
@@ -199,20 +209,16 @@ function validUserTest(r) {
   return t.passed === true && t.invalidated === false && typeof t.id === 'string' && Number.isFinite(t.expires_at) && t.expires_at * 1000 > Date.now();
 }
 function resetApprovalReview() {
-  rawViews.delete('approval-target');put('approve-digest');put('approval-verification');
+  put('approve-digest');put('approval-verification');
 }
-$('approval-target').addEventListener('toggle',()=>{
-  if (!$('approval-target').open) { $('approve-confirm').checked=false; confirmedFor=null; }
-  gates();
-});
 function gates() {
   // v1(dev→stg→prd) 기록은 서버가 읽기 전용(legacy_release_read_only)으로 거부하고 stg는 퇴역했으므로 시험·승인 제출을 열지 않는다.
   // 사용자 시험 직전 확인 환경은 프로토콜별로 계산한다(v2 dev, v1 stg). 현행 v2에서는 dev 업무 확인이 통과해야 한다.
   const r=release(),valid=exactRelease(r) && !isLegacyRelease(r) && !busy;
   $('create-submit').disabled = !permits('incident:create') || !catalogReady || busy;
   $('user-test-submit').disabled = !permits('tester') || !valid || current?.state!=='awaiting_user_test' || !userTestReady(r);
-  $('approve-confirm').disabled = !$('approval-target').open || current?.state!=='awaiting_prd_approval';
-  $('approve-submit').disabled = !permits('prd-approver') || !$('approval-target').open || !valid || current?.state!=='awaiting_prd_approval' || !validUserTest(r) || !$('approve-confirm').checked
+  $('approve-confirm').disabled = $('approval-target').hidden || current?.state!=='awaiting_prd_approval';
+  $('approve-submit').disabled = !permits('prd-approver') || $('approval-target').hidden || !valid || current?.state!=='awaiting_prd_approval' || !validUserTest(r) || !$('approve-confirm').checked
     || confirmedFor !== approvalKey(r);
 }
 // 정돈-06: 승인 확인은 확인 당시의 지문(산출물·계획·이미지·시험 기록)에만 유효하다. 바뀌면 확인만 해제한다.
@@ -268,7 +274,7 @@ async function loadList({offset=listState.offset, filters=listState.filters, pin
   put('incident-list',rows.length ? rows.map(row=>{
     const group=stateGroup(row.state);
     const b=el('button',{type:'button',class:`incident-select group-${group}`,'aria-pressed':row.id===selectedId,'data-id':row.id},
-      el('span',{class:'incident-service'},value(row.service)),el('span',{class:'state'},stateLabel(row.state)),
+      el('span',{class:'incident-service'},value(row.service)),el('span',{class:'state'},stateLabel(row.state)),el('span',{class:'incident-problem'},incidentProblem(row)),
       el('span',{class:'muted'},`${label(SYSTEM_LABELS,row.system,'시스템 확인 필요')} · ${envLabel(row.environment)}`),el('time',{},group === 'closed' ? '종료 '+stamp(terminalTime(row)) : stamp(row.created_at)),el('small',{},'#'+value(row.id).slice(0,8)));
     b.addEventListener('click',()=>void selectIncident(row.id, true));return b;
   }) : empty(Object.values(filters).some(Boolean)?'조건에 맞는 사건이 없습니다.':'사건이 없습니다.'));
@@ -284,32 +290,11 @@ async function loadList({offset=listState.offset, filters=listState.filters, pin
 function terminalTime(incident) {
   return list(incident.stages).findLast(stage => stage?.state === incident.state)?.occurred_at;
 }
-function setRecordVisibility(expanded) {
-  const toggle = $('history-toggle');
-  const records = $('response-records');
-  toggle.setAttribute('aria-expanded', String(expanded));
-  toggle.textContent = expanded ? '대응 기록 접기' : '대응 기록 보기';
-  records.hidden = !toggle.hidden && !expanded;
-  if (records.hidden) {
-    for (const raw of records.querySelectorAll('details[data-raw][open]')) {
-      raw.open = false;
-      syncRaw(raw.id);
-    }
-  }
-}
-$('history-toggle').addEventListener('click', () => {
-  setRecordVisibility($('history-toggle').getAttribute('aria-expanded') !== 'true');
-});
 function renderNextAction() {
   const s=current.state, group=stateGroup(s), r=release(), env=userTestEnv(r);
   const legacy=!!r.release_id && isLegacyRelease(r);
   const reason=errorKo(current.error);
   const historical = group === 'closed';
-  const toggle = $('history-toggle');
-  if (toggle.hidden === historical) {
-    toggle.hidden = !historical;
-    setRecordVisibility(false);
-  }
   $('next-title').textContent = historical ? '처리 결과' : '현재 상태와 다음 행동';
   if (historical) {
     const verified = obj(r.stage_results).prd?.verified;
@@ -388,32 +373,42 @@ function renderDetail({quiet=false}={}) {
   if (stateGroup(current.state) === 'closed') {
     summary.push(['종료 시각', stamp(terminalTime(current))]);
   } else {
-    summary.push(['감지 사유', current.reason ? codeKo(current.reason) : '영향 확인 중']);
+    summary.push(['현재 단계', stateLabelFor(current.state,r)]);
   }
-  put('incident-summary', facts(summary));
+  put('incident-summary',facts([['문제 상황',incidentProblem(current)],['원인 분석',analysisFinding(d)]]), facts(summary));
   rawJson('raw-incident','incident-raw',current);
-  rawView('raw-stages',['stage-timeline'],current.stages,()=>put('stage-timeline',list(current.stages).length ? current.stages.map(s=>el('li',{},el('b',{},stateLabel(s.state)),el('time',{},stamp(s.occurred_at)),el('pre',{},JSON.stringify(s,null,2)))) : el('li',{},'미관측')));
+  put('stage-timeline',list(current.stages).length ? current.stages.map(s=>el('li',{},el('b',{},stateLabel(s.state)),el('time',{},stamp(s.occurred_at)),s.error?el('p',{},errorKo(s.error)):null)) : el('li',{},'진행 이력 미기록'));
+  rawJson('raw-stages','stages-raw',current.stages);
   put('collection-meta',facts([['수집 시각',stamp(collection.observed_at)],['로그 표본',Array.isArray(collection.logs)?collection.logs.length:'미관측'],['근거 기록',Array.isArray(collection.evidence)?collection.evidence.length:'미관측']]));
-  rawView('raw-collection',['collection-logs','evidence-table'],collection,()=>{
-    put('collection-logs',table(['서비스','시각','정제 원문'],list(collection.logs).map(x=>[x.service,stamp(x.observed_at),el('pre',{},value(x.text))])));
-    put('evidence-table',table(['근거 ID','서비스 · 환경','시각','출처 · 품질','정제 원문'],list(collection.evidence).map(x=>[
-      x.id,`${value(x.service)} · ${value(x.environment)}`,stamp(x.observed_at),`${value(x.source)} · ${value(x.quality)}`,el('pre',{},value(x.text))])));
-  });
+  put('evidence-table',table(['근거 ID','서비스 · 환경','시각','출처 · 품질','근거 요약'],list(collection.evidence).map(x=>[
+    x.id,`${value(x.service)} · ${envLabel(x.environment)}`,stamp(x.observed_at),`${label(SOURCE_LABELS,x.source,'출처 미기록')} · ${label(QUALITY_LABELS,x.quality,'품질 미기록')}`,reading(x.summary_ko,'수집된 원문 근거입니다. 분석 결과와 함께 확인하세요.')])));
+  rawView('raw-collection',['collection-logs'],collection,()=>put('collection-logs',el('pre',{},JSON.stringify({logs:collection.logs,evidence:collection.evidence},null,2))));
   const roles=list(d.analysis?.roles);
-  put('analysis-overview',roles.length?table(['역할','수정 가능','수락'],roles.map(row=>[label(ROLE_LABELS,row.role,'분석 역할'),yesNo(row.result?.fixable),yesNo(row.result?.accepted)])):empty('분석 결과 미관측'));
-  rawView('raw-analysis',['analysis-roles'],roles,()=>put('analysis-roles',roles.length?roles.map(row=>el('div',{class:'role-result'},el('h4',{},label(ROLE_LABELS,row.role,'분석 역할')),el('pre',{},JSON.stringify(row,null,2)))):empty()));
+  put('analysis-overview',roles.length?el('p',{},'역할별 원인 분석과 독립 검증 결과입니다. 미해결 항목은 확정된 원인과 구분해 확인하세요.'):empty('분석 결과 미관측'));
+  put('analysis-roles',roles.map(row=>{
+    const result=obj(row.result);
+    return el('section',{class:'role-result'},el('h4',{},label(ROLE_LABELS,row.role,'분석 역할')),
+      el('p',{class:'analysis-summary'},reading(result.summary_ko||result.reason_ko,'분석 요약 미기록')),
+      facts([['신뢰도',Number.isFinite(result.confidence)?`${Math.round(result.confidence*100)}%`:'미관측'],
+        ...(typeof result.fixable==='boolean'?[['수정 가능',yesNo(result.fixable)]]:[]),
+        ...(typeof result.accepted==='boolean'?[['검증 수락',yesNo(result.accepted)]]:[]),
+        ...(result.level?[['장애 수준',value(result.level)]]:[])]),
+      list(result.unresolved).length?el('div',{},el('h4',{},'미해결 항목'),el('ul',{},lines(result.unresolved.map(x=>reading(x,'미해결 사유 요약 미기록'))))):null,
+      list(result.follow_up).length?el('div',{},el('h4',{},'후속 확인'),el('ul',{},lines(result.follow_up.map(x=>reading(x,'후속 확인 설명 미기록'))))):null,
+      list(result.citations).length?el('p',{class:'muted'},`참조 근거 ${result.citations.length}건 · `,result.citations.map(x=>value(x.ref)).join(', ')):null);
+  }));
+  rawJson('raw-analysis','analysis-raw',roles);
   const diff=typeof patch.diff==='string'?patch.diff:'';
   const files=[...new Set([...diff.matchAll(/^\+\+\+ (?:b\/)?(.+)$/gm)].map(m=>m[1]))];
-  put('patch-overview',Object.keys(patch).length?facts([['변경 파일',files.length],['추가 시험',list(patch.tests_added).length],['위험·부작용',patch.risk_ko?'기록 있음 · 원문에서 확인':'미관측']]):empty('수정안 미관측'));
-  rawView('raw-patch',['patch-summary','patch-files','patch-tests','patch-diff'],patch,()=>{
-    put('patch-summary',facts([['수정 요약',patch.summary_ko],['위험·부작용',patch.risk_ko],['diff_sha256',patch.diff_sha256]]));
-    put('patch-files',lines(files));put('patch-tests',lines(list(patch.tests_added)));
-    put('patch-diff',diff ? diff.split('\n').map(line=>el('span',{class:line.startsWith('+++')||line.startsWith('---')?'diff-context':line.startsWith('+')?'diff-add':line.startsWith('-')?'diff-remove':'diff-context'},line+'\n')) : '미관측');
-  });
+  put('patch-overview',Object.keys(patch).length?el('p',{},reading(patch.summary_ko,'수정 요약 미기록')):empty('수정안 미관측'));
+  put('patch-summary',facts([['위험·부작용',reading(patch.risk_ko,'미기록')]]));
+  put('patch-files',lines(files));put('patch-tests',lines(list(patch.tests_added)));
+  rawView('raw-patch',['patch-diff'],patch,()=>put('patch-diff',diff ? diff.split('\n').map(line=>el('span',{class:line.startsWith('+++')||line.startsWith('---')?'diff-context':line.startsWith('+')?'diff-add':line.startsWith('-')?'diff-remove':'diff-context'},line+'\n')) : '미관측'));
   renderTests(obj(r.tests || d.test_build?.tests),list(patch.tests_added),obj(d.test_build));
-  rawView('raw-artifacts',['artifacts'],r,()=>put('artifacts',el('pre',{},JSON.stringify({release_id:r.release_id,artifact:r.artifact,artifact_sha256:r.artifact_sha256,plan_sha256:r.plan_sha256},null,2))));
+  put('artifacts',r.release_id?facts([['배포 산출물',r.valid===true?'유효한 산출물':r.valid===false?'무효화됨':'유효성 미관측'],['배포 식별자',r.release_id],['이미지',r.artifact?.image]]):empty('배포 산출물 미관측'));
+  rawJson('raw-artifacts','artifacts-raw',{release_id:r.release_id,artifact:r.artifact,artifact_sha256:r.artifact_sha256,plan_sha256:r.plan_sha256});
   renderEnvironments(r);
-  rawView('raw-explain',['release-explain'],[r.summary_ko,r.risk_ko,r.rollback_ko,patch.summary_ko,patch.risk_ko,r.invalidation_reason],()=>put('release-explain',facts([['설명',r.summary_ko||patch.summary_ko],['부작용',r.risk_ko||patch.risk_ko],['원복 방법',r.rollback_ko],['승격 절차',protocolKo(r)],['승격 유효성',r.valid===true?'유효':r.valid===false?'무효':'미관측'],['무효 사유',r.invalidation_reason]])));
+  put('release-explain',facts([['설명',reading(r.summary_ko||patch.summary_ko,'미기록')],['부작용',reading(r.risk_ko||patch.risk_ko,'미기록')],['원복 방법',reading(r.rollback_ko,'미기록')],['승격 절차',protocolKo(r)],['승격 유효성',r.valid===true?'유효':r.valid===false?'무효':'미관측'],['무효 사유',codeKo(r.invalidation_reason)]]));
   renderHuman(r,patch);
   gates();
 }
@@ -423,21 +418,19 @@ function renderHuman(r,patch) {
   $('user-test-form').hidden=!test || legacy;
   $('approve-form').hidden=!approve || legacy;
   $('human-section').hidden=!(test || approve || r.user_test || r.approval);
-  // 승인 대상 검토를 펼치면 전체 지문·위험·원복·검증 결과를 읽고 확인할 수 있다.
+  // 승인 대상과 검증·위험·원복은 항상 보인다. 명시적 확인은 해당 지문에만 유효하다.
   // 사용자 시험 대기에서는 시험 폼을 먼저 제공하고 기술 지문은 원문에서 확인한다.
   $('approval-target').hidden=!approve || legacy;
   if (approve && !legacy) {
     const verification=r.stage_results?.dev?.verification;
     const checks=Array.isArray(verification)?verification.map(v=>[v.service,passFail(v.business?.ok),v.business?.status_code,v.business?.body_sha256,v.image]):list(obj(verification).checks).map(v=>[v.name,passFail(v.passed),v.status_code,v.body_sha256,verification.image]);
-    rawView('approval-target',['approve-digest','approval-verification'],[r,patch],()=>{
     put('approve-digest',facts([['승인 대상 이미지 (전체 digest)',r.artifact?.image],['release_id',r.release_id],['artifact_sha256',r.artifact_sha256],['plan_sha256',r.plan_sha256]]),
       table(['prd 대상 서비스','환경','UID','resourceVersion'],list(r.targets?.prd).map(t=>[t.service,t.environment,t.uid,t.resource_version])));
     put('approval-verification',facts([['수정 설명',r.summary_ko||patch.summary_ko],['위험·부작용',r.risk_ko||patch.risk_ko],['원복 방법',r.rollback_ko],['dev 업무 확인',passFail(r.stage_results?.dev?.verified)],['사용자 시험',passFail(user.passed)],['시험 유효성',validUserTest(r)?'유효':'무효 또는 미관측'],['시험 시각',stamp(user.occurred_at)],['시험 만료',stamp(user.expires_at)]]),
       facts([['시험 기록 ID',user.id],['자동 시험 수정 전 재현',yesNo(r.tests?.before_failed)],['수정 후 시험 통과',yesNo(r.tests?.after_passed)],['회귀 시험 수행',yesNo(r.tests?.regression_executed)],['시험 보고서 sha256',r.tests?.report_sha256]]),
       table(['dev 확인 항목','업무 결과','HTTP 상태','본문 sha256','확인 이미지'],checks));
-    });
-  } else { $('approval-target').open=false; resetApprovalReview(); }
-  put('human-records',el('h4',{},`${userTestEnv(r)} 사용자 시험 기록`),Object.keys(user).length?facts([['시험 결과',passFail(user.passed)],['시험 시각',stamp(user.occurred_at)],['시험 만료',stamp(user.expires_at)],['시험 무효화',yesNo(user.invalidated)]]):empty('시험 기록 미관측'),
+  } else { resetApprovalReview(); }
+  put('human-records',el('h4',{},`${userTestEnv(r)} 사용자 시험 기록`),Object.keys(user).length?facts([['시험 결과',passFail(user.passed)],['시험 내용',reading(user.notes_ko,'시험 내용 미기록')],['시험 시각',stamp(user.occurred_at)],['시험 만료',stamp(user.expires_at)],['시험 무효화',yesNo(user.invalidated)]]):empty('시험 기록 미관측'),
     el('h4',{},'prd 승인 기록'),Object.keys(approval).length?facts([['승인 시각',stamp(approval.occurred_at)],['승인 만료',stamp(approval.expires_at)],['승인 무효화',yesNo(approval.invalidated)]]):empty('승인 기록 미관측'));
   rawJson('raw-human','human-raw',{user_test:r.user_test,approval:r.approval});
   $('approval-gate').textContent = !exactRelease(r)?'유효한 산출물·계획 지문을 받지 못해 시험·승인을 보낼 수 없습니다.':legacy?'기존 dev→stg→prd(v1) 기록은 stg 퇴역으로 읽기 전용입니다. 시험·승인을 보낼 수 없습니다.':test?`${userTestEnv(r)} 시험을 실제로 수행한 뒤 결과를 기록하세요.`:approve?'사용자 시험 기록과 승인 대상 지문을 확인하세요.':'현재 상태에서는 시험·승인을 보낼 수 없습니다.';
@@ -445,11 +438,9 @@ function renderHuman(r,patch) {
 function renderTests(t,added,record={}) {
   put('test-results',facts([['수정 전 재현 실패',yesNo(t.before_failed)],['수정 후 통과',yesNo(t.after_passed)],['회귀 시험 수행',yesNo(t.regression_executed)],['전체 시험 수',count(t.total)],['실패 수',count(t.failed)]]),
     facts([['실행기 오류',codeKo(record.error_code)],['수락 거부',codeKo(record.rejection_code)]]));
-  rawView('raw-tests',['test-details'],[t,added,record],()=>{
-    const normalized=list(t.executed_tests).map(x=>typeof x==='string'?{id:x}:obj(x));
-    put('test-details',facts([['시험 보고서 sha256',t.report_sha256],['실행기 오류 코드',record.error_code],['수락 거부 코드',record.rejection_code]]),
-      table(['시험 ID','파일','실행 구간','실제 상태','추가 시험'],normalized.map(x=>[x.id,x.file,x.phase==='before'?'수정 전':x.phase==='after'?'수정 후':value(x.phase),label(TEST_LABELS,x.status,'상태 확인 필요'),added.includes(x.id)?'추가 시험':'미관측'])),el('pre',{},JSON.stringify(record,null,2)));
-  });
+  const normalized=list(t.executed_tests).map(x=>typeof x==='string'?{id:x}:obj(x));
+  put('test-details',table(['시험 ID','파일','실행 구간','실제 상태','추가 시험'],normalized.map(x=>[x.id,x.file,x.phase==='before'?'수정 전':x.phase==='after'?'수정 후':value(x.phase),label(TEST_LABELS,x.status,'상태 확인 필요'),added.includes(x.id)?'추가 시험':'기존 시험'])));
+  rawJson('raw-tests','tests-raw',{tests:t,record});
 }
 function renderEnvironments(r) {
   // 활성 환경(dev, prd)을 기본으로 보이고, 기존 기록에 stg 결과가 실제로 있을 때만 퇴역 stg 행을 과거 순서 자리에 덧붙인다.
@@ -457,8 +448,9 @@ function renderEnvironments(r) {
   const envs=[...ACTIVE_ENVIRONMENTS];
   for (const env of RETIRED_ENVIRONMENTS) if (Object.hasOwn(results,env)) envs.splice(1,0,env);
   put('env-status',envs.map(env=>{
-    const s=obj(results[env]);
-    return el('div',{class:'env-result','data-env':env},el('h4',{},envLabel(env)),facts([['배포 요청 결과',s.deployed===true?'적용 확인':s.deployed===false?'실패':'미관측'],['업무 확인 결과',s.verified===true?'별도 확인 통과':s.verified===false?'미확인':'미관측'],['쓰기 결과',label(WRITE_LABELS,s.write_outcome)],['오류',errorKo(s.error)]]));
+    const s=obj(results[env]),verification=s.verification;
+    const checks=Array.isArray(verification)?verification.map(v=>[v.service,passFail(v.business?.ok),v.business?.status_code]):list(obj(verification).checks).map(v=>[v.name,passFail(v.passed),v.status_code]);
+    return el('div',{class:'env-result','data-env':env},el('h4',{},envLabel(env)),facts([['배포 요청 결과',s.deployed===true?'적용 확인':s.deployed===false?'실패':'미관측'],['업무 확인 결과',s.verified===true?'별도 확인 통과':s.verified===false?'미확인':'미관측'],['쓰기 결과',label(WRITE_LABELS,s.write_outcome)],['오류',errorKo(s.error)]]),checks.length?table(['확인 항목','업무 결과','응답 상태'],checks):empty('개별 검증 항목 미기록'));
   }));
   rawJson('raw-environments','env-raw',results);
 }
@@ -504,7 +496,7 @@ async function attest(kind) {
   if(busy||!current)return;
   const r=release(),id=current.id,rev=revision,isTest=kind==='user-test';
   // 버튼 비활성화와 별개로 전송 직전에도 다시 확인한다: v1 기록(퇴역 stg 절차)은 시험·승인을 보내지 않는다.
-  if(!exactRelease(r)||isLegacyRelease(r)||(!isTest && (!$('approval-target').open||!validUserTest(r)||!$('approve-confirm').checked||confirmedFor!==approvalKey(r))))return;
+  if(!exactRelease(r)||isLegacyRelease(r)||(!isTest && ($('approval-target').hidden||!validUserTest(r)||!$('approve-confirm').checked||confirmedFor!==approvalKey(r))))return;
   if(!permits(isTest?'tester':'prd-approver'))return;
   const body={...fingerprint(r),...(isTest?{passed:$('test-passed').value==='true',notes_ko:$('test-notes').value.trim()}:{user_test_id:r.user_test.id})};
   busy=true;gates();clearError();

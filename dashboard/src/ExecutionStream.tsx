@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { FlowNode } from './api';
 import { clock } from './api';
 import type { ExecutionView, StreamState } from './execution';
@@ -9,7 +8,6 @@ const CONNECTION: Record<StreamState, string> = { connecting: '연결 중', live
 const PHASE: Record<string, string> = { started: '요청 중', waiting: '응답 대기', responding: '답변 수신 중', succeeded: '응답 수신 완료', failed: '호출 실패' };
 
 export function ExecutionStream({ node, view, state, error, receivedAt }: { node: FlowNode; view: ExecutionView; state: StreamState; error: boolean; receivedAt: string | null }) {
-  const [show, setShow] = useState(true);
   const running = node.status === 'running' && !view.final;
   const live = running && state !== 'snapshot' && state !== 'record';
   const finalOk = view.final?.detail?.status === 'succeeded';
@@ -21,9 +19,8 @@ export function ExecutionStream({ node, view, state, error, receivedAt }: { node
       <span className={`badge ${error || state === 'reconnecting' ? 'warn' : running ? 'info' : ''}`}>
         {running ? CONNECTION[state] : '저장 기록'}
       </span>
-      <button type="button" className="link-btn" aria-expanded={show} onClick={() => setShow(v => !v)}>{show ? '실행 내용 접기' : '실행 내용 펼치기'}</button>
     </div>
-    {show && <>
+    <>
       {state === 'snapshot' && <p className="muted" role="note">저장 당시 실행 중이었던 표본입니다. 이 화면에서 실제 분석은 실행되지 않으며 새 답변은 발생하지 않습니다.</p>}
       {error && live && <p role="status" className="warning-text">갱신이 지연되고 있습니다. 마지막으로 받은 기록을 유지하며 다시 연결합니다.</p>}
       <p className="execution-stage" role={live ? 'status' : undefined}>{last ? executionStageKo(last.kind, last.detail?.phase, last.detail?.status) : live ? '호출 실행 중 · 진행 메시지 미관측' : '실행 메시지 미기록'}</p>
@@ -38,6 +35,6 @@ export function ExecutionStream({ node, view, state, error, receivedAt }: { node
       {last && <p className="faint execution-last">마지막 기록 {clock(last.at)}{live && receivedAt ? ` · 수신 ${clock(receivedAt)}` : ''}</p>}
       <Disclosure label="실행 기록 원문 보기">{() => <ol className="execution-records">{view.records.map(e => <li key={e.seq}><time>{clock(e.at)}</time><pre className="raw-text">{e.summary}</pre></li>)}</ol>}</Disclosure>
 
-    </>}
+    </>
   </div>;
 }

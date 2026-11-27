@@ -71,7 +71,7 @@ test('현재 작업의 공개 답변이 중복 없이 갱신되고 전체 대화
   const es=errors(page);
   const {panel,send}=await setup(page);
   const card=await historyCard(page);
-  await card.getByRole('button',{name:'펼치기',exact:true}).click();
+  await expect(card.getByRole('button',{name:'펼치기',exact:true})).toHaveCount(0);   // step cards are always open
   const draft=card.getByRole('textbox');
   await draft.fill('다음 단계에서 네트워크 상태도 확인해 주세요.');
   const before=await page.locator('.chat-feed').evaluate(el=>el.scrollTop);
@@ -85,10 +85,8 @@ test('현재 작업의 공개 답변이 중복 없이 갱신되고 전체 대화
   const expanded=await openCall(page);
   await expect(expanded.locator('.execution-output')).toHaveCount(1);
   await expect(expanded).toContainText('생성 중인 임시 답변');
-  await expanded.getByRole('button',{name:'실행 내용 접기'}).click();
+  await expect(expanded.getByRole('button',{name:/실행 내용 (접기|펼치기)/})).toHaveCount(0);
   await send(makeEvent(4,'responding','근거 확인 완료'));
-  await expect(expanded.locator('.execution-output')).toHaveCount(0);
-  await expanded.getByRole('button',{name:'실행 내용 펼치기'}).click();
   await expect(expanded.locator('.execution-output')).toHaveText('근거 확인 완료');
   await layout(page);
   expect(es).toEqual([]);

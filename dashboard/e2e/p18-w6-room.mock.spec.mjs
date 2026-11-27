@@ -252,7 +252,7 @@ test('혼합 배치 반영은 메시지마다 자기 대상 반영과 대체 반
   });
   const es = errors(page); await page.goto('/incidents/1976'); await tab(page, '대화');
   const cause = page.locator('[id="step-run:101"]'), log = page.locator('[id="step-run:100"]');
-  for (const card of [cause, log]) await card.getByRole('button', { name: '펼치기', exact: true }).click();
+  for (const card of [cause, log]) await expect(card.getByRole('button', { name: '펼치기', exact: true })).toHaveCount(0);
   await expect(cause.locator('.steer-state')).toHaveText('원인 추론 시작 전에 반영됨');
   await expect(log.locator('.steer-state')).toHaveText('쿠버네티스·로그 분석 대신 원인 추론에 반영됨');
   await expect(cause.locator('.operator-bubble')).toHaveCount(1);
@@ -333,7 +333,7 @@ test('상세 패널: 상세보기로만 열리고 교체·닫기·Esc 후 포커
   }
   await layout(page); await capture(page, info, 'w6/detail-open');
   if (wide(info)) { // 넓은 화면에서는 대화가 보이므로 다른 카드의 상세보기로 내용을 교체한다(패널을 쌓지 않는다).
-    const other = page.locator('[id="step-router"]'); await other.getByRole('button', { name: '펼치기' }).click(); await other.getByRole('button', { name: '원문 보기', exact: true }).click();
+    const other = page.locator('[id="step-router"]'); await other.getByRole('button', { name: '원문 보기', exact: true }).click();
     await expect(panel).toHaveAttribute('data-node-id', 'router'); await expect(page.locator('.detail-panel')).toHaveCount(1); await expect(panel).toContainText('판단 사유 원문');
     await panel.getByRole('button', { name: '닫기', exact: true }).click(); await expect(panel).toHaveCount(0);
     await expect(other.getByRole('button', { name: '원문 보기', exact: true })).toBeFocused();

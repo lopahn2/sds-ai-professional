@@ -7,6 +7,7 @@ import { eventReasonKo } from './labels';
 import { Badge, Meter as UsageMeter, StatusIndicator } from '@naria/ui';
 import { ServiceAtlas } from './ServiceAtlas';
 import { ResourceDetail } from './ResourceDetail';
+import { warningSummary } from './presentation';
 import { Disclosure } from './Disclosure';
 import { RoomDialog } from './RoomDialog';
 import { usePolling } from './usePolling';
@@ -40,7 +41,6 @@ function warningTarget(event: Warning, workloads: Set<string>) {
 function Events({ o }: { o: Overview }) {
   const all = o.events ?? [];
   const observed = ['ok', 'connected'].includes(o.sources?.kubernetes);
-  const [showAll, setShowAll] = useState(false);
   if (!all.length) return <p className="atlas-empty"><StatusIndicator status={observed && Array.isArray(o.events) ? 'ok' : 'unknown'}>{observed && Array.isArray(o.events) ? '관측된 경고가 없습니다.' : '경고 수집 상태를 확인하세요.'}</StatusIndicator></p>;
   const groups = new Map<string, Warning[]>();
   const workloads = new Set((o.workloads ?? []).map(w => `${w.namespace}/${w.name}`));
@@ -52,18 +52,18 @@ function Events({ o }: { o: Overview }) {
   }
   const rows = [...groups.entries()];
   return <>{!observed && <p className="atlas-source-message is-warning">마지막으로 수집한 경고입니다.</p>}
-    {(showAll ? rows : rows.slice(0, 5)).map(([key, records]) => {
+    {rows.map(([key, records]) => {
       const latest = records[0];
       return <article className="warning-event" key={key}>
         <div><b>{warningTarget(latest, workloads)}</b><Badge tone="warning">{eventReasonKo(latest.reason)}</Badge></div>
         <small>{latest.namespace || '클러스터'} · {clock(latest.at)} · {records.length === 1 && latest.count != null ? `발생 ${latest.count}회` : `경고 기록 ${records.length}건`}</small>
+        <p className="warning-summary">{warningSummary(latest.reason, latest.message)}</p>
         <Disclosure label="원문 보기">{() => records.map((record, index) => <div key={index}>
           <small>{clock(record.at)} · {record.object} · {record.reason}</small>
           <pre className="raw-text">{record.message || '메시지 미기록'}</pre>
         </div>)}</Disclosure>
       </article>;
     })}
-    {rows.length > 5 && <button type="button" className="atlas-more warning-more" aria-expanded={showAll} onClick={() => setShowAll(v => !v)}>{showAll ? '최근 경고만 보기' : `경고 더 보기 · ${rows.length - 5}개`}</button>}
   </>;
 }
 function Namespaces({ o }: { o: Overview }) {

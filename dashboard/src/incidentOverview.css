@@ -71,3 +71,11 @@
 @media (prefers-reduced-motion: reduce) {
   .ops.operator-overview button, .ops.operator-overview button:not(:disabled):active { transition: none; transform: none; }
 }
+/* 2026-11-15 display rule: meaningful status and explanations stay visible; only raw records disclose. */
+.warning-summary { margin: 8px 0; color: var(--nds-muted); line-height: 1.6; font-size: 12px; }
+.ops .map-legend-visible { margin-left: auto; }
+.map-legend-visible > div { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 4px 0; }
+.map-legend-visible span { display: inline-flex; align-items: center; gap: 4px; }
+.contract-list { padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.contract-list h3 { font-size: 14px; }
+.contract-list ul { padding-left: 16px; margin: 8px 0 0; }

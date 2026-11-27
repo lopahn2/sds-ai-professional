@@ -30,14 +30,14 @@ function release(id){
     summary_ko:applicable?'주문 처리 오류 수정':'RAW_RELEASE_SUMMARY',risk_ko:applicable?'주문 처리 결과를 확인해야 합니다.':'RAW_RELEASE_RISK',rollback_ko:applicable?'직전 검증 이미지로 원복합니다.':'RAW_ROLLBACK',
     invalidation_reason:'RAW_INVALIDATION',
     targets:{prd:[{service:'order',environment:'prd',uid:'exact-prd-uid',resource_version:'42'}]},
-    tests:{before_failed:true,after_passed:true,regression_executed:true,total:3,failed:0,report_sha256:'RAW_REPORT_DIGEST',executed_tests:[{id:'RAW_TEST_ID',phase:'after',status:'passed'}]},
+    tests:{before_failed:true,after_passed:true,regression_executed:true,total:3,failed:0,report_sha256:'RAW_REPORT_DIGEST',executed_tests:[{id:'order-pool-regression',phase:'after',status:'passed'}]},
     stage_results:{dev:{deployed:true,verified:true,write_outcome:'RAW_WRITE',error:{code:'RAW_ENV_CODE',message_ko:'RAW_ENV_MESSAGE'},verification:{image,checks:[{name:'order',passed:true,status_code:200,body_sha256:'f'.repeat(64)}]}},...(legacy?{stg:{deployed:true,verified:true,error:'RAW_LEGACY_ERROR'}}:{})},
     user_test:id==='approve'?{id:'exact-user-test',passed:true,invalidated:false,occurred_at:1794528000,expires_at:1893456000,notes_ko:'RAW_HUMAN_NOTES'}:null};
 }
 function detail(row){return {...row,error:row.id==='failed'?{code:'after_not_passed',message_ko:'RAW_FAILURE_MESSAGE'}:{code:'RAW_ERROR_CODE',message_ko:'RAW_ERROR_MESSAGE'},handoff_classification:{class:'RAW_CLASS',label_ko:'RAW_CLASS_LABEL'},stages:[{state:'collecting',occurred_at:1794528000,details:{message:'RAW_EVENT'}}],data:{
-  collection:{observed_at:1794528000,target:{image:'RAW_COLLECTION_IMAGE'},logs:[{service:'order',text:sample+' RAW_LOG_'+state.version}],evidence:[{id:'RAW_REF',service:'order',environment:'dev',source:'pod_log',quality:'observed',text:'RAW_EVIDENCE'}]},
-  analysis:{roles:[{role:'analyst',model:'RAW_MODEL',result:{summary_ko:'RAW_ANALYSIS',fixable:true,citations:[{ref:'RAW_CITATION_REF',quote:sample}],unresolved:['RAW_UNRESOLVED']}}]},
-  patch:{summary_ko:'RAW_PATCH_SUMMARY',risk_ko:'RAW_PATCH_RISK',diff:'--- a/main.py\n+++ b/main.py\n-RAW_BEFORE\n+RAW_AFTER\n',diff_sha256:'RAW_DIFF_DIGEST',tests_added:['RAW_TEST_ID']},
+  collection:{observed_at:1794528000,target:{image:'RAW_COLLECTION_IMAGE'},logs:[{service:'order',text:sample+' RAW_LOG_'+state.version}],evidence:[{id:'evidence-1',service:'order',environment:'dev',source:'pod_log',quality:'observed',text:'RAW_EVIDENCE'}]},
+  analysis:{roles:[{role:'analyst',model:'RAW_MODEL',result:{summary_ko:'연결이 반환되지 않아 주문 처리용 연결 풀이 고갈되었습니다.',fixable:true,citations:[{ref:'evidence-1',quote:sample}],unresolved:['높은 부하에서 재발 여부를 확인해야 합니다.']}}]},
+  patch:{summary_ko:'주문 완료 시 연결을 반환하도록 수정합니다.',risk_ko:'처리 중인 주문의 재시도 영향을 확인해야 합니다.',diff:'--- a/main.py\n+++ b/main.py\n-RAW_BEFORE\n+RAW_AFTER\n',diff_sha256:'RAW_DIFF_DIGEST',tests_added:['order-pool-regression']},
   test_build:{error_code:row.id==='failed'?'after_not_passed':'RAW_TEST_ERROR',tests:release(row.id).tests},release:release(row.id)}};}
 const browser=await chromium.launch();
 const checks=[];
@@ -90,25 +90,31 @@ try{
   await expect(page.locator('#readiness-body')).toContainText('실행기 최근 연결');
   assert.equal(await page.isVisible('#workspace'),false);
   assert.equal(await page.isVisible('#auth-form'),true);
-  assert.equal(await page.isVisible('#readiness-checks'),false);
+  assert.equal(await page.isVisible('#readiness-checks'),true);
   await noRaw();
-  await page.click('#readiness-details > summary');
   await page.click('#raw-readiness > summary');
   await expect(page.locator('#readiness-raw')).toContainText('RAW_READINESS_MESSAGE');
   await page.click('#raw-readiness > summary');
   await expect(page.locator('#readiness-raw')).toBeEmpty();
-  await page.click('#readiness-details > summary');
   await page.fill('#auth-bearer','synthetic-read');
   await page.click('#auth-form button[type=submit]');
   await expect(page.locator('#incident-list button')).toHaveCount(rows.length);
   assert.equal(await page.isVisible('#auth-form'),false);
   assert.equal(await page.isVisible('#create-form'),false);
   await select('automatic');await noRaw();
+  await expect(page.locator('#incident-summary')).toContainText('연결이 반환되지 않아');
+  await expect(page.locator('#analysis-roles')).toContainText('연결 풀이 고갈');
+  await expect(page.locator('#patch-overview')).toContainText('연결을 반환');
+  await expect(page.locator('#patch-summary')).toContainText('재시도 영향');
+  for (const id of ['stage-timeline','evidence-table','analysis-roles','patch-files','patch-tests','test-details','release-explain']) {
+    await expect(page.locator('#'+id)).toBeVisible();
+    assert.equal(await page.locator('#'+id).evaluate(n=>!!n.closest('details')),false);
+  }
   assert.equal(await page.isVisible('#user-test-form'),false);
   assert.equal(await page.isVisible('#approve-form'),false);
   checks.push('access_readiness_summary_incident_first_and_on_demand_create');
 
-  for(const [id,target,marker] of [['raw-collection','collection-logs','RAW_LOG_0'],['raw-analysis','analysis-roles','RAW_ANALYSIS'],['raw-patch','patch-diff','RAW_AFTER'],['raw-tests','test-details','RAW_REPORT_DIGEST'],['raw-stages','stage-timeline','RAW_EVENT'],['raw-artifacts','artifacts','RAW_SOURCE_DIGEST'],['raw-environments','env-raw','RAW_ENV_MESSAGE'],['raw-explain','release-explain','RAW_RELEASE_SUMMARY'],['raw-incident','incident-raw','RAW_REASON']]){
+  for(const [id,target,marker] of [['raw-collection','collection-logs','RAW_LOG_0'],['raw-analysis','analysis-raw','RAW_MODEL'],['raw-patch','patch-diff','RAW_AFTER'],['raw-tests','tests-raw','RAW_REPORT_DIGEST'],['raw-stages','stages-raw','RAW_EVENT'],['raw-artifacts','artifacts-raw','RAW_SOURCE_DIGEST'],['raw-environments','env-raw','RAW_ENV_MESSAGE'],['raw-incident','incident-raw','RAW_REASON']]){
     const summary=page.locator('#'+id+' > summary');
     await summary.focus();await summary.press('Enter');
     await expect(page.locator('#'+target)).toContainText(marker);
@@ -118,7 +124,7 @@ try{
     await expect(page.locator('#'+target)).toBeEmpty();
     await noRaw();
   }
-  checks.push('nine_keyboard_disclosures_lazy_mount_unmount_and_safe_text');
+  checks.push('eight_keyboard_disclosures_lazy_mount_unmount_and_safe_text');
 
   await page.locator('#raw-collection > summary').focus();
   await page.keyboard.press('Enter');
@@ -137,18 +143,18 @@ try{
   await expect(page.locator('#next-action-body')).toContainText('수정 후 시험이 통과하지 못했습니다');
   assert.equal(await page.locator('details[data-raw][open]').count(),0);
   await expect(page.getByRole('heading',{name:'처리 결과'})).toBeVisible();
-  await expect(page.locator('#response-records')).toBeHidden();
-  await page.getByRole('button',{name:'대응 기록 보기'}).press('Enter');
+  await expect(page.locator('#response-records')).toBeVisible();
   await expect(page.locator('#test-results')).toBeVisible();
   await expect(page.locator('#test-results')).toContainText('수정 후 시험이 통과하지 못했습니다');
   await page.locator('#raw-tests > summary').click();
   await expect(page.locator('#test-details')).not.toBeEmpty();
-  await page.getByRole('button',{name:'대응 기록 접기'}).click();
-  await expect(page.locator('#test-details')).toBeEmpty();
+  await page.locator('#raw-tests > summary').click();
+  await expect(page.locator('#tests-raw')).toBeEmpty();
+  await expect(page.locator('#test-details')).not.toBeEmpty();
   await select('done');
   await expect(page.locator('#incident-summary')).toContainText('종료 시각');
   await expect(page.locator('#next-action-body')).toContainText('prd 업무 확인 결과는 미기록');
-  await expect(page.locator('#response-records')).toBeHidden();
+  await expect(page.locator('#response-records')).toBeVisible();
   await select('legacy');await noRaw();
   await expect(page.locator('#next-action-body')).toContainText('읽기 전용');
   assert.equal(await page.isVisible('#user-test-form'),false);
@@ -190,9 +196,9 @@ try{
   assert.equal(await page.inputValue('#test-notes'),'');
   assert.equal(await page.inputValue('#test-passed'),'');
   await expect(page.locator('#approval-target')).toBeVisible();
-  await expect(page.locator('#approve-digest')).toBeEmpty();
-  await expect(page.locator('#approve-confirm')).toBeDisabled();
-  await page.locator('#approval-target summary').click();
+  await expect(page.locator('#approve-digest')).toBeVisible();
+  await expect(page.locator('#approve-confirm')).not.toBeChecked();
+  await expect(page.locator('#approve-submit')).toBeDisabled();
   await expect(page.locator('#approve-digest')).toContainText(image);
   await expect(page.locator('#approve-digest')).toContainText(state.artifact);
   await expect(page.locator('#approve-digest')).toContainText('exact-prd-uid');

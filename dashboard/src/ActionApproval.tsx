@@ -23,6 +23,7 @@ export function ActionApprovalCard({ action: a, onChange }: { action: Action; on
   return <article className="decision-card action-card" aria-label={`조치 승인 요청 ${a.id}`}>
     <header><b>자동 조치 승인 요청</b><span className="badge warn" role="status">승인 대기</span></header>
     <p>{ACTION_KO[a.type] ?? '등록되지 않은 조치'} · <span className="mono">{a.target}</span></p>
+    <p className="step-lead">{summaryKo(a.reason, '조치 사유 요약이 기록되지 않았습니다. 원문을 확인한 뒤 승인하세요.')}</p>
     <dl className="kv"><dt>정책</dt><dd>운영자 승인 필요</dd>{changes.length > 0 && <><dt>변경 값</dt><dd className="mono">{changes.join(', ')}</dd></>}</dl>
     <div className="confirm-gate"><strong>이 조치를 실행할까요?</strong><div className="inline"><button className="btn primary" type="button" disabled={busy} onClick={() => void decide('approve')}>승인</button><button className="btn" type="button" disabled={busy} onClick={() => void decide('reject')}>거절</button></div></div>
     <ErrorBox>{error}</ErrorBox>

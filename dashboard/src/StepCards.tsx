@@ -1,12 +1,11 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
-import { clock, type FlowNode, type HandoffView, type Narrative } from './api';
+import { clock, money, type FlowNode, type HandoffView, type Narrative } from './api';
 import type { RunEvent } from './feed';
 import { confidenceKo, eventMessageIds, flowStatusKo, flowTitle, FLOW_TYPE_KO, steerStateKo, STEERABLE_TYPES, stepDomId } from './narrative';
-import { ACTION_KO, INTENT_KO, levelKo, roleKo } from './labels';
+import { ACTION_KO, effortKo, INTENT_KO, levelKo, roleKo } from './labels';
 import { ExecutionStream } from './ExecutionStream';
 import type { ExecutionView, StreamState } from './execution';
 import { summaryKo } from './presentation';
-import { Disclosure } from './Disclosure';
 import { AgentBasis, EscalationNote, GroupProgress, ModelChoice, RoleModels, VerifyResult } from './Explain';
 
 export type LocalSent = { message_id: number | null; body: string; ack_ko: string | null; target_role: string | null; hold: boolean | null; at: string; via: 'messages' | 'commands' };
@@ -32,7 +31,7 @@ export function stepSummary(n: FlowNode, data: Narrative, snapshot = false): str
 export function HandoffSummary({ view }: { view: HandoffView }) {
   return <div className="handoff-summary"><p className="step-lead">{summaryKo(view.summary_ko, '한글 요약을 준비 중입니다.')}</p>
     {view.decisions.length > 0 && <dl className="kv decision-table" aria-label="결정사항">{view.decisions.map(d => <div className="decision-row" key={d.key} data-key={d.key}><dt>{summaryKo(d.label_ko, '결정')}</dt><dd>{summaryKo(d.value_ko, '판단 확인 중')}</dd></div>)}</dl>}
-    {view.next_steps_ko.length > 0 && <><h4>다음 단계</h4><ol className="next-steps">{view.next_steps_ko.slice(0, 3).map((s, i) => <li key={i}>{summaryKo(s, '후속 조치 확인 필요')}</li>)}</ol></>}
+    {view.next_steps_ko.length > 0 && <><h4>다음 단계</h4><ol className="next-steps">{view.next_steps_ko.map((s, i) => <li key={i}>{summaryKo(s, '후속 조치 확인 필요')}</li>)}</ol></>}
   </div>;
 }
 function ThreadItem({ e, name }: { e: RunEvent; name: (r: string) => string }) {
@@ -72,7 +71,7 @@ export function StepChat({ node, targetRole, closed, finished, draft, onDraft, o
   </form>;
 }
 
-type CardProps = { snapshot?: boolean; n: FlowNode; data: Narrative; open: boolean; flash: boolean; onToggle: () => void; onDetail: (t: DetailTarget, opener: HTMLElement) => void; handoff: HandoffView | null;
+type CardProps = { snapshot?: boolean; n: FlowNode; data: Narrative; flash: boolean; onDetail: (t: DetailTarget, opener: HTMLElement) => void; handoff: HandoffView | null;
   execution?: ExecutionView; streamState?: StreamState; streamError?: boolean; receivedAt?: string | null;
   thread: RunEvent[]; local: LocalSent[]; targetRole: string | null; closed: boolean; finished: boolean; draft: string; onDraft: (v: string) => void; onSend: (body: string) => Promise<void>; name: (r: string) => string; onJump: (nodeId: string) => void };
 export function StepCard(p: CardProps) {
@@ -80,32 +79,32 @@ export function StepCard(p: CardProps) {
   const steerable = STEERABLE_TYPES.includes(n.type), index = FLOW_TYPE_KO[n.type] ?? '단계';
   const steerMid = n.type === 'steer' ? n.id.replace(/^steer:/, '') : null;
   const steerTarget = n.type === 'steer' ? data.flow.edges.find(e => e.source === n.id)?.target ?? null : null;
-  let body: ReactNode = <p className="step-lead">{stepSummary(n, data, p.snapshot)}</p>;
+  // A closed incident's cards are the stored record: statuses read as "at the time".
+  const recorded = Boolean(p.snapshot) || p.streamState === 'record';
+  let body: ReactNode = <p className="step-lead">{stepSummary(n, data, recorded)}</p>;
   if (c?.kind === 'signal') body = <>{body}<dl className="kv step-kv"><dt>위치</dt><dd>{c.place_ko}</dd><dt>출처 · 사유</dt><dd>{summaryKo(c.source_ko, '감지 신호')} · {summaryKo(c.reason_ko, '사유 확인 중')}</dd><dt>신호 수</dt><dd>{c.signal_count ?? '미관측'}</dd><dt>처음 감지</dt><dd>{clock(c.first_at)}</dd></dl></>;
   else if (n.type === 'signal') body = <>{body}<p>{data.incident.workload} · 신호 {data.incident.signal_count ?? '미관측'}</p><p className="muted">출처 · 사유 미기록</p></>;
   else if (c?.kind === 'evidence') body = <>{body}<ol className="evidence-rows" aria-label={`수집 항목 ${c.items.length}건`}>{c.items.map((it, i) => <li key={it.id} className={it.ok ? '' : 'failed'} data-evidence-id={it.id}><div className="evidence-row-head"><b>{summaryKo(it.source_ko, '수집 항목')}</b><span>{it.target}</span><span className={`badge ${it.ok ? 'ok' : 'danger'}`}>{it.ok ? '수집 성공' : '수집 실패'}</span></div><p>{it.ok ? summaryKo(it.summary_ko, '수집 결과 요약 미기록') : '수집하지 못했습니다. 실패 사유는 원문에서 확인하세요.'}</p><button type="button" className="link-btn" aria-label={`${summaryKo(it.source_ko, '수집 항목')} 원문 보기`} onClick={e => p.onDetail({ kind: 'evidence', nodeId: n.id, ref: it.ref, index: i }, e.currentTarget)}>원문 보기</button></li>)}</ol></>;
   else if (n.type === 'evidence') body = <p>수집 항목별 목록은 아직 받지 못했습니다. 원문 보기에서 수집 기록을 확인하세요.</p>;
-  else if (c?.kind === 'routing') body = <>{body}<p>{summaryKo(c.final_reason_ko, '판단 사유 확인 중')}</p><ModelChoice policy={c.model_policy} full /><Disclosure label="판단 과정 보기">{() => <ol className="decision-steps">{c.steps.map((s, i) => <li key={`${s.key}-${i}`} data-step-key={s.key}><b>{summaryKo(s.title_ko, '판단 단계')}</b><p>{summaryKo(s.detail_ko, '상세 해석 확인 중')}</p>{s.items_ko?.length > 0 && <ul>{s.items_ko.map((it, j) => <li key={j}>{summaryKo(it, '관측 항목 확인 중')}</li>)}</ul>}</li>)}</ol>}</Disclosure></>;
+  else if (c?.kind === 'routing') body = <>{body}<p>{summaryKo(c.final_reason_ko, '판단 사유 확인 중')}</p><ModelChoice policy={c.model_policy} full /><div className="decision-context"><ol className="decision-steps">{c.steps.map((s, i) => <li key={`${s.key}-${i}`} data-step-key={s.key}><b>{summaryKo(s.title_ko, '판단 단계')}</b><p>{summaryKo(s.detail_ko, '상세 해석 확인 중')}</p>{s.items_ko?.length > 0 && <ul>{s.items_ko.map((it, j) => <li key={j}>{summaryKo(it, '관측 항목 확인 중')}</li>)}</ul>}</li>)}</ol></div></>;
   else if (n.type === 'router') body = <>{body}<p className="muted">판단 과정은 현재 미기록입니다.</p></>;
-  else if (c?.kind === 'group') body = <>{body}<p>{summaryKo(c.decision.final_reason_ko, '선택 이유 미기록')}</p><h4>역할별 모델 배치</h4><RoleModels roles={c.roles} />{c.progress_ko.length > 0 && <><h4>진행 기록</h4><GroupProgress items={c.progress_ko} /></>}<Disclosure label="역할 구성·선택 이유 보기">{() => <><h4>역할 구성</h4><ul className="role-list">{c.roles.map(r => <li key={r.role} data-role={r.role}><b>{roleKo(r.role, r.role_ko)}</b><p>{summaryKo(r.job_ko, '담당 업무 미기록')}</p><span>{flowStatusKo(r.status)}</span></li>)}</ul><h4>선택 이유</h4><ul>{c.decision.steps.map((s, i) => <li key={i}>{summaryKo(s.detail_ko, '판단 확인 중')}</li>)}</ul></>}</Disclosure></>;
+  else if (c?.kind === 'group') body = <>{body}<p>{summaryKo(c.decision.final_reason_ko, '선택 이유 미기록')}</p><h4>역할별 모델 배치</h4><RoleModels roles={c.roles} />{c.progress_ko.length > 0 && <><h4>진행 기록</h4><GroupProgress items={c.progress_ko} /></>}<div className="decision-context"><h4>역할 구성</h4><ul className="role-list">{c.roles.map(r => <li key={r.role} data-role-job={r.role}><b>{roleKo(r.role, r.role_ko)}</b><p>{summaryKo(r.job_ko, '담당 업무 미기록')}</p><span>{flowStatusKo(r.status)}</span></li>)}</ul><h4>선택 이유</h4><ul>{c.decision.steps.map((s, i) => <li key={i}>{summaryKo(s.detail_ko, '판단 확인 중')}</li>)}</ul>{c.budget && <><h4>예산</h4><p>호출 최대 {c.budget.max_agent_calls ?? '미기록'}회 · 비용 상한 {c.budget.max_cost_usd ?? '미기록'} USD · 제한 시간 {c.budget.deadline_s ?? '미기록'}초</p></>}</div></>;
   else if (n.type === 'group') body = <p>선택 이유와 판단 과정은 서버 기록을 받으면 표시합니다(현재 미기록).</p>;
   else if (c?.kind === 'agent') body = <>{body}{n.type === 'verify' && <VerifyResult card={c} />}{c.candidates[0]?.cause_ko && <p><b>첫 원인 후보</b> {summaryKo(c.candidates[0].cause_ko, '원인 확인 중')}</p>}{n.status !== 'running' && <dl className="kv step-kv"><dt>원인 후보</dt><dd>{c.candidates.length}개 · {confidenceKo(c.candidates[0]?.confidence)}</dd><dt>검증 판정</dt><dd>{summaryKo(c.verdict_ko, '판정 미기록')}</dd><dt>다음 행동</dt><dd>{summaryKo(c.next_action_ko, '미기록')}</dd>{c.error && <><dt>오류</dt><dd>실행 오류 · 원문에서 확인하세요.</dd></>}</dl>}{n.status !== 'running' && <AgentBasis card={c} />}</>;
   else if (c?.kind === 'action') body = <>{body}<p>{c.target} · {summaryKo(c.status_ko, '상태 확인 중')}</p></>;
   else if (n.type === 'outcome' && ((c?.kind === 'outcome' && c.handoff) || p.handoff)) body = <HandoffSummary view={(c?.kind === 'outcome' && c.handoff) || p.handoff!} />;
+  else if (n.type === 'interpret') body = <>{body}{data.raw.filter(r => r.ko_source === 'llm' && r.ko).map(r => <p key={r.id}>{summaryKo(r.ko, '해석 확인 중')}</p>)}</>;
   else if (n.type === 'steer') body = <><p>운영자 지시 기록</p>{steerTarget && <button type="button" className="link-btn" onClick={() => p.onJump(steerTarget)}>대상 단계 카드로 이동</button>}</>;
-  const alwaysOpen = n.type === 'steer', isOpen = p.open || alwaysOpen;
-  return <section id={stepDomId(n.id)} className={`step-card type-${n.type} status-${n.status} ${isOpen ? 'open' : ''} ${p.flash ? 'flash' : ''}`} tabIndex={-1} aria-label={`단계 카드: ${index} · ${title}`} data-node-id={n.id} data-steer-mid={steerMid ?? undefined}>
-    <header className="step-head"><span className="step-kind">{index}</span><h3>{title}</h3><span className={`badge ${tone(n.status)}`}>{p.snapshot ? '당시 ' : ''}{flowStatusKo(n.status)}</span><time className="step-time">{n.at ? clock(n.at) : '시각 미기록'}</time></header>
-    {!isOpen && <p className="step-summary">{stepSummary(n, data, p.snapshot)}</p>}
-    {!isOpen && c?.kind === 'group' && <RoleModels roles={c.roles} />}
-    {!isOpen && c?.kind === 'routing' && <ModelChoice policy={c.model_policy} />}
+  return <section id={stepDomId(n.id)} className={`step-card type-${n.type} status-${n.status} open ${p.flash ? 'flash' : ''}`} tabIndex={-1} aria-label={`단계 카드: ${index} · ${title}`} data-node-id={n.id} data-steer-mid={steerMid ?? undefined}>
+    <header className="step-head"><span className="step-kind">{index}</span><h3>{title}</h3><span className={`badge ${tone(n.status)}`}>{recorded ? '당시 ' : ''}{flowStatusKo(n.status)}</span><time className="step-time">{n.at ? clock(n.at) : '시각 미기록'}</time></header>
     <EscalationNote n={n} />
-    {isOpen && <div className="step-body">{body}{n.type === 'verify' && <p className="faint">분석 결과에 대한 검증이며, 실제 서비스 복구 검증과는 다릅니다.</p>}</div>}
-    {(isOpen || n.status === 'running') && ['agent', 'verify', 'router'].includes(n.type) && <ExecutionStream node={n} view={p.execution ?? { records: [], attempts: [], final: null }} state={p.streamState ?? 'connecting'} error={p.streamError ?? false} receivedAt={p.receivedAt ?? null} />}
-    {isOpen && n.type !== 'steer' && <StepThread events={p.thread} local={p.local} node={n} name={p.name} />}
+    <div className="step-body">{body}{n.type === 'verify' && <p className="faint">분석 결과에 대한 검증이며, 실제 서비스 복구 검증과는 다릅니다.</p>}</div>
+    {['agent', 'verify', 'router'].includes(n.type) && <ExecutionStream node={n} view={p.execution ?? { records: [], attempts: [], final: null }} state={p.streamState ?? 'connecting'} error={p.streamError ?? false} receivedAt={p.receivedAt ?? null} />}
+    {n.type !== 'steer' && <StepThread events={p.thread} local={p.local} node={n} name={p.name} />}
     {n.type === 'steer' && <StepThread events={p.thread} local={[]} node={null} name={p.name} />}
-    {isOpen && steerable && p.snapshot && <p className="muted">저장 표본은 열람만 가능합니다.</p>}
-    {isOpen && steerable && !p.snapshot && <StepChat node={n} targetRole={p.targetRole} closed={p.closed} finished={p.finished} draft={p.draft} onDraft={p.onDraft} onSend={p.onSend} name={p.name} />}
-    <div className="step-actions">{!alwaysOpen && <button type="button" className="btn sm" aria-expanded={isOpen} onClick={p.onToggle}>{isOpen ? '접기' : '펼치기'}</button>}<button type="button" className="btn sm" onClick={e => p.onDetail({ kind: 'node', nodeId: n.id }, e.currentTarget)}>원문 보기</button></div>
+    {steerable && p.snapshot && <p className="muted">저장 표본은 열람만 가능합니다.</p>}
+    {steerable && !p.snapshot && <StepChat node={n} targetRole={p.targetRole} closed={p.closed} finished={p.finished} draft={p.draft} onDraft={p.onDraft} onSend={p.onSend} name={p.name} />}
+    {(n.model || n.cost_usd != null || n.duration_ms != null) && <div className="step-metrics"><span>{n.model || '모델 미기록'} · {effortKo(n.effort)}</span><span>비용 {money(n.cost_usd)}</span><span>소요 {n.duration_ms == null ? '미기록' : `${(n.duration_ms / 1000).toFixed(1)}초`}</span><span>입력 / 출력 토큰 {n.tokens?.in ?? '미관측'} / {n.tokens?.out ?? '미관측'}</span></div>}
+    <div className="step-actions"><button type="button" className="btn sm" onClick={e => p.onDetail({ kind: 'node', nodeId: n.id }, e.currentTarget)}>원문 보기</button></div>
   </section>;
 }

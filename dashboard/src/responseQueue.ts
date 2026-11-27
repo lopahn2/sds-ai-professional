@@ -32,7 +32,7 @@ export function responseQueue(live: Source[], overviewOpen: Source[] = []): Queu
   for (const i of [...overviewOpen, ...live]) {
     byId.set(i.id, {
       id: i.id, workload: i.workload, status: i.status, severity_level: i.severity_level ?? null, created_at: i.created_at,
-      environment: i.environment, system: i.system, namespace: i.namespace, claimed: Boolean(i.handoff?.claimed_by),
+      environment: i.environment, system: i.system, namespace: i.namespace, claimed: Boolean(i.handoff?.claimed_by || ('claimed' in i && i.claimed)),
     });
   }
   return [...byId.values()].sort((a, b) =>

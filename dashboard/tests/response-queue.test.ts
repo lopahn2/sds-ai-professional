@@ -53,3 +53,9 @@ test('서비스 중복을 제거하고 현재 승인과 자동 조치를 따로 
   assert.deepEqual(currentResponse([], true), { services: 0, automatic: 0, approval: 0 });
   assert.deepEqual(currentResponse(live, false), { services: null, automatic: null, approval: null });
 });
+
+test('운영 현황 API의 claimed 값도 인수 상태로 표시한다', () => {
+  const q = responseQueue([], [inc(9, 'handed_off', 'NORMAL', {claimed:true})]);
+  assert.equal(q[0].claimed, true);
+  assert.equal(needsOperator(q[0].status,q[0].claimed),false);
+});

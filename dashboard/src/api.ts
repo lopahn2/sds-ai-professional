@@ -106,7 +106,7 @@ export type NamespaceStat = { name: string; pods_running: number | null; pods_pe
 export type WorkloadIncident = { id: number; level: Level | string | null; status: string; stage: Stage | null; system?: string | null; environment?: string | null };
 export type Workload = { metric_at?:number|null; id: string; namespace: string; system?: string | null; environment?: string | null; name: string; kind: string; ready: number | null; desired: number | null; restarts_1h: number | null; cpu: number | null; mem: number | null; req_rate: number | null; err_rate: number | null; p95_ms: number | null; incident: WorkloadIncident | null };
 export type ClusterEvent = { at: string | null; namespace: string | null; object: string; reason: string; type: string; message: string; count: number | null };
-export type OpenIncident = { id: number; title: string; namespace: string; system?: string | null; environment?: string | null; workload: string; severity_level: Level | string | null; status: string; stage: Stage | null; created_at: string };
+export type OpenIncident = { claimed?: boolean; id: number; title: string; namespace: string; system?: string | null; environment?: string | null; workload: string; severity_level: Level | string | null; status: string; stage: Stage | null; created_at: string };
 export type ActiveIncident = Omit<OpenIncident, 'stage'> & {
   title_ko?: string | null;
   claimed?: boolean;
