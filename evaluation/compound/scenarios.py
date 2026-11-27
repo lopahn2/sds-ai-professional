@@ -306,6 +306,9 @@ class C2SplitPrimary:
                 "alter system reset default_transaction_read_only; select pg_reload_conf();"),
             "pool_max_12": lambda: redeploy(**{"spring.datasource.hikari.maximum-pool-size": "12"}),
             "order_single_attempt": lambda: C1MaskedLeak.order(self, run, {"shopfront.order.stock.retries": "0"}),
+            # same values as the dev primitive of liveprobe_arm (C2c round 1 applied it)
+            "order_retries_1_backoff": lambda: C1MaskedLeak.order(self, run, {"shopfront.order.stock.retries": "1",
+                                                                             "shopfront.order.stock.backoff-ms": "300"}),
         }
 
     def verify(self, run: Run, soak: float) -> dict:
