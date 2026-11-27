@@ -45,6 +45,10 @@ class FaultWorker:
     def inject(self, public_case: dict) -> dict:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def verify_outcome(self, public_case: dict) -> dict | None:
+        """Read the service after the runner exits and before any test cleanup."""
+        return None
+
     def restore_baseline(self, public_case: dict) -> tuple[bool, dict]:  # pragma: no cover
         raise NotImplementedError
 

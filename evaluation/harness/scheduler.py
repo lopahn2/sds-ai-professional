@@ -171,6 +171,17 @@ def run_campaign(store_dir: Path, catalog: Catalog, runner: InferenceRunner, wor
                         res = runner.run(arm, case)
                         cost, output, err = res.cost_usd, res.output, res.error
                         status = "completed" if res.ok else "failed"
+                        try:
+                            proof = worker.verify_outcome(case)
+                        except Exception as exc:  # evidence unavailable; preserve model result and still restore the fixture
+                            proof = {"status": "unobserved", "error_type": type(exc).__name__}
+                        if proof is not None:
+                            output = {**output, "before_cleanup_verification": proof}
+                            proposed = output.get("outcome") or {}
+                            if proposed.get("kind") == "auto_recovered":
+                                output["runner_outcome"] = proposed
+                                output["outcome"] = {**proposed, "verified": proposed.get("verified") is True
+                                                     and proof.get("status") == "healthy"}
                     except Exception as exc:  # noqa: BLE001 - any runner failure stops safely below
                         err = f"{type(exc).__name__}: {exc}"
                     except BaseException as exc:

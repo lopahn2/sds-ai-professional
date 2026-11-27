@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lp-eval-kw04
+  namespace: dev
+  labels:
+    app: lp-eval-kw04
+    app.kubernetes.io/part-of: liveprobe-verification
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: lp-eval-kw04
+  template:
+    metadata:
+      labels:
+        app: lp-eval-kw04
+        app.kubernetes.io/part-of: liveprobe-verification
+    spec:
+      serviceAccountName: default
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verification
+          image: liveprobe/k8s-verification@sha256:661e494b9e413e15cc0ad50eee9edf925f79630b087ee0df70ff259ad78a5209
+          imagePullPolicy: Never
+          command: [python, -B, -c]
+          args:
+            - |
+              from http.server import BaseHTTPRequestHandler, HTTPServer
+
+              class ReadinessHandler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path != '/ready':
+                          self.send_error(404)
+                          return
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'kw04-ready\n')
+
+                  def log_message(self, *args):
+                      pass
+
+              HTTPServer(('0.0.0.0', 8080), ReadinessHandler).serve_forever()
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

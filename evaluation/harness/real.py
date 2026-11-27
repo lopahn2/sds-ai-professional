@@ -14,6 +14,7 @@ from dataclasses import asdict
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import time
 
@@ -64,20 +65,26 @@ class K8sFaultWorker(FaultWorker):
     def _cx(self, target: str, method: str, path: str, body: dict | None = None, timeout: int = 20):
         """Authenticated call to the target's loopback chaos API. The token is read inside the container
         (CHAOS_OPERATOR_TOKEN) and never leaves it."""
-        script = ("printf 'Authorization: Bearer %s' \"$CHAOS_OPERATOR_TOKEN\" | curl -sS -m 10 -o /tmp/.cx_out "
-                  "-w '%{http_code}' -H @- -H 'Content-Type: application/json' "
-                  + ("--data-binary @/tmp/.cx_in " if body is not None else "")
-                  + f"-X {method} http://127.0.0.1:8080{path}; echo; cat /tmp/.cx_out; rm -f /tmp/.cx_out /tmp/.cx_in")
-        if body is not None:
-            script = "cat > /tmp/.cx_in; " + script
-        r = subprocess.run(["kubectl", "--context", CONTEXT, "-n", self.c.NS, "exec", "-i", f"deploy/{target}", "-c", target,
-                            "--", "sh", "-c", script], input=json.dumps(body) if body is not None else "", text=True,
-                           capture_output=True, timeout=timeout)
-        head, _, rest = r.stdout.partition("\n")
-        try:
-            return int(head.strip()[-3:]), (json.loads(rest) if rest.strip().startswith("{") else {"raw": rest[:200]})
-        except ValueError:
+        script = """set -eu
+method=$1
+path=$2
+shift 2
+if [ "$#" -eq 1 ]; then set -- --data-binary "$1"; fi
+printf 'Authorization: Bearer %s\\n' "$CHAOS_OPERATOR_TOKEN" | curl -sS -m 10 -w '\\n%{http_code}' \\
+    -H @- -H 'Content-Type: application/json' -X "$method" "http://127.0.0.1:8080$path" "$@"
+"""
+        data = [] if body is None else [json.dumps(body)]
+        r = subprocess.run(["kubectl", "--context", CONTEXT, "-n", self.c.NS, "exec", f"deploy/{target}", "-c", target,
+                            "--", "sh", "-c", script, "liveprobe-control", method, path, *data],
+                           text=True, capture_output=True, timeout=timeout)
+        response, _, status = r.stdout.rstrip().rpartition("\n")
+        if r.returncode or not re.fullmatch(r"[1-5][0-9]{2}", status):
             return -1, {"raw": (r.stdout + r.stderr)[:200]}
+        try:
+            decoded = json.loads(response)
+        except ValueError:
+            decoded = None
+        return int(status), decoded if isinstance(decoded, dict) else {"raw": response[:200]}
 
     def _chaos_body(self, case: dict) -> dict:
         mode, params = case["injection"]["mode"], case["injection"]["parameters"]
@@ -100,7 +107,7 @@ class K8sFaultWorker(FaultWorker):
             time.sleep(every)
         return None
 
-    def _chaos_signal(self, target: str, api: str, restarts0: int, delay_ms: int):
+    def _chaos_signal(self, target: str, api: str, restarts0: int, delay_ms: int, *, pool=None):
         c = self.c
         if api == "crash":
             def crashed():
@@ -119,8 +126,12 @@ class K8sFaultWorker(FaultWorker):
                 return float(out.strip()) * 1000 >= delay_ms * 0.8 and "slow"
             return self._wait(slow, 30)
         if api == "pool_exhaust":
-            return self._wait(lambda: self._cx(target, "GET", "/internal/chaos/v1/faults")[1].get("held_connections", 0) > 0
-                              and "pool_held", 20)
+            def held():
+                code, state = self._cx(target, "GET", "/internal/chaos/v1/faults")
+                return (code == 200 and state.get("mode") == "pool_exhaust"
+                        and (state.get("held_connections"), state.get("operation_id")) == pool
+                        and "pool_held")
+            return self._wait(held, 20)
         return self._wait(lambda: c.endpoints(target) == 0 and "no_endpoints", 40)
 
     def _start_hold(self, target: str, body: dict):
@@ -174,7 +185,8 @@ class K8sFaultWorker(FaultWorker):
         out = {}
         for t in self.TARGETS:
             d = self.c.obj("deployment", t)
-            c = d["spec"]["template"]["spec"]["containers"][0]
+            c = next(container for container in d["spec"]["template"]["spec"]["containers"]
+                     if container["name"] == t)
             out[t] = {"memory": ((c.get("resources") or {}).get("limits") or {}).get("memory"),
                       "replicas": d["spec"].get("replicas", 1),
                       "restartedAt": ((d["spec"]["template"].get("metadata") or {}).get("annotations") or {}).get(
@@ -186,17 +198,17 @@ class K8sFaultWorker(FaultWorker):
         now = self._agent_mutable_spec()
         for t, want in (getattr(self, "spec_before", None) or {}).items():
             have = now[t]
-            if have["memory"] != want["memory"] and want["memory"]:
-                self.c.kubectl("set", "resources", f"deployment/{t}", "-c", t, f"--limits=memory={want['memory']}")
+            spec, template = {}, {}
+            if have["memory"] != want["memory"]:
+                template["spec"] = {"containers": [{"name": t, "resources": {"limits": {"memory": want["memory"]}}}]}
             if have["replicas"] != want["replicas"]:
-                self.c.kubectl("scale", f"deployment/{t}", f"--replicas={want['replicas']}")
+                spec["replicas"] = want["replicas"]
             if have["restartedAt"] != want["restartedAt"]:
-                if want["restartedAt"] is None:
-                    self.c.kubectl("patch", "deployment", t, "--type=json", "-p", json.dumps(
-                        [{"op": "remove", "path": "/spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt"}]))
-                else:
-                    self.c.kubectl("annotate", f"deployment/{t}", f"kubectl.kubernetes.io/restartedAt={want['restartedAt']}",
-                                   "--overwrite")
+                template["metadata"] = {"annotations": {"kubectl.kubernetes.io/restartedAt": want["restartedAt"]}}
+            if template:
+                spec["template"] = template
+            if spec:
+                self.c.kubectl("patch", "deployment", t, "--type=strategic", "-p", json.dumps({"spec": spec}))
         for t in self.TARGETS:
             self.c.kubectl("rollout", "status", f"deployment/{t}", "--timeout=150s", timeout=165)
 
@@ -255,45 +267,121 @@ class K8sFaultWorker(FaultWorker):
         pass
 
     def inject(self, public_case: dict) -> dict:
+        if self.mode is not None:
+            raise self.c.Stop("previous injection has not been restored")
         cid = public_case["id"]
+        if not isinstance(cid, str) or not re.fullmatch(r"[FN][1-4]-\d{2}", cid):
+            raise self.c.Stop("invalid case identifier")
         case = json.loads((self.cases_dir / f"{cid}.yaml").read_text())     # operator side: needs injection params only
+        if self.c.check(case) or case["id"] != cid:
+            raise self.c.Stop("invalid case definition at injection time")
         mode = case["injection"]["mode"]
+        target = case["target"]
         if mode not in SUPPORTED_MODES:
             raise self.c.Stop(f"{cid}: unknown mode {mode}")
-        self.mode, self.target = mode, case["target"]
+        if target not in self.TARGETS:
+            raise self.c.Stop(f"{cid}: unexpected target")
+        self.signal_seen = None
         gate = self._gate()
+        self.c.healthy(self.before, stable=0)
         if mode in CHAOS_MODES:
             return self._inject_chaos(case, gate)
-        self.c.healthy(self.before, stable=0)
-        self.old_uids = {uid for _, uid, _ in self.c.pod_status(self.target)}
+        self.old_uids = {uid for _, uid, _ in self.c.pod_status(target)}
         params = case["injection"]["parameters"]
         t0 = time.monotonic()
+        # The server may complete a request after the client times out.
+        self.mode, self.target = mode, target
         if mode == "bad_image":
-            self.c.kubectl("set", "image", f"deployment/{self.target}", f"{self.target}={params['tag']}")
+            self.c.kubectl("set", "image", f"deployment/{target}", f"{target}={params['tag']}")
         else:
-            self.c.kubectl("patch", "service", self.target, "--type=merge", "-p",
+            self.c.kubectl("patch", "service", target, "--type=merge", "-p",
                            json.dumps({"spec": {"selector": {"app": params["selector_value"]}}}))
-        self.signal_seen = self.c.signal(self.target, mode, self.old_uids)
+        self.signal_seen = self.c.signal(target, mode, self.old_uids)
         return {"mode": mode, "node_gate": gate, "signal": self.signal_seen,
                 "signal_after_s": round(time.monotonic() - t0, 1)}
 
     def _inject_chaos(self, case: dict, gate: dict) -> dict:
-        target, mode = self.target, self.mode
+        target, mode = case["target"], case["injection"]["mode"]
         api, body = CHAOS_MODES[mode], self._chaos_body(case)
-        self.c.healthy(self.before, stable=0)
+        params = case["injection"]["parameters"]
+        connections = None
+        if api == "pool_exhaust":
+            connections = params["connections"]
+            code, current = self._cx(target, "GET", "/internal/chaos/v1/faults")
+            # The live control holds the entire pool. Its configured capacity is part of case identity.
+            if (type(connections) is not int or connections < 1 or code != 200 or current.get("mode") != "off"
+                    or current.get("held_connections") != 0 or current.get("pool_max") != connections):
+                raise self.c.Stop(f"{target} pool baseline does not match the case's {connections} connections")
         st0 = self.c.pod_status(target)
         restarts0 = max((s.get("restartCount", 0) for _, _, s in st0), default=0)
         t0 = time.monotonic()
+        self.mode, self.target = mode, target
         sc, j = self._cx(target, "POST", "/internal/chaos/v1/faults", body)
         if sc != 202:
             raise self.c.Stop(f"chaos POST {api} on {target} returned {sc}")
+        pool = None
+        if connections is not None:
+            if (j.get("held_connections"), j.get("pool_max")) != (connections, connections) or not j.get("operation_id"):
+                raise self.c.Stop(f"{target} did not hold the requested pool or returned no operation id")
+            pool = (connections, j["operation_id"])
         self._start_hold(target, body)
-        sig = self._chaos_signal(target, api, restarts0, case["injection"]["parameters"].get("delay_ms", 0))
+        sig = self._chaos_signal(target, api, restarts0, params.get("delay_ms", 0), pool=pool)
         if not sig:
             self._stop_hold()
             raise self.c.Stop(f"expected {api} symptom on {target} not observed")
         self.signal_seen = sig
-        return {"mode": mode, "api": api, "node_gate": gate, "signal": sig, "signal_after_s": round(time.monotonic() - t0, 1)}
+        proof = {"mode": mode, "api": api, "node_gate": gate, "signal": sig, "signal_after_s": round(time.monotonic() - t0, 1)}
+        if pool:
+            proof.update(held_connections=connections, operation_id=pool[1])
+        return proof
+
+    def _request_receipt(self, target: str) -> dict:
+        paths = {"inventory": "/api/stock/a", "order": "/api/orders/check?item=a"}
+        response = self.c.kubectl("exec", "deploy/loadgen", "-c", "loadgen", "--", "curl", "-s", "-o", "/dev/null",
+                                  "-m", "5", "-w", "%{http_code} %{time_total}",
+                                  f"http://{target}.{self.c.NS}.svc:8080{paths[target]}", timeout=12)
+        code, elapsed = response.strip().split()
+        return {"status": int(code), "latency_ms": round(float(elapsed) * 1_000, 3)}
+
+    def verify_outcome(self, public_case: dict) -> dict:
+        if self.mode is None or self.target not in self.TARGETS or not self.signal_seen:
+            return {"status": "unobserved", "reason": "initial_fault_not_confirmed"}
+        target = self.target
+        deployment = self.c.obj("deployment", target)
+        status, metadata = deployment["status"], deployment["metadata"]
+        desired = deployment["spec"].get("replicas", 1)
+        ready = status.get("readyReplicas", 0)
+        updated = status.get("updatedReplicas", 0)
+        endpoints = self.c.endpoints(target)
+        if self.mode == "bad_image":
+            image = next(container["image"] for container in deployment["spec"]["template"]["spec"]["containers"]
+                         if container["name"] == target)
+            cleared = image == self.before[target]["image"]
+        elif self.mode == "selector_mismatch":
+            cleared = self.c.obj("service", target)["spec"]["selector"] == self.before[target]["selector"]
+        else:
+            code, state = self._cx(target, "GET", "/internal/chaos/v1/faults")
+            cleared = code == 200 and state.get("mode") == "off" and state.get("held_connections", 0) == 0
+
+        receipts = []
+        for _ in range(2):
+            try:
+                receipts.append(self._request_receipt(target))
+            except self.c.Stop:
+                receipts.append({"status": None, "latency_ms": None, "transport": "probe_failed"})
+        checks = {"current_generation": status.get("observedGeneration") == metadata.get("generation")
+                  and metadata.get("generation") is not None,
+                  "replicas_ready": desired > 0 and ready == desired,
+                  "current_template_ready": desired > 0 and updated == desired and status.get("replicas", 0) == desired,
+                  "ready_endpoint": endpoints > 0,
+                  "fault_cleared": cleared, "original_request_ok": all(row["status"] == 200 for row in receipts)}
+        if self.mode == "controlled_latency":
+            case = json.loads((self.cases_dir / f"{public_case['id']}.yaml").read_text())
+            observed_threshold = case["injection"]["parameters"]["delay_ms"] * 0.8
+            checks["latency_below_fault_threshold"] = all(row["latency_ms"] is not None and row["latency_ms"] < observed_threshold
+                                                           for row in receipts)
+        return {"status": "healthy" if all(checks.values()) else "unhealthy", "checks": checks, "original_requests": receipts,
+                "ready_replicas": ready, "ready_endpoints": endpoints}
 
     def restore_baseline(self, public_case: dict):
         info = {"case": public_case["id"], "ok": False}
@@ -308,6 +396,8 @@ class K8sFaultWorker(FaultWorker):
             while True:
                 try:
                     self.c.healthy(self.before, stable=self.stable_s, pg_max=self.pg_base)
+                    if self.mode is not None and self._agent_mutable_spec() != self.spec_before:
+                        raise self.c.Stop("agent-mutable fields did not return to baseline")
                     break
                 except self.c.Stop:
                     if time.monotonic() >= end:

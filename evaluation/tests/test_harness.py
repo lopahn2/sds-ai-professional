@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock
+
+import pytest
 
 from evaluation.harness import arms as arms_mod
 from evaluation.harness.arms import ARMS, ARM_IDS, validate_arms
@@ -230,6 +233,64 @@ class BudgetTests(Base):
 
 
 class ResumeTests(Base):
+    def test_probe_checks_service_before_cleanup_and_requires_independent_recovery(self):
+        class ConfirmedRunner(FakeRunner):
+            def run(self, arm, public_case):
+                result = super().run(arm, public_case)
+                result.output["outcome"] = {"kind": "auto_recovered", "verified": True}
+                return result
+
+        class FailingProbe(FakeFaultWorker):
+            def verify_outcome(self, public_case):
+                self.events.append(("verify", public_case["id"]))
+                return {"status": "unhealthy", "original_requests": [{"status": 503}, {"status": 503}]}
+
+        worker = FailingProbe()
+        outcome = self.camp(Catalog(synthetic_catalog(self.tmp)), ConfirmedRunner(), worker, max_pairs=1)
+        self.assertFalse(outcome.stopped)
+        self.assertEqual([event for event, _ in worker.events], ["acquire", "inject", "verify", "restore", "release"])
+        manifest = json.loads((self.store / "manifest.json").read_text())
+        progress = ProgressStore(self.store / "progress.jsonl", manifest["manifest_id"])
+        record = next(r for r in progress.records if r["kind"] == "done")
+        output = record["output"]
+        self.assertTrue(record["baseline"]["ok"])
+        self.assertTrue(output["runner_outcome"]["verified"])
+        self.assertFalse(output["outcome"]["verified"])
+
+    def test_kubernetes_verifier_checks_image_and_original_requests(self):
+        from types import SimpleNamespace
+        from evaluation.harness.real import K8sFaultWorker
+
+        worker = K8sFaultWorker.__new__(K8sFaultWorker)
+        worker.mode, worker.target, worker.signal_seen = "bad_image", "inventory", {"reason": "ErrImagePull"}
+        worker.before = {"inventory": {"image": "approved-image"}}
+        container = {"name": "inventory", "image": "approved-image"}
+        deployment = {"metadata": {"generation": 7}, "spec": {"replicas": 1, "template": {"spec": {"containers": [container]}}},
+                      "status": {"observedGeneration": 7, "readyReplicas": 1, "updatedReplicas": 1, "replicas": 1}}
+        worker.c = SimpleNamespace(obj=lambda *_: deployment, endpoints=lambda _: 1)
+        receipts = iter([{"status": 200, "latency_ms": 8}, {"status": 503, "latency_ms": 7}])
+        worker._request_receipt = lambda _: next(receipts)
+        proof = worker.verify_outcome({"id": "F1-01"})
+        self.assertEqual(proof["status"], "unhealthy")
+        self.assertTrue(proof["checks"]["fault_cleared"])
+        self.assertFalse(proof["checks"]["original_request_ok"])
+
+        worker._request_receipt = lambda _: {"status": 200, "latency_ms": 8}
+        container["image"] = "still-faulted"
+        proof = worker.verify_outcome({"id": "F1-01"})
+        self.assertEqual(proof["status"], "unhealthy")
+        self.assertFalse(proof["checks"]["fault_cleared"])
+
+        container["image"] = "approved-image"
+        deployment["status"].update(updatedReplicas=1, replicas=2)
+        proof = worker.verify_outcome({"id": "F1-01"})
+        self.assertEqual(proof["status"], "unhealthy")
+        self.assertTrue(proof["checks"]["replicas_ready"])
+        self.assertFalse(proof["checks"]["current_template_ready"])
+
+        deployment["status"].update(replicas=1)
+        self.assertEqual(worker.verify_outcome({"id": "F1-01"})["status"], "healthy")
+
     def test_interrupt_and_resume_skips_completed(self):
         cat = Catalog(synthetic_catalog(self.tmp))
         first = self.camp(cat, max_pairs=3)
@@ -461,6 +522,132 @@ _S = {"inventory": {"memory": "512Mi", "replicas": 1, "restartedAt": None},
       "order": {"memory": "512Mi", "replicas": 1, "restartedAt": None}}
 
 
+@pytest.mark.parametrize("case_id", ["F1-01", "F2-01"])
+@pytest.mark.parametrize("failed_check", ["_gate", "healthy", "pod_status"])
+def test_injection_preflight_failure_only_reads_during_cleanup(case_id, failed_check):
+    from evaluation.harness.real import K8sFaultWorker
+
+    worker = K8sFaultWorker()
+    worker._gate = Mock(return_value={})
+    worker.c.healthy = Mock()
+    worker.c.pod_status = Mock(return_value=[])
+    worker.c.kubectl = Mock()
+    worker.c.restore = Mock()
+    worker._chaos_restore = Mock()
+    worker._restore_agent_spec = Mock()
+    check = worker._gate if failed_check == "_gate" else getattr(worker.c, failed_check)
+    check.side_effect = worker.c.Stop("fixture preflight failed")
+    public_case = {"id": case_id}
+
+    with pytest.raises(worker.c.Stop, match="fixture preflight failed"):
+        worker.inject(public_case)
+    check.side_effect = None
+    restored, _ = worker.restore_baseline(public_case)
+
+    assert restored
+    worker.c.kubectl.assert_not_called()
+    worker.c.restore.assert_not_called()
+    worker._chaos_restore.assert_not_called()
+    worker._restore_agent_spec.assert_not_called()
+
+
+def test_injection_revalidates_the_fixture_at_write_time(tmp_path):
+    from evaluation.harness.real import K8sFaultWorker
+
+    worker = K8sFaultWorker(cases_dir=tmp_path)
+    real = K8sFaultWorker().cases_dir / "F1-01.yaml"
+    case = json.loads(real.read_text())
+    case["injection"]["parameters"]["tag"] = "unapproved.registry.example/image:latest"
+    (tmp_path / "F1-01.yaml").write_text(json.dumps(case))
+    worker._gate = Mock()
+
+    with pytest.raises(worker.c.Stop, match="invalid case definition"):
+        worker.inject({"id": "F1-01"})
+    with pytest.raises(worker.c.Stop, match="invalid case identifier"):
+        worker.inject({"id": "../F1-01"})
+
+    worker._gate.assert_not_called()
+
+
+def test_pool_fixture_rejects_capacity_that_does_not_match_case():
+    from evaluation.harness.real import K8sFaultWorker
+
+    worker = K8sFaultWorker()
+    worker._gate = Mock(return_value={})
+    worker.c.healthy = Mock()
+    worker._cx = Mock(return_value=(200, {"mode": "off", "pool_max": 3, "held_connections": 0}))
+    with pytest.raises(worker.c.Stop, match="inventory pool baseline.*2 connections"):
+        worker.inject({"id": "F3-02"})
+    worker._cx.assert_called_once_with("inventory", "GET", "/internal/chaos/v1/faults")
+    assert worker.mode is None
+
+
+def test_chaos_control_keeps_concurrent_responses_in_their_own_stream(monkeypatch):
+    from evaluation.harness import real
+
+    worker = real.K8sFaultWorker()
+    process = Mock(returncode=0, stdout='{"mode":"pool_exhaust","held_connections":2}\n202\n')
+    run = Mock(return_value=process)
+    monkeypatch.setattr(real.subprocess, "run", run)
+    body = {"mode": "pool_exhaust", "duration_seconds": 30}
+    assert worker._cx("inventory", "POST", "/internal/chaos/v1/faults", body) == (
+        202, {"mode": "pool_exhaust", "held_connections": 2},
+    )
+    command, = run.call_args.args
+    assert command[-3:-1] == ["POST", "/internal/chaos/v1/faults"]
+    assert json.loads(command[-1]) == body
+    assert "/tmp/" not in command[-5]
+
+
+def test_pool_signal_uses_exact_connections_and_original_operation():
+    from evaluation.harness.real import K8sFaultWorker
+
+    worker = K8sFaultWorker()
+    worker._gate = Mock(return_value={})
+    worker.c.healthy = Mock()
+    worker.c.pod_status = Mock(return_value=[])
+    worker._start_hold = Mock()
+    worker._wait = lambda query, timeout: query()
+    worker._cx = Mock(side_effect=[
+        (200, {"mode": "off", "pool_max": 2, "held_connections": 0}),
+        (202, {"held_connections": 2, "pool_max": 2, "operation_id": "original"}),
+        (200, {"mode": "pool_exhaust", "held_connections": 2, "operation_id": "original"}),
+        (200, {"mode": "pool_exhaust", "held_connections": 2, "operation_id": "other"}),
+    ])
+    receipt = worker.inject({"id": "F3-02"})
+    assert (receipt["signal"], receipt["held_connections"], receipt["operation_id"]) == ("pool_held", 2, "original")
+    assert not worker._chaos_signal("inventory", "pool_exhaust", 0, 0, pool=(2, "original"))
+
+
+@pytest.mark.parametrize("case_id,route", [("F1-01", "kubectl"), ("F2-01", "_cx")])
+def test_mutation_timeout_retains_the_restoration_scope(case_id, route):
+    from subprocess import TimeoutExpired
+    from evaluation.harness.real import K8sFaultWorker
+
+    worker = K8sFaultWorker()
+    worker._gate = Mock(return_value={})
+    worker.c.healthy = Mock()
+    worker.c.pod_status = Mock(return_value=[])
+    worker.c.restore = Mock()
+    worker._chaos_restore = Mock()
+    worker._restore_agent_spec = Mock()
+    worker.spec_before = _S
+    worker._agent_mutable_spec = Mock(return_value=_S)
+    setattr(worker.c if route == "kubectl" else worker, route, Mock(side_effect=TimeoutExpired(route, 1)))
+    public_case = {"id": case_id}
+
+    with pytest.raises(TimeoutExpired):
+        worker.inject(public_case)
+    restored, _ = worker.restore_baseline(public_case)
+
+    assert restored
+    if route == "kubectl":
+        worker.c.restore.assert_called_once_with(worker.before, "inventory", "bad_image")
+    else:
+        worker._chaos_restore.assert_called_once_with("inventory")
+    worker._restore_agent_spec.assert_called_once_with()
+
+
 def test_restore_agent_spec_is_noop_when_unchanged():
     calls = []
     w = _worker_with_state(_S, _S, calls)
@@ -468,15 +655,19 @@ def test_restore_agent_spec_is_noop_when_unchanged():
     assert [c for c in calls if c[0] != "rollout"] == []
 
 
-def test_restore_agent_spec_reverts_memory_replicas_and_restart_annotation():
+@pytest.mark.parametrize("memory,restarted_at", [("512Mi", None), (None, "2026-10-06T00:00:00Z")])
+def test_restore_agent_spec_reverts_memory_replicas_and_restart_annotation(memory, restarted_at):
+    baseline = {**_S, "inventory": {"memory": memory, "replicas": 1, "restartedAt": restarted_at}}
     now = {"inventory": {"memory": "768Mi", "replicas": 2, "restartedAt": "2026-10-07T00:00:00Z"}, "order": dict(_S["order"])}
     calls = []
-    _worker_with_state(_S, now, calls)._restore_agent_spec()
+    _worker_with_state(baseline, now, calls)._restore_agent_spec()
     writes = [c for c in calls if c[0] != "rollout"]
-    assert ("set", "resources", "deployment/inventory", "-c", "inventory", "--limits=memory=512Mi") in writes
-    assert ("scale", "deployment/inventory", "--replicas=1") in writes
-    assert any(c[0] == "patch" and "restartedAt" in c[-1] for c in writes)
-    assert not [c for c in writes if "order" in " ".join(c)]            # untouched workloads are not written
+    assert len(writes) == 1
+    assert writes[0][:5] == ("patch", "deployment", "inventory", "--type=strategic", "-p")
+    assert json.loads(writes[0][5]) == {"spec": {"replicas": 1, "template": {
+        "spec": {"containers": [{"name": "inventory", "resources": {"limits": {"memory": memory}}}]},
+        "metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": restarted_at}},
+    }}}
 
 
 def test_hold_stops_rearming_after_the_workload_changes(monkeypatch):

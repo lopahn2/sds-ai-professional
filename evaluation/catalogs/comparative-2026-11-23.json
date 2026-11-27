@@ -1,0 +1,537 @@
+{
+  "schema": "liveprobe-comparison-catalog/v1",
+  "selection_date": "2026-11-23",
+  "modes": [
+    {
+      "id": "liveprobe"
+    },
+    {
+      "id": "single_astra",
+      "model": "gpt-6.2-astra",
+      "effort": "xhigh"
+    },
+    {
+      "id": "single_sol",
+      "model": "gpt-6.2-sol",
+      "effort": "high"
+    },
+    {
+      "id": "single_terra",
+      "model": "gpt-6.1-terra",
+      "effort": "medium"
+    },
+    {
+      "id": "single_luna",
+      "model": "gpt-6-luna",
+      "effort": "low"
+    }
+  ],
+  "basic": {
+    "source_labels_sha256": "f4be64dcd0ba5edcaade1ea91029fc8e31c1054587d72c95ff63ec75d9666d33",
+    "cases": [
+      {
+        "id": "F1-01",
+        "source": "chaos/cases/F1-01.yaml",
+        "case_sha256": "52b7846186401cd26cc4388613c588c8c7416759c88e6c4618341627f571bccb",
+        "label_sha256": "34f97c69381aee812b47a3e9339b7f75020605272b911c9697d92010e4c455a3"
+      },
+      {
+        "id": "F1-04",
+        "source": "chaos/cases/F1-04.yaml",
+        "case_sha256": "a0e44c0fc64d51ee00a4587df4c06e7503a85062e9043b073f5cac6822f67f85",
+        "label_sha256": "377468e2772ee0ee003b9544b4f671d21fa34c6d2f6e48c64be1d1e008745bf5"
+      },
+      {
+        "id": "F1-06",
+        "source": "chaos/cases/F1-06.yaml",
+        "case_sha256": "fc5e0197f568962c65d514549a9240767491883a44f342451bdb494a37e2f284",
+        "label_sha256": "1f39a720f5657be457d4b128b9eddac5456807c3209b6f79f814060cf4f64a04"
+      },
+      {
+        "id": "F1-07",
+        "source": "chaos/cases/F1-07.yaml",
+        "case_sha256": "0f994fa70f16250c2ab2d44b09a459d31caf8bdad4982fce9fbe57cae54383ed",
+        "label_sha256": "b634bf3c1c89f9010da0e1c65bf73e36d4b0b424147daf6824de6f813ef9b095"
+      },
+      {
+        "id": "F1-12",
+        "source": "chaos/cases/F1-12.yaml",
+        "case_sha256": "b36b03d9bd52e56600a838a65ca1f01372abab0e4b7b89724ac2e69cde23bc6a",
+        "label_sha256": "0d4b94d612c9a04516961c2a8d7523b2d116ee75bfcd7563b3a860a973b6c04b"
+      },
+      {
+        "id": "F1-13",
+        "source": "chaos/cases/F1-13.yaml",
+        "case_sha256": "ed67a3a3f7528c9dac39dc875694e376006bb973aa20a1bf6a4305df3259985b",
+        "label_sha256": "651cb14aa71796dcbc81085f4e332df3df59ae57df9a42c18460c6107c005efe"
+      },
+      {
+        "id": "F2-01",
+        "source": "chaos/cases/F2-01.yaml",
+        "case_sha256": "9e8216a32cf3c949a00acc20941822bef41f09a075251a06edab0275cd7a3778",
+        "label_sha256": "ce51b2aa64e192aa8e7fde2eee02d09fb891733784479fdbe93b219739c0e5e6"
+      },
+      {
+        "id": "F2-03",
+        "source": "chaos/cases/F2-03.yaml",
+        "case_sha256": "15795cb51548a7e4bd53f76ea8335121be66e74e58d16dbfdbd35c01d83e3587",
+        "label_sha256": "5497aa4c67d99083744b407f428d3e7c149f41c6038f7b21348f812dc0654295"
+      },
+      {
+        "id": "F2-05",
+        "source": "chaos/cases/F2-05.yaml",
+        "case_sha256": "9b7417ee3cbcdbe84986e21e7dd4feb6851a8eafe3f459884bb8bce51af9107e",
+        "label_sha256": "9b7d5f0d5f034e4e4082b543b0a452b74b5b4aa243b515fb1078f1aedc05e65c"
+      },
+      {
+        "id": "F2-07",
+        "source": "chaos/cases/F2-07.yaml",
+        "case_sha256": "df9bea97984c60e54522ee762005e7ecd68eac3374ae4b9e9f5fd60113645724",
+        "label_sha256": "f30e694df119c610832cfed9ba10876da39be0eded20757817e95227e45fdc88"
+      },
+      {
+        "id": "F2-10",
+        "source": "chaos/cases/F2-10.yaml",
+        "case_sha256": "1567b88572a496394d52a6ae25d11576abea87d75c0238a2873fb8591e0ef5a0",
+        "label_sha256": "d40e638904e2e0e3a01c5d9080b6571fd73e30bc02c5580d583cf45be673b16f"
+      },
+      {
+        "id": "F2-13",
+        "source": "chaos/cases/F2-13.yaml",
+        "case_sha256": "8d544667a1a582acaaeaea47490b4697e6c189b1bca821568ab44cbc4b11fe91",
+        "label_sha256": "45f5c4316d40651061caf4e68c2fa2e20016c037b4477716a5580ee5b42a4447"
+      },
+      {
+        "id": "F2-15",
+        "source": "chaos/cases/F2-15.yaml",
+        "case_sha256": "b2824107cd8d2f31fae51b4ad94975fda85d06a669309016535e41f7bd803f4f",
+        "label_sha256": "9e397b3a5c3a9a1eff244aa6427a54884d8d11de41a65deac88bd5f37a63790e"
+      },
+      {
+        "id": "F3-02",
+        "source": "chaos/cases/F3-02.yaml",
+        "case_sha256": "33dade4aaecd99aaa79e80707204f3cb5e81c910d801e85818e2e4ef25317fe5",
+        "label_sha256": "0f859557f64c5548551b726c59474dd3369ece3690c6e45f9f8fa430610bff4f"
+      },
+      {
+        "id": "F3-05",
+        "source": "chaos/cases/F3-05.yaml",
+        "case_sha256": "f7619b564bd1a831d8b8aee6cf7594255761379e745254a24d58a62c48be4ad7",
+        "label_sha256": "459e4a42def0ac5522ef2abd1fc59a2d1f9a7a42b08d76bbb2917c843599a0b6"
+      },
+      {
+        "id": "F3-07",
+        "source": "chaos/cases/F3-07.yaml",
+        "case_sha256": "685723d620b2431fc54318bdc2a2aff47c25c8cce6c810f31fee2f7a4ef4d707",
+        "label_sha256": "d89e9b343fc0d7b7bbb9730d53bfa2ba854a4f2f5c1fb1d9df4cdfe638534c5e"
+      },
+      {
+        "id": "F3-08",
+        "source": "chaos/cases/F3-08.yaml",
+        "case_sha256": "93f8994855bc83e80ebd32935bdcc62c44afa538750f105c6c3dc195741e3963",
+        "label_sha256": "67223b1e5a0a8c8ba73a1d69c916c92213795f524c75d12f624f284a55c996cc"
+      },
+      {
+        "id": "F3-09",
+        "source": "chaos/cases/F3-09.yaml",
+        "case_sha256": "a2e4e4a9ab0dadfbc5f725ad4d68a1c4c5104253d7f953ca9cc589ec9c7c9580",
+        "label_sha256": "f2ea25bcd192231c1f64048ed322e415c6f011c5225ca258f5c90768960a6284"
+      },
+      {
+        "id": "F3-11",
+        "source": "chaos/cases/F3-11.yaml",
+        "case_sha256": "cc835f210031b0e8472e3d5cc772cd18fa17ffff9b0ee4c8c7852b83901ad9e6",
+        "label_sha256": "7fd7fa226c52ad1eed4bfa16edee3d40b03b78bf0ad4725bc8baae795458d5eb"
+      },
+      {
+        "id": "F3-14",
+        "source": "chaos/cases/F3-14.yaml",
+        "case_sha256": "7cb1dfb7c925702e33ade0f0c9df7b2d40ddd4dd2e2ca8584f0c4d2cd433584f",
+        "label_sha256": "16c5f0b78a3f8fb364d3296ad5536ad08a8d9b6de00e21ef772451a8ba26b044"
+      },
+      {
+        "id": "F4-01",
+        "source": "chaos/cases/F4-01.yaml",
+        "case_sha256": "b9be9e99fe04a7dad9038c026dd352aec392795a48ec122b9f18b9b249dbf632",
+        "label_sha256": "c19518d430e5e866f574ca1eac32fddb082689465ecb50ebfde5e2056bd3f05a"
+      },
+      {
+        "id": "F4-02",
+        "source": "chaos/cases/F4-02.yaml",
+        "case_sha256": "dce15ac95685450ac3cfcb58e0191297cb6ec69c233b0525010de1c431b40703",
+        "label_sha256": "6c22bf773dfb2bc63638019dfcb92e94cef3cb5b3ae10a67d723f5e12f56be02"
+      },
+      {
+        "id": "F4-03",
+        "source": "chaos/cases/F4-03.yaml",
+        "case_sha256": "1360e5389759ec38ba93b48bd934b76094206e2a2a058120b62a77768a4d932d",
+        "label_sha256": "d32703f44c255d3ff3709b5afebad793718ad29e93da0e5da3b62ba7451e78f5"
+      },
+      {
+        "id": "F4-08",
+        "source": "chaos/cases/F4-08.yaml",
+        "case_sha256": "313d7eef686b3b01a3d14c51a0d0131666ca104cbc546d805d7f5a46b1370611",
+        "label_sha256": "db855e2a268fc16b937947fa385f92f879a95956d2187a0429b0c41e0e3e5b73"
+      },
+      {
+        "id": "F4-09",
+        "source": "chaos/cases/F4-09.yaml",
+        "case_sha256": "6f7052e87cc877c4272d52c51072c657fa82a1ab0c3d703e1723703893e6f411",
+        "label_sha256": "f3628e570ebdf0d0c4499775418c7c52ef0e970293ccaf72682b922476546ebf"
+      },
+      {
+        "id": "F4-11",
+        "source": "chaos/cases/F4-11.yaml",
+        "case_sha256": "6dfc5e474a6bd189cd351e647731f45e6c5c5c4ef1fafc82ccd9d0c9de515b26",
+        "label_sha256": "818d6f354028376ce545f7234360ee8ae0d6c13b7b45f6a0ea2b9503e10d2ce2"
+      },
+      {
+        "id": "F4-12",
+        "source": "chaos/cases/F4-12.yaml",
+        "case_sha256": "2b42e876f262144e28cc5f35cf29b0013ee13513dc5e1db6d304dbed5112b196",
+        "label_sha256": "9b88ebcb5652abc3c718706851afb2af1afaa836acfc9d7b7f21d03f9093fdbc"
+      }
+    ]
+  },
+  "kubernetes_new": {
+    "source": "docs/plans/kubernetes-infrastructure-incident-types-2026-11-22.md",
+    "cases": [
+      {
+        "id": "KI-01",
+        "title_ko": "배포에 필요한 API 미제공",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-02",
+        "title_ko": "Admission 웹훅 프로토콜 불일치",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-03",
+        "title_ko": "제어면과 kubelet 버전 차이",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-04",
+        "title_ko": "CRI 협상 실패",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-05",
+        "title_ko": "cgroup 변경으로 kubelet 기동 실패",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-06",
+        "title_ko": "CNI 규격 불일치",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-07",
+        "title_ko": "기존 Endpoints 기반 연결 대상 누락",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-08",
+        "title_ko": "자원 지표 공급 중단과 HPA 판단 실패",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-09",
+        "title_ko": "Istio 버전 변경 이후 설정 전파 실패",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-10",
+        "title_ko": "CoreDNS 버전 변경 뒤 이름 조회 실패",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KI-11",
+        "title_ko": "내장 볼륨 드라이버 제거·CSI 이전 누락",
+        "environment": "isolated-cluster"
+      },
+      {
+        "id": "KW-01",
+        "title_ko": "노드 배치 실패",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-02",
+        "title_ko": "필수 설정 참조 오류",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-03",
+        "title_ko": "영속 볼륨 연결·마운트 실패",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-04",
+        "title_ko": "복제본 생성 거부",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-05",
+        "title_ko": "롤아웃 진행 기한 초과",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-06",
+        "title_ko": "반복 상태 확인 실패로 가용성 저하",
+        "environment": "isolated-workload"
+      },
+      {
+        "id": "KW-07",
+        "title_ko": "노드 가용성 상실·자원 압박",
+        "environment": "isolated-cluster"
+      }
+    ]
+  },
+  "application": {
+    "source": "scripts/p18-campaign-catalog.py",
+    "source_sha256": "21ee0b72817787d5225ddf09e12654bde2918ba097504c34c4789daee137f0ed",
+    "cases": [
+      {
+        "id": "order-01",
+        "system": "order",
+        "service": "order",
+        "title_ko": "주문·재고 · 단일 업무 고정 지연",
+        "mode": "runtime",
+        "case_sha256": "91e0037de8f3f395e5b8a6d0929038e998839c84644ee2ecbd7cf093b9232a55"
+      },
+      {
+        "id": "order-04",
+        "system": "order",
+        "service": "order",
+        "title_ko": "주문·재고 · 준비 확인만 실패",
+        "mode": "runtime",
+        "case_sha256": "52332e62b4e37718f72e96ec4d4f101c00bf75cc7741b13b5967fc15166a2d59"
+      },
+      {
+        "id": "order-11",
+        "system": "order",
+        "service": "order",
+        "title_ko": "주문·재고 · 업무 계산 결함 배포",
+        "mode": "release",
+        "case_sha256": "391db0b14d129c34fd2c89fcc91ca1fa8eda519835203406c90e2a9446492293"
+      },
+      {
+        "id": "order-16",
+        "system": "order",
+        "service": "order",
+        "title_ko": "주문·재고 · 외부 연동 연결 거부",
+        "mode": "runtime",
+        "case_sha256": "70b5c200f59431393feeb520bed701810f8ff68515bd189d6ace8bacc774c236"
+      },
+      {
+        "id": "order-21",
+        "system": "order",
+        "service": "order",
+        "title_ko": "주문·재고 · 계산·입력 두 경로 결함 배포",
+        "mode": "release",
+        "case_sha256": "3438ba46b3c7ea68a9af0d93a32f7061e0c61f10335f78341901056a3a45778b"
+      },
+      {
+        "id": "payment-02",
+        "system": "payment",
+        "service": "payment",
+        "title_ko": "결제 · 모든 업무 요청 503",
+        "mode": "runtime",
+        "case_sha256": "e67f58aaec3ee1a8d56f3d615a5fe7d4b681a4f0dd3e8bfa29471897dd55d435"
+      },
+      {
+        "id": "payment-08",
+        "system": "payment",
+        "service": "payment",
+        "title_ko": "결제 · CPU 과점유",
+        "mode": "runtime",
+        "case_sha256": "b756a56fe26fcf7b54769269e5d5d30bb289441cc95aa7e0b6bd0a524566d108"
+      },
+      {
+        "id": "payment-12",
+        "system": "payment",
+        "service": "payment",
+        "title_ko": "결제 · 입력·조회 처리 결함 배포",
+        "mode": "release",
+        "case_sha256": "036e3d5735554964a1db9c112755b2cebdf8d508c53cd649b24ad12fc3184e3b"
+      },
+      {
+        "id": "payment-22",
+        "system": "payment",
+        "service": "payment",
+        "title_ko": "결제 · 계산·응답 변환 두 경로 결함 배포",
+        "mode": "release",
+        "case_sha256": "8d125990381ceffcc7e184d6fdca536868f3e8b113a0cbd89a6eee65d1631205"
+      },
+      {
+        "id": "payment-27",
+        "system": "payment",
+        "service": "payment",
+        "title_ko": "결제 · 처리 슬롯 고갈과 간헐적 예외",
+        "mode": "runtime",
+        "case_sha256": "bd9efa31d3128f97c4568bd0cdde390df0e879878ab366ef64a19175ae8e014f"
+      },
+      {
+        "id": "member-03",
+        "system": "member",
+        "service": "member",
+        "title_ko": "회원 · 실행 중 프로세스 반복 종료",
+        "mode": "runtime",
+        "case_sha256": "9643df63cf6c5a6f4bb172877ff31fb2f26e27d185949ccc3f72f86d625484fb"
+      },
+      {
+        "id": "member-13",
+        "system": "member",
+        "service": "member",
+        "title_ko": "회원 · 응답 변환 결함 배포",
+        "mode": "release",
+        "case_sha256": "5e27ff4710ac496d6635d1697e973b69e2b076b1e739a6aaab64e3c249ba0f34"
+      },
+      {
+        "id": "member-17",
+        "system": "member",
+        "service": "member",
+        "title_ko": "회원 · 간헐적 꼬리 지연",
+        "mode": "runtime",
+        "case_sha256": "7c13e3c12b8ff2bfde05a5c293593fb52e4c446d033a62d21518e5de11f96165"
+      },
+      {
+        "id": "member-23",
+        "system": "member",
+        "service": "member",
+        "title_ko": "회원 · 입력·응답 변환 두 경로 결함 배포",
+        "mode": "release",
+        "case_sha256": "b3d17da099dc508fa2378f3ced272e8b09866194ede0c8f4aff4d40ba7bba621"
+      },
+      {
+        "id": "member-28",
+        "system": "member",
+        "service": "member",
+        "title_ko": "회원 · CPU 포화와 꼬리 지연",
+        "mode": "runtime",
+        "case_sha256": "c088f17c87bef91a82cb37aebab21adc9a64d45a4e2b44ae2a27b3603f3fe001"
+      },
+      {
+        "id": "catalog-05",
+        "system": "catalog",
+        "service": "catalog",
+        "title_ko": "상품 · 생존 확인 실패와 재시작",
+        "mode": "runtime",
+        "case_sha256": "b732be3ac292d511281948fa061be85053bd2b2672f04f0bd83fd041010215d9"
+      },
+      {
+        "id": "catalog-06",
+        "system": "catalog",
+        "service": "catalog",
+        "title_ko": "상품 · 업무 요청 멈춤과 시간 초과",
+        "mode": "runtime",
+        "case_sha256": "f6a7ccfe922cc6833874e8411a66734b3096e380f7caf0dd21d3beca7223ae55"
+      },
+      {
+        "id": "catalog-14",
+        "system": "catalog",
+        "service": "catalog",
+        "title_ko": "상품 · 배치 작업 실패",
+        "mode": "runtime",
+        "case_sha256": "f9a8eb458c4ee471a148b4e3897540dc629ee6f6ecc8f302d173c1ec9b06db1f"
+      },
+      {
+        "id": "catalog-18",
+        "system": "catalog",
+        "service": "catalog",
+        "title_ko": "상품 · 잘못된 시작 설정 배포",
+        "mode": "release",
+        "case_sha256": "c4a8de28c5178e2dfef86173f068477c20b92b6af2fb175da0c78ea235aa2b17"
+      },
+      {
+        "id": "catalog-24",
+        "system": "catalog",
+        "service": "catalog",
+        "title_ko": "상품 · 배치 실패와 응답 변환 결함",
+        "mode": "release",
+        "case_sha256": "fb48241aea83673f794df8ef110489f66ffda41868cf38bee55830788819d615"
+      },
+      {
+        "id": "delivery-07",
+        "system": "delivery",
+        "service": "delivery",
+        "title_ko": "배송 · 간헐적 상태 조회 예외",
+        "mode": "runtime",
+        "case_sha256": "ef768ccba8053cbdabeca95713051374e67c01134cef6feb63f1dfa00560fda4"
+      },
+      {
+        "id": "delivery-09",
+        "system": "delivery",
+        "service": "delivery",
+        "title_ko": "배송 · 런타임 메모리 누수",
+        "mode": "runtime",
+        "case_sha256": "dbd7bb92a08729037e011edd9d8e198b1006e87bda5e56a87750cd6da37e71cb"
+      },
+      {
+        "id": "delivery-15",
+        "system": "delivery",
+        "service": "delivery",
+        "title_ko": "배송 · 업무 정합성 위반",
+        "mode": "runtime",
+        "case_sha256": "f1953ca0b53aaa4d51d2f895ec961a60b11974194e8276c167e9f925d38f2cb0"
+      },
+      {
+        "id": "delivery-25",
+        "system": "delivery",
+        "service": "delivery",
+        "title_ko": "배송 · 업무 정합성과 입력 처리 결함",
+        "mode": "release",
+        "case_sha256": "d3a251ee1caf9b748adab94d836916e1df7310ba543a56899c3699eaf0f209ee"
+      },
+      {
+        "id": "delivery-29",
+        "system": "delivery",
+        "service": "delivery",
+        "title_ko": "배송 · 메모리 누수와 업무 계산 결함",
+        "mode": "release",
+        "case_sha256": "f031320cc807d70fc5ad26b691a24656aa842bfb15e372c3becd2aace25cbd20"
+      },
+      {
+        "id": "notification-10",
+        "system": "notification",
+        "service": "notification",
+        "title_ko": "알림 · 업무 처리 슬롯 고갈",
+        "mode": "runtime",
+        "case_sha256": "4035a285b9a7e0322e15125d6aebb08c908634776a3b9f0c4d6fb028589676d0"
+      },
+      {
+        "id": "notification-19",
+        "system": "notification",
+        "service": "notification",
+        "title_ko": "알림 · 일부 503와 꼬리 지연",
+        "mode": "runtime",
+        "case_sha256": "b1432a2fbbefc339e80be76fe78740555a1393a0e9c6ded713ee7f10888494a6"
+      },
+      {
+        "id": "notification-20",
+        "system": "notification",
+        "service": "notification",
+        "title_ko": "알림 · 메모리 누수와 처리 지연",
+        "mode": "runtime",
+        "case_sha256": "6cf241b9ee93852762c4e369dee935d28356fbeac8bd3d7e98abc6bef8bcac6b"
+      },
+      {
+        "id": "notification-26",
+        "system": "notification",
+        "service": "notification",
+        "title_ko": "알림 · 연동 실패와 고정 지연",
+        "mode": "runtime",
+        "case_sha256": "a3438b176714299b94c7d97ac35c31e05388ffd23b7c7c174c90e3f2e519e628"
+      },
+      {
+        "id": "notification-30",
+        "system": "notification",
+        "service": "notification",
+        "title_ko": "알림 · 배포된 시작 설정 오류와 준비 실패",
+        "mode": "release",
+        "case_sha256": "c4b771b508c229bd01f6dc6b6056c2157e266f6bbf5a05a7b275eeed819a4f1d"
+      }
+    ]
+  }
+}
