@@ -149,15 +149,18 @@ export function AccountabilityReading({id,value,canWrite,onChange,basePath,part=
       <button type="submit" className="btn sm" disabled={busy}>{confirm?(value.awaiting_closure===false?'과거 소명 확인 기록':'소명 확인·정상 확정'):'후속 재조사 요청'}</button></form> : null;
   const decision = form || message ? <section className="accountability-reading accountability-decision">{form}{message && <p role="status">{message}</p>}</section> : null;
   if (part==='decision') return decision;
+  const hpaRecovery = value.recovery_scope === 'hpa_resource_metrics';
   const facts = <section className="accountability-reading"><h3>결과 소명</h3><dl className="stage-facts">
     <dt>감지한 이유</dt><dd>{reading(value.detection_ko,'감지 근거 미관측')}</dd>
-    <dt>정상화된 이유</dt><dd>{reading(value.recovery_ko,'복구 원인 미확정')}</dd>
+    <dt>{hpaRecovery ? '정상화 관측 근거' : '정상화된 이유'}</dt><dd>{reading(value.recovery_ko,'복구 원인 미확정')}</dd>
+    {hpaRecovery && <><dt>자원 지표 API 정상 전환</dt><dd>{timeText(value.provider_recovered_at)}</dd>
+      <dt>영향받은 HPA 계산 재개</dt><dd>{timeText(value.hpa_recovered_at)}</dd></>}
     {value.recovery_observed_at && <><dt>복구 관측</dt><dd>{timeText(value.recovery_observed_at)}</dd></>}
     {value.limits_ko && <><dt>근거의 한계</dt><dd>{(Array.isArray(value.limits_ko)?value.limits_ko:[value.limits_ko]).map((v,i)=><p key={i}>{reading(v)}</p>)}</dd></>}
     {value.evidence_refs?.length>0 && <><dt>소명 근거</dt><dd>{value.evidence_refs.join(' · ')}</dd></>}
     {value.decision_at && <><dt>최종 결정</dt><dd>{timeText(value.decision_at)} · {value.decision_by || '운영자 미관측'}</dd></>}
     {value.decision_note && <><dt>운영자 판단</dt><dd>{reading(value.decision_note,'운영자 기록 상세에서 확인')}<Original text={value.decision_note}/></dd></>}
-    </dl>{confirm && <p className="stage-note">{value.recovery_observed_at ? '서비스 복구 관측 · 운영자 소명 확인 대기' : '원래 실패 지점의 복구 관측 미기록 · 운영자 소명 확인 대기'}</p>}
+    </dl>{confirm && <p className="stage-note">{hpaRecovery ? '자원 지표·HPA 계산 복구 관측 · 운영자 소명 확인 대기' : value.recovery_observed_at ? '서비스 복구 관측 · 운영자 소명 확인 대기' : '원래 실패 지점의 복구 관측 미기록 · 운영자 소명 확인 대기'}</p>}
     {part==='all' && form}
     {part==='all' && message && <p role="status">{message}</p>}</section>;
   return part==='decision-first' ? <>{decision}{facts}</> : facts;

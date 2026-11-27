@@ -1,10 +1,10 @@
-import type { Incident, OpenIncident, Overview } from './api.ts';
+import type { ActiveIncident, AtlasOverview } from './api.ts';
 import { nextStepShort } from './responseQueue.ts';
 import { summaryKo } from './presentation.ts';
 import { applicationStateKo, type ApplicationHistory, type ApplicationIncident } from './unified.ts';
+import { unsupportedView } from './liveSnapshot.ts';
 
 export type Env = 'dev' | 'prd';
-export type RootIncident = (OpenIncident | Incident) & { claimed?: boolean; title_ko?: string | null; handoff?: Record<string, unknown> | null };
 type SourceRow = Pick<ApplicationIncident, 'id' | 'state' | 'system' | 'service' | 'environment' | 'root_incident_id' | 'reason'>;
 export type AtlasCase = { key: string; href: string; system: string; service: string; environment: string; state: string; title: string; label: string; intervention: boolean; approval: boolean };
 export type Reading = { metricAt?:number; flowAt?:number; ready?:number|null; desired?:number|null; endpoints?:number|null; flowObserved?:boolean; states: Set<string>; resource: string | null; cases: AtlasCase[]; requestRate: number | null; errorRate: number | null; observedResponses: boolean };
@@ -109,45 +109,62 @@ export const caseSummary = (service: AtlasService) => {
 export const chipLabel = (r: Reading) => r.cases.length ? `장애 ${r.cases.length}` : observationLabel(r);
 export type Box = { left: number; top: number; right: number; bottom: number };
 type Point = [number, number];
-const crosses = ([x1, y1]: Point, [x2, y2]: Point, o: Box, m = 2) =>
-  Math.max(x1, x2) > o.left - m && Math.min(x1, x2) < o.right + m && Math.max(y1, y2) > o.top - m && Math.min(y1, y2) < o.bottom + m;
 const format = (points: Point[]) => points.map(([x, y], i) => i === 0 ? `M${x},${y}` : points[i - 1][0] === x ? ` V${y}` : ` H${x}`).join('');
 /** Orthogonal line between two service nodes that never runs through another node. It is straight when the nodes share
  * a column or a row and nothing sits between them; otherwise it leaves through the row gap and runs along the column
  * gutter next to the target, then along a side gutter, and as a last resort around everything that lies between. */
 export function wirePath(a: Box, b: Box, obstacles: Box[] = [], gap = 16, rowGap = 8) {
   const half = gap / 2, mid = (x: number, y: number) => Math.round((x + y) / 2);
-  const same = (o: Box) => (o.left === a.left && o.top === a.top) || (o.left === b.left && o.top === b.top);
-  const others = obstacles.filter(o => !same(o));
-  const clear = (points: Point[]) => points.slice(1).every((p, i) => !others.some(o => crosses(points[i], p, o)));
-  const ay = mid(a.top, a.bottom), by = mid(b.top, b.bottom), routes: Point[][] = [];
+  const endpoint = (o: Box) => (o.left === a.left && o.top === a.top) || (o.left === b.left && o.top === b.top);
+  const clear = (points: Point[]) => {
+    for (let i = 1; i < points.length; i++) {
+      const [x1, y1] = points[i - 1], [x2, y2] = points[i];
+      const left = Math.min(x1, x2), right = Math.max(x1, x2), top = Math.min(y1, y2), bottom = Math.max(y1, y2);
+      for (const o of obstacles) {
+        if (right > o.left - 2 && left < o.right + 2 && bottom > o.top - 2 && top < o.bottom + 2 && !endpoint(o)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const by = mid(b.top, b.bottom);
+  let route: Point[];
   if (Math.min(a.right, b.right) - Math.max(a.left, b.left) >= 24) {
     const x = mid(Math.max(a.left, b.left), Math.min(a.right, b.right));
-    routes.push(a.bottom <= b.top ? [[x, a.bottom], [x, b.top]] : [[x, a.top], [x, b.bottom]]);
+    route = a.bottom <= b.top ? [[x, a.bottom], [x, b.top]] : [[x, a.top], [x, b.bottom]];
   } else if (Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) >= 24) {
     const y = mid(Math.max(a.top, b.top), Math.min(a.bottom, b.bottom));
-    routes.push(a.right <= b.left ? [[a.right, y], [b.left, y]] : [[a.left, y], [b.right, y]]);
+    route = a.right <= b.left ? [[a.right, y], [b.left, y]] : [[a.left, y], [b.right, y]];
   } else {
     const down = a.bottom <= b.top, right = b.left >= a.right, x = mid(a.left, a.right);
     const lane = down ? a.bottom + rowGap / 2 : a.top - rowGap / 2, gutter = right ? b.left - half : b.right + half;
-    routes.push([[x, down ? a.bottom : a.top], [x, lane], [gutter, lane], [gutter, by], [right ? b.left : b.right, by]]);
+    route = [[x, down ? a.bottom : a.top], [x, lane], [gutter, lane], [gutter, by], [right ? b.left : b.right, by]];
   }
+  if (clear(route)) return format(route);
+
+  const ay = mid(a.top, a.bottom);
   const rightSide = Math.max(a.right, b.right) + half, leftSide = Math.min(a.left, b.left) - half;
-  routes.push([[a.right, ay], [rightSide, ay], [rightSide, by], [b.right, by]]);
-  routes.push([[a.left, ay], [leftSide, ay], [leftSide, by], [b.left, by]]);
-  const between = others.filter(o => o.bottom > Math.min(ay, by) && o.top < Math.max(ay, by));
-  const outside = Math.max(a.right, b.right, ...between.map(o => o.right)) + half;
-  routes.push([[a.right, ay], [outside, ay], [outside, by], [b.right, by]]);
-  return format(routes.find(clear) ?? routes[routes.length - 1]);
+  route = [[a.right, ay], [rightSide, ay], [rightSide, by], [b.right, by]];
+  if (clear(route)) return format(route);
+  route = [[a.left, ay], [leftSide, ay], [leftSide, by], [b.left, by]];
+  if (clear(route)) return format(route);
+
+  const upper = Math.min(ay, by), lower = Math.max(ay, by);
+  let farthest = Math.max(a.right, b.right);
+  for (const o of obstacles) {
+    if (o.bottom > upper && o.top < lower && !endpoint(o)) farthest = Math.max(farthest, o.right);
+  }
+  const outside = farthest + half;
+  return format([[a.right, ay], [outside, ay], [outside, by], [b.right, by]]);
 }
 const isApproval = (state: string) => ['awaiting_prd_approval', 'awaiting_user_test'].includes(state);
 export const caseHref = (a: SourceRow) => a.root_incident_id ? `/incidents/${a.root_incident_id}` : `/incidents/application/${encodeURIComponent(a.id)}`;
-export function mergeCases(roots: RootIncident[], apps: SourceRow[]): AtlasCase[] {
+export function mergeCases(roots: ActiveIncident[], apps: SourceRow[]): AtlasCase[] {
   const rows = new Map<string, AtlasCase>();
   for (const i of roots) {
     const claim = i.claimed ?? Boolean(i.handoff?.claimed_by);
-    const code = (i as RootIncident & { code_action?: { linked?: boolean; state?: string; state_ko?: string } }).code_action;
-    const codeState = code?.state;
+    const codeState = i.code_action?.state;
     const approval = codeState ? isApproval(codeState) : i.status === 'action_pending';
     const intervention = approval || i.status === 'recovery_review' || codeState === 'recovery_review' || codeState === 'qa_failed' || codeState === 'awaiting_merge' || (i.status === 'handed_off' && !claim);
     const key = String(i.id);
@@ -162,14 +179,18 @@ export function mergeCases(roots: RootIncident[], apps: SourceRow[]): AtlasCase[
   }
   return [...rows.values()].sort((a,b) => Number(b.approval) - Number(a.approval) || Number(b.intervention) - Number(a.intervention) || a.service.localeCompare(b.service) || a.key.localeCompare(b.key, 'en', {numeric:true}));
 }
-export function mergeCaseSources(open: RootIncident[], openState: string, overview: RootIncident[] | undefined, waiting: SourceRow[]) {
+export function mergeCaseSources(open: ActiveIncident[], openState: string, overview: ActiveIncident[] | undefined, waiting: SourceRow[]) {
   // The overview query retains handoffs for one hour. Lifetime unclaimed totals are separate.
   const roots = new Map((overview || []).filter(i => openState !== 'ready' || i.status === 'handed_off').map(i => [i.id,i]));
   for (const i of open) roots.set(i.id,i);
   return mergeCases([...roots.values()],waiting);
 }
-export async function loadWaiting(load: (path: string) => Promise<ApplicationHistory>, group: 'waiting_people' | 'automatic' = 'waiting_people'): Promise<SourceRow[]> {
-  const rows = new Map<string, SourceRow>();
+type SourcePage<T extends SourceRow> = { incidents: T[]; total: number; as_of?: number };
+type ApplicationLiveRow = SourceRow & { live_group: 'waiting_people' | 'automatic' };
+type ApplicationLivePage = SourcePage<ApplicationLiveRow> & { live?: true };
+
+async function loadGroup<T extends SourceRow>(load: (path: string) => Promise<SourcePage<T>>, group: string): Promise<T[]> {
+  const rows = new Map<string, T>();
   let anchor: number | undefined;
   for (let page = 0; page < 100; page++) {
     const params = new URLSearchParams({ group, limit: '200', offset: String(rows.size) });
@@ -185,7 +206,26 @@ export async function loadWaiting(load: (path: string) => Promise<ApplicationHis
   }
   throw new Error('대기 목록 일부만 조회됨');
 }
-export function serviceAtlas(o: Overview | null, cases: AtlasCase[]) {
+
+export function loadWaiting(load: (path: string) => Promise<ApplicationHistory>, group: 'waiting_people' | 'automatic' = 'waiting_people') {
+  return loadGroup<SourceRow>(load, group);
+}
+
+export async function loadLiveApplication(load: (path: string) => Promise<ApplicationLivePage>) {
+  const firstPath = '/unified/summaries?group=live&limit=200&offset=0';
+  let first: ApplicationLivePage;
+  try {
+    first = await load(firstPath);
+  } catch (error) {
+    if (unsupportedView(error)) return null;
+    throw error;
+  }
+  if (first.live !== true) return null;
+  const rows = await loadGroup(path => path === firstPath ? Promise.resolve(first) : load(path), 'live');
+  if (rows.some(row => !['waiting_people', 'automatic'].includes(row.live_group))) throw new Error('진행 구분을 확인할 수 없습니다.');
+  return { waiting: rows.filter(row => row.live_group === 'waiting_people'), automatic: rows.filter(row => row.live_group === 'automatic') };
+}
+export function serviceAtlas(o: AtlasOverview | null, cases: AtlasCase[]) {
   const services = new Map<string, AtlasService>();
   const ids = new Map<string, string>();
   const readings = new Map<string, Reading>();
@@ -226,7 +266,7 @@ export function serviceAtlas(o: Overview | null, cases: AtlasCase[]) {
     if (e.endpoints == null) e.endpoints = n.services?.find(s => s.name === n.name)?.endpoints_ready;
     e.resource ??= n.id;
     e.states.add(n.status);
-    if (n.network_warnings?.length || n.no_endpoints?.length) e.states.add('warning');
+    if (n.warning || n.network_warnings?.length || n.no_endpoints?.length) e.states.add('warning');
   }
   for (const c of cases) {
     if (active(c.environment) && c.service) get(c.system, c.service).env[c.environment].cases.push(c);

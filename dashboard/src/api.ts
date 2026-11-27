@@ -1,4 +1,4 @@
-import type { Topology } from './mapModel';
+import type { ContractEdge, ObservedEdge, Topology, TopoNode } from './mapModel';
 import type { CostStatus, IncidentOrigin } from './cost';
 export { costKo, money, ORIGIN_KO, type CostStatus, type IncidentOrigin } from './cost';
 
@@ -107,6 +107,12 @@ export type WorkloadIncident = { id: number; level: Level | string | null; statu
 export type Workload = { metric_at?:number|null; id: string; namespace: string; system?: string | null; environment?: string | null; name: string; kind: string; ready: number | null; desired: number | null; restarts_1h: number | null; cpu: number | null; mem: number | null; req_rate: number | null; err_rate: number | null; p95_ms: number | null; incident: WorkloadIncident | null };
 export type ClusterEvent = { at: string | null; namespace: string | null; object: string; reason: string; type: string; message: string; count: number | null };
 export type OpenIncident = { id: number; title: string; namespace: string; system?: string | null; environment?: string | null; workload: string; severity_level: Level | string | null; status: string; stage: Stage | null; created_at: string };
+export type ActiveIncident = Omit<OpenIncident, 'stage'> & {
+  title_ko?: string | null;
+  claimed?: boolean;
+  handoff?: Record<string, unknown> | null;
+  code_action?: { state?: string };
+};
 /** 정돈-05: one bucket definition shared with the header and incident list (server: app/incident_counts.py). */
 export type IncidentCounts = { automatic: number; awaiting_approval: number; unclaimed_handoff: number; in_progress: number; closed_history: number;
   map_handoff_window_hours: number; by_environment: Record<string, { automatic: number; awaiting_approval: number; unclaimed_handoff: number; in_progress: number }> };
@@ -120,6 +126,21 @@ export type Overview = {
   incidents: { open: OpenIncident[]; today: { total: number | null; resolved: number | null; handed_off: number | null; failed: number | null; closed?: number | null }; counts?: IncidentCounts };
   topology: Topology | null;
   sources: Record<string, string>;
+};
+type AtlasResource = Pick<TopoNode, 'id' | 'kind' | 'name' | 'namespace' | 'system' | 'environment' | 'lifecycle' |
+  'status' | 'role' | 'endpoints_ready' | 'network_warnings' | 'no_endpoints'> & {
+  services?: Pick<NonNullable<TopoNode['services']>[number], 'name' | 'endpoints_ready'>[];
+  warning?: boolean;
+};
+export type AtlasOverview = Pick<Overview, 'generated_at' | 'inventory_observed_at' | 'preview_notice' | 'sources'> & {
+  workloads: Pick<Workload, 'id' | 'name' | 'system' | 'environment' | 'namespace' | 'kind' | 'ready' | 'desired' |
+    'req_rate' | 'err_rate' | 'metric_at'>[];
+  incidents: Pick<Overview['incidents'], 'open' | 'counts'>;
+  topology: {
+    nodes: AtlasResource[];
+    contract_edges?: Pick<ContractEdge, 'from' | 'to'>[];
+    observed_edges: Pick<ObservedEdge, 'from' | 'to' | 'last_seen' | 'req_rate' | 'err_rate' | 'metric_at'>[];
+  } | null;
 };
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }

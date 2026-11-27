@@ -65,7 +65,8 @@ export const INTENT_KO: Record<string, string> = {
 /** Korean headline for a Kubernetes warning reason. Unknown reasons say so; the raw reason and message stay visible. */
 export const EVENT_REASON_KO: Record<string, string> = {
   FailedMount: '볼륨 연결 실패', FailedAttachVolume: '볼륨 연결 실패', Unhealthy: '상태 확인(probe) 실패', BackOff: '재시작 대기(반복 실패)',
-  CrashLoopBackOff: '반복 재시작', FailedSync: '파드 동기화 실패', FailedScheduling: '노드 배치 실패', OOMKilling: '메모리 초과 강제 종료',
+  CrashLoopBackOff: '반복 재시작', LivenessProbeFailed: '반복 생존 확인 실패',
+  FailedSync: '파드 동기화 실패', FailedScheduling: '노드 배치 실패', OOMKilling: '메모리 초과 강제 종료',
   Evicted: '노드 자원 부족으로 퇴출', Killing: '컨테이너 종료', Failed: '컨테이너 실행 실패', ErrImagePull: '이미지 내려받기 실패',
   ImagePullBackOff: '이미지 내려받기 재시도 대기', FailedCreate: '생성 실패', FailedGetResourceMetric: '자원 지표 조회 실패',
   FailedComputeMetricsReplicas: '자동 확장 계산 실패', Rebooted: '노드 재부팅', NodeNotReady: '노드 준비 안 됨',

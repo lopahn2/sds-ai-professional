@@ -3,20 +3,37 @@ import type { Incident } from './api';
 import { levelKo } from './labels.ts';
 
 export type AlertEvent = { id: number; kind: 'new' | 'escalated' | 'resolved' | 'closed'; title: string; level: Incident['severity_level']; workload: string; namespace: string };
+export type AlertIncident = Pick<Incident, 'id' | 'title' | 'namespace' | 'workload' | 'status' | 'severity_level'> & {
+  code_action?: { state?: string };
+};
+type AlertState = {
+  status: Incident['status'];
+  severity_level: Incident['severity_level'];
+  applicationState?: string;
+};
+export type AlertSnapshot = ReadonlyMap<number, AlertState>;
 const OPEN = new Set(['open', 'analyzing', 'action_pending', 'acting', 'handed_off']);
 const RANK: Record<string, number> = { SIMPLE: 0, NORMAL: 1, COMPLEX: 2, HIGH_RISK: 3 };
 
+export function alertSnapshot(incidents: AlertIncident[]): AlertSnapshot {
+  const snapshot = new Map<number, AlertState>();
+  for (const { id, status, severity_level, code_action } of incidents) {
+    snapshot.set(id, { status, severity_level, applicationState: code_action?.state });
+  }
+  return snapshot;
+}
+
 /** Compare two snapshots of incidents. The first snapshot (prev === null) never notifies: that would replay history. */
-export function diffAlerts(prev: Incident[] | null, next: Incident[]): AlertEvent[] {
+export function diffAlerts(prev: AlertSnapshot | null, next: AlertIncident[]): AlertEvent[] {
   if (prev === null) return [];
-  const before = new Map(prev.map(i => [i.id, i]));
   const out: AlertEvent[] = [];
   for (const i of next) {
-    const was = before.get(i.id);
-    const base = { id: i.id, title: i.title, level: i.severity_level, workload: i.workload, namespace: i.namespace };
-    if (!was) { if (OPEN.has(i.status)) out.push({ ...base, kind: 'new' }); continue; }
-    if (OPEN.has(was.status) && !OPEN.has(i.status)) out.push({ ...base, kind: i.status === 'closed' ? 'closed' : 'resolved' });
-    else if (OPEN.has(i.status) && (RANK[i.severity_level ?? ''] ?? 0) > (RANK[was.severity_level ?? ''] ?? 0)) out.push({ ...base, kind: 'escalated' });
+    const was = prev.get(i.id), open = OPEN.has(i.status);
+    let kind: AlertEvent['kind'] | undefined;
+    if (!was && open) kind = 'new';
+    else if (was && OPEN.has(was.status) && !open) kind = i.status === 'closed' ? 'closed' : 'resolved';
+    else if (was && open && (RANK[i.severity_level ?? ''] ?? 0) > (RANK[was.severity_level ?? ''] ?? 0)) kind = 'escalated';
+    if (kind) out.push({ id: i.id, title: i.title, level: i.severity_level, workload: i.workload, namespace: i.namespace, kind });
   }
   return out;
 }

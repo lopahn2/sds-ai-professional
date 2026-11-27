@@ -1,15 +1,15 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import Shell from './Shell';
-const OverviewPage = lazy(() => import('./Overview').then(m => ({ default: m.OverviewPage })));
-const IncidentRoom = lazy(() => import('./IncidentRoom').then(m => ({ default: m.IncidentRoom })));
-import { Incidents } from './Incidents';
-import { Ledger } from './Ledger';
-import { Settings } from './Settings';
 import './styles.css';
 import './naria.css';
 import './room.css';
 import './unified.css';
+const OverviewPage = lazy(() => import('./Overview').then(m => ({ default: m.OverviewPage })));
+const IncidentRoom = lazy(() => import('./IncidentRoom').then(m => ({ default: m.IncidentRoom })));
+const Incidents = lazy(() => import('./Incidents').then(m => ({ default: m.Incidents })));
+const Ledger = lazy(() => import('./Ledger').then(m => ({ default: m.Ledger })));
+const Settings = lazy(() => import('./Settings').then(m => ({ default: m.Settings })));
 const ApplicationPage = lazy(() => import('./ApplicationPage').then(m => ({ default: m.ApplicationPage })));
 const NativeIncidentRoom = lazy(() => import('./ApplicationPage').then(m => ({default:m.NativeIncidentRoom})));
 export default function App() {

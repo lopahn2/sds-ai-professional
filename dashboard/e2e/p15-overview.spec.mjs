@@ -5,6 +5,39 @@ async function ready(page) {
   await openInfraMap(page);
   await expect(page.locator('.topology-canvas .resource-button').first()).toBeVisible({timeout:10000});
 }
+test('첫 지도는 요약만 조회하고 수집 진단을 열면 전체 관측을 조회한다', async ({page, request}) => {
+  test.skip(!mock, '고정 응답의 조회 순서를 확인합니다.');
+  const full = await (await request.get('/api/overview')).json();
+  const atlas = {...full};
+  delete atlas.events;
+  delete atlas.cluster;
+  const requests = [];
+  const incidentReads = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname === '/api/incidents') incidentReads.push(url.searchParams);
+  });
+  await page.route('**/api/overview', route => {
+    const isAtlas = route.request().headers()['x-liveprobe-overview-view'] === 'atlas';
+    requests.push(isAtlas ? 'atlas' : 'full');
+    return route.fulfill({ json: isAtlas ? atlas : full });
+  });
+  await page.goto('/');
+  await expect(page.locator('.atlas-node').first()).toBeVisible();
+  await expect.poll(() => incidentReads.some(params => params.get('view') === 'active' && params.get('compact') === 'true')).toBe(true);
+  expect(incidentReads.some(params => params.has('status'))).toBe(false);
+  expect(requests[0]).toBe('atlas');
+  expect(requests).not.toContain('full');
+  await page.getByRole('navigation', {name:'수집원 상태'}).getByRole('button').first().click();
+  await expect(page.getByRole('region', {name:'클러스터 건강도 요약'})).toBeVisible();
+  expect(requests).toContain('full');
+  const fullReads = requests.filter(mode => mode === 'full').length;
+  await page.getByRole('region', {name:'클러스터 수집 진단'}).getByRole('button', {name:'새로고침'}).click();
+  await expect.poll(() => requests.filter(mode => mode === 'full').length).toBe(fullReads + 1);
+  expect(requests.filter(mode => mode === 'atlas')).toHaveLength(1);
+  await page.getByRole('button', {name:'지도로 돌아가기'}).click();
+  await expect.poll(() => requests.at(-1)).toBe('atlas');
+});
 test('운영 관제의 지도·보조 상태·원천·경고 원문과 장애 진입', async ({page,request},info)=>{
   const es=errors(page);const response=await request.get('/api/overview');expect(response.ok()).toBe(true);const data=await response.json();
   await page.goto('/');
@@ -36,7 +69,7 @@ test('데스크톱 운영 관제는 페이지 스크롤 없이 지도가 첫 화
   }
 });
 test('우측 상단 종을 열어 진행 중 장애 수와 관제실을 확인한다',async({page,request},info)=>{
-  const open=[];for(const state of ['open','analyzing','action_pending','acting']){let offset=0,total=1;while(offset<total){const r=await request.get(`/api/incidents?status=${state}&limit=100&offset=${offset}`);expect(r.ok()).toBe(true);const d=await r.json();total=d.total;expect(d.items.length>0||offset>=total).toBe(true);open.push(...d.items);offset+=d.items.length;}}
+  const open=[];for(const state of ['open','analyzing','action_pending','acting','recovery_review']){let offset=0,total=1;while(offset<total){const r=await request.get(`/api/incidents?status=${state}&limit=100&offset=${offset}`);expect(r.ok()).toBe(true);const d=await r.json();total=d.total;expect(d.items.length>0||offset>=total).toBe(true);open.push(...d.items);offset+=d.items.length;}}
   await page.goto('/');const button=page.getByRole('button',{name:/운영 알림/});await expect(button).toBeVisible();await expect(button).toHaveAttribute('aria-expanded','false');
   await button.click();const panel=page.getByRole('region',{name:'진행 중 장애 목록'});await expect(panel).toBeVisible();await expect(panel.locator('.alert-item')).toHaveCount(open.length);await layout(page);await capture(page,info,'alert-menu');
   await page.keyboard.press('Escape');await expect(panel).toHaveCount(0);await expect(button).toBeFocused();
@@ -48,7 +81,7 @@ test('최근 200건 밖의 오래된 승인 대기 장애도 알림에서 빠지
   const {items}=await(await request.get('/api/incidents?limit=200')).json();const base=items[0];
   const old={...base,id:14,workload:'old-inventory',status:'action_pending',created_at:'2026-01-01T00:00:00Z'};
   const rows=[...Array.from({length:230},(_,j)=>({...base,id:1000+j,status:'resolved'})),old];
-  await page.route('**/api/incidents?*',r=>{const q=new URL(r.request().url()).searchParams;const state=q.get('status');const filtered=state?rows.filter(i=>i.status===state):rows;const offset=Number(q.get('offset')||0),limit=Number(q.get('limit')||50);return r.fulfill({json:{items:filtered.slice(offset,offset+limit),total:filtered.length}});});
+  await page.route('**/api/incidents?*',r=>{const q=new URL(r.request().url()).searchParams;const state=q.get('status');const filtered=q.get('view')==='active'?rows.filter(i=>i.status!=='resolved'):state?rows.filter(i=>i.status===state):rows;const offset=Number(q.get('offset')||0),limit=Number(q.get('limit')||50);return r.fulfill({json:{items:filtered.slice(offset,offset+limit),total:filtered.length}});});
   await page.goto('/');await page.getByRole('button',{name:/운영 알림/}).click();
   await expect(page.getByRole('region',{name:'진행 중 장애 목록'}).getByRole('link',{name:'old-inventory 장애 14 관제실 열기'})).toBeVisible();
 });

@@ -102,10 +102,20 @@ const server = http.createServer(async (req,res) => {
       const kind=u.searchParams.get('kind');
       if(kind && kind!=='all')items=items.filter(i=>i.kind===kind);
     }
+    const activeView=path==='/api/incidents' && u.searchParams.get('view')==='active';
+    if(activeView)items=items.filter(i=>['open','analyzing','action_pending','acting','recovery_review'].includes(i.status));
     if(status)items=items.filter(i=>i.status===status); if(search)items=items.filter(i=>(i.title+' '+i.workload).includes(search));
     if(env)items=items.filter(i=>(i.environment??i.namespace)===env); if(origin)items=items.filter(i=>(i.origin??'unconfirmed')===origin);
     const newest=Math.max(0,...[...narratives.keys()]); const anchor=asOf?Math.min(Number(asOf),newest):newest; items=items.filter(i=>i.id<=anchor);
-    const total=items.length;const offset=Number(u.searchParams.get('offset')||0),limit=Number(u.searchParams.get('limit')||50);return send({items:items.slice(offset,offset+limit),total,as_of:anchor,newer_since_as_of:[...narratives.keys()].filter(id=>id>anchor).length});
+    const total=items.length; const offset=Number(u.searchParams.get('offset')||0),limit=Number(u.searchParams.get('limit')||50);
+    const page=items.slice(offset,offset+limit);
+    if(activeView && u.searchParams.get('compact')==='true'){
+      return send({items:page.map(({id,title,title_ko,namespace,environment,workload,system,status,severity_level,created_at,code_action})=>({
+        id,title,title_ko,namespace,environment,workload,system,status,severity_level,created_at,
+        ...(code_action ? {code_action:{state:code_action.state}} : {}),
+      })),total,as_of:anchor});
+    }
+    return send({items:page,total,as_of:anchor,newer_since_as_of:[...narratives.keys()].filter(id=>id>anchor).length});
   }
   const claimMatch=path.match(/^\/api\/incidents\/(\d+)\/handoff\/claim$/);
   if(claimMatch&&method==='POST'){const n=narratives.get(Number(claimMatch[1]));if(!n)return send({detail:'장애를 찾지 못했습니다.'},404);if(n.incident.status!=='handed_off')return send({detail:'incident is not handed off'},409);n.incident.handoff={...(n.incident.handoff??{}),claimed_by:'operator',claimed_at:now()};return send(n.incident.handoff);}

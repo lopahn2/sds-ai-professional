@@ -2,8 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { Link } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@radix-ui/react-icons';
 import { Legend, StatusIndicator, ZoomControls, type StatusKind } from '@naria/ui';
-import { clock, type Overview } from './api';
-import { ResourceDetail } from './TopologyMap';
+import { clock, type AtlasOverview } from './api';
 import { systemKo } from './labels';
 import { useLive } from './live';
 import { atlasLanes, caseSummary, chipLabel, envs, laneSummary, linkSummary, mergeCaseSources, observationLabel, readingLabel, readingTone, serviceAtlas, trafficLabel, wirePath, type AtlasCase, type AtlasLane, type AtlasService, type Env, type ReadingTone } from './serviceAtlasModel';
@@ -129,7 +128,14 @@ function CaseList({ items }: { items: AtlasCase[] }) {
   </Link></li>)}</ul>;
 }
 
-export function ServiceAtlas({ overview, error, refresh, diagnostics }: { overview: Overview | null; error: boolean; refresh: () => void; diagnostics: (source: string) => ReactNode }) {
+export function ServiceAtlas({ overview, error, refresh, onInspecting, diagnostics, resourceDetail }: {
+  overview: AtlasOverview | null;
+  error: boolean;
+  refresh: () => void;
+  onInspecting: (open: boolean) => void;
+  diagnostics: (source: string) => ReactNode;
+  resourceDetail: (id: string, onClose: () => void) => ReactNode;
+}) {
   const { open, openState, automatic: automaticApplications, automaticState, waiting, waitingState } = useLive();
   const [selection, setSelection] = useState<Selection | null>(null);
   const [source, setSource] = useState<string | null>(null);
@@ -151,6 +157,8 @@ export function ServiceAtlas({ overview, error, refresh, diagnostics }: { overvi
   const services = model.groups.flatMap(([, s]) => s);
   const selected = services.find(s => s.key === selection?.key);
   const reading = selection && selected?.env[selection.env];
+  const inspecting = !!source || (resourceDetails && !!reading?.resource);
+  useEffect(() => onInspecting(inspecting), [inspecting, onInspecting]);
   const pending = cases.filter(c => c.intervention);
   const automatic = cases.filter(c => !c.intervention && c.state !== 'handed_off');
   const complete = openState === 'ready' && automaticState === 'ready' && waitingState === 'ready' && !!overview && !error;
@@ -207,7 +215,10 @@ export function ServiceAtlas({ overview, error, refresh, diagnostics }: { overvi
             <div><dt>수집 상태</dt><dd>{['kubernetes', 'prometheus'].map(k => sources[k] + ' ' + (connected(overview?.sources?.[k]) ? '연결됨' : overview?.sources?.[k] ? '확인 필요' : '미관측')).join(' · ')}</dd></div>
             <div><dt>마지막 관측</dt><dd>자원 {reading.resource && overview?.inventory_observed_at ? clock(overview.inventory_observed_at) : '미관측'} · 요청률 {reading.metricAt ? clock(new Date(reading.metricAt * 1000).toISOString()) : '미관측'}{reading.flowAt && <> · 흐름 {clock(new Date(reading.flowAt * 1000).toISOString())}</>}</dd></div>
           </dl>
-          {reading.resource && overview && <><button type="button" className="atlas-action nds-button nds-button--outline nds-control--sm" aria-expanded={resourceDetails} onClick={() => setResourceDetails(v => !v)}><span>인프라 자원 상세</span></button>{resourceDetails && <ResourceDetail overview={overview} id={reading.resource} onClose={() => setResourceDetails(false)} />}</>}
+          {reading.resource && overview && <>
+            <button type="button" className="atlas-action nds-button nds-button--outline nds-control--sm" aria-expanded={resourceDetails} onClick={() => setResourceDetails(v => !v)}>인프라 자원 상세</button>
+            {resourceDetails && resourceDetail(reading.resource, () => setResourceDetails(false))}
+          </>}
         </>}
       </> : <>
         <div className="atlas-rail-title"><h2>운영자 개입</h2><span className={`nds-badge nds-tone--${pending.length ? 'warning' : 'neutral'}`} aria-label="개입 대기 건수">{complete ? pending.length : pending.length ? `${pending.length}+` : '—'}</span></div>

@@ -1,21 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { diffAlerts, alertText, buildFeed, canSteer, type RunEvent } from '../src/feed.ts';
+import { alertSnapshot, diffAlerts, alertText, buildFeed, canSteer, type RunEvent } from '../src/feed.ts';
 import type { Incident } from '../src/api.ts';
 
 const inc = (id: number, status: Incident['status'], level: Incident['severity_level'] = 'NORMAL'): Incident =>
   ({ id, title: `t${id}`, namespace: 'ns', workload: `w${id}`, status, severity_level: level, signal_count: 1, created_at: '', updated_at: '', closed_at: null, total_cost_usd: null, agent_run_count: 0 });
 
 test('first snapshot never notifies (no history replay)', () => assert.deepEqual(diffAlerts(null, [inc(1, 'open')]), []));
-test('new open incident notifies once; unchanged does not', () => {
-  const a = [inc(1, 'open')]; assert.deepEqual(diffAlerts(a, a), []);
-  assert.deepEqual(diffAlerts(a, [...a, inc(2, 'open')]).map(x => [x.id, x.kind]), [[2, 'new']]);
+test('previous alert snapshot retains only fields needed to detect transitions', () => {
+  const item = { ...inc(1, 'action_pending'), code_action: { state: 'awaiting_prd_approval' } };
+  assert.deepEqual([...alertSnapshot([item])], [[1, {
+    status: 'action_pending', severity_level: 'NORMAL', applicationState: 'awaiting_prd_approval',
+  }]]);
 });
-test('already-resolved newcomer is not an alert', () => assert.deepEqual(diffAlerts([], [inc(3, 'resolved')]), []));
+test('new open incident notifies once; unchanged does not', () => {
+  const a = [inc(1, 'open')], before = alertSnapshot(a);
+  assert.deepEqual(diffAlerts(before, a), []);
+  assert.deepEqual(diffAlerts(before, [...a, inc(2, 'open')]).map(x => [x.id, x.kind]), [[2, 'new']]);
+});
+test('already-resolved newcomer is not an alert', () => assert.deepEqual(diffAlerts(alertSnapshot([]), [inc(3, 'resolved')]), []));
 test('escalation and resolution', () => {
-  assert.deepEqual(diffAlerts([inc(1, 'open', 'NORMAL')], [inc(1, 'analyzing', 'HIGH_RISK')]).map(x => x.kind), ['escalated']);
-  assert.deepEqual(diffAlerts([inc(1, 'open')], [inc(1, 'resolved')]).map(x => x.kind), ['resolved']);
-  assert.deepEqual(diffAlerts([inc(1, 'open', 'HIGH_RISK')], [inc(1, 'open', 'NORMAL')]), []);
+  assert.deepEqual(diffAlerts(alertSnapshot([inc(1, 'open', 'NORMAL')]), [inc(1, 'analyzing', 'HIGH_RISK')]).map(x => x.kind), ['escalated']);
+  assert.deepEqual(diffAlerts(alertSnapshot([inc(1, 'open')]), [inc(1, 'resolved')]).map(x => x.kind), ['resolved']);
+  assert.deepEqual(diffAlerts(alertSnapshot([inc(1, 'open', 'HIGH_RISK')]), [inc(1, 'open', 'NORMAL')]), []);
 });
 test('alert text', () => assert.match(alertText({ id: 1, kind: 'new', title: '', level: 'COMPLEX', workload: 'orders', namespace: 'x' }), /orders.*복잡/));
 

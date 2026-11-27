@@ -1,17 +1,19 @@
 import './incidentOverview.css';
-import { useState } from 'react';
+import { lazy, Suspense, useState, type ReactNode } from 'react';
 import { EnterFullScreenIcon } from '@radix-ui/react-icons';
-import { clock, type Overview } from './api';
+import { clock, type AtlasOverview, type Overview } from './api';
 import { bytesKo, cpuKo, numberKo, overviewKpis, percent } from './overviewModel';
 import { eventReasonKo } from './labels';
 import { Badge, Meter as UsageMeter, StatusIndicator } from '@naria/ui';
 import { ServiceAtlas } from './ServiceAtlas';
+import { ResourceDetail } from './ResourceDetail';
 import { Disclosure } from './Disclosure';
-import { ResourceDetail, TopologyMap } from './TopologyMap';
 import { RoomDialog } from './RoomDialog';
 import { usePolling } from './usePolling';
 
+const TopologyMap = lazy(() => import('./TopologyMap').then(module => ({ default: module.TopologyMap })));
 const SOURCES: Record<string, string> = { prometheus: 'Prometheus', kubernetes: 'Kubernetes', hubble: 'Hubble', envoy: 'Envoy' };
+const ATLAS_HEADERS = { 'X-LiveProbe-Overview-View': 'atlas' };
 
 /** Compact cluster status for the side area: each figure is a source value, null stays 미관측. */
 function Stats({ o }: { o: Overview }) {
@@ -97,19 +99,31 @@ function InfraMapDialog({ overview, refresh, onClose }: { overview: Overview; re
   return <RoomDialog title="인프라 연결 지도" className="infra-dialog" onClose={onClose}
     actions={<><span className="infra-observed">마지막 관측 {clock(overview.generated_at)}</span><button type="button" className="btn sm" onClick={refresh}>새로고침</button></>}>
     <div className="infra-body">
-      <TopologyMap overview={overview} selected={resource} onSelect={setResource}/>
+      <Suspense fallback={<p role="status">인프라 지도를 불러오는 중입니다.</p>}>
+        <TopologyMap overview={overview} selected={resource} onSelect={setResource}/>
+      </Suspense>
       {resource && <ResourceDetail overview={overview} id={resource} onClose={() => setResource(null)}/>}
     </div>
   </RoomDialog>;
 }
 
 export function OverviewPage() {
-  const { data, error, refresh } = usePolling<Overview>('/overview', 10000);
+  const [inspecting, setInspecting] = useState(false);
   const [infra, setInfra] = useState(false);
+  // A single polling stream supplies both views. Keep the last map during a shape switch.
+  const { data, error, refresh } = usePolling<AtlasOverview | Overview>('/overview', 10000, {
+    deduplicate: false, headers: inspecting || infra ? undefined : ATLAS_HEADERS,
+  });
+  const full = data && 'cluster' in data ? data : null;
+  const fullWarning = error && <p className="atlas-source-message is-warning" role="status">상세 관측 조회 실패 <button type="button" onClick={refresh}>다시 확인</button></p>;
+  const details = (render: (value: Overview) => ReactNode) => full
+    ? <>{fullWarning}{render(full)}</>
+    : fullWarning || <p role="status">상세 관측을 불러오는 중입니다.</p>;
   // The dialog renders outside the rail so the rail's scoped styles do not reach the map.
   return <div className="atlas-page"><h1 className="sr-only">운영 관제</h1>
-    <ServiceAtlas overview={data} error={error} refresh={refresh}
-      diagnostics={source => data && <ClusterDiagnostics overview={data} source={source} refresh={refresh} openInfra={() => setInfra(true)}/>}/>
-    {infra && data && <InfraMapDialog overview={data} refresh={refresh} onClose={() => setInfra(false)}/>}
+    <ServiceAtlas overview={data} error={error} refresh={refresh} onInspecting={setInspecting}
+      diagnostics={source => details(value => <ClusterDiagnostics overview={value} source={source} refresh={refresh} openInfra={() => setInfra(true)}/>)}
+      resourceDetail={(id, onClose) => details(value => <ResourceDetail overview={value} id={id} onClose={onClose} />)} />
+    {infra && full && <InfraMapDialog overview={full} refresh={refresh} onClose={() => setInfra(false)}/>}
   </div>;
 }

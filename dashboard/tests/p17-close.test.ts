@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { acceptsInstructions, closable, isFinished, narrativePollMs, STAGE_KO } from '../src/narrative.ts';
 import { incidentStatusKo, incidentStatusTone, STAGE_FROM_STATUS } from '../src/labels.ts';
-import { alertText, canSteer, diffAlerts } from '../src/feed.ts';
+import { alertSnapshot, alertText, canSteer, diffAlerts } from '../src/feed.ts';
 import { CLOSE_EFFECTS, closeConfirmText, closeErrorKo, closeReasonError } from '../src/closeIncident.ts';
 import type { Incident } from '../src/api.ts';
 
@@ -45,8 +45,8 @@ test('종료 사유는 1~500자이고 서버 거부 사유를 한국어로 설�
 });
 
 test('인계에서 종료로 바뀌면 해결이 아니라 운영자 종료로 알린다', () => {
-  const [a] = diffAlerts([inc('handed_off')], [inc('closed')]);
+  const [a] = diffAlerts(alertSnapshot([inc('handed_off')]), [inc('closed')]);
   assert.equal(a.kind, 'closed');
   assert.equal(alertText(a), '운영자 종료: inventory');
-  assert.equal(diffAlerts([inc('acting')], [inc('resolved')])[0].kind, 'resolved');
+  assert.equal(diffAlerts(alertSnapshot([inc('acting')]), [inc('resolved')])[0].kind, 'resolved');
 });

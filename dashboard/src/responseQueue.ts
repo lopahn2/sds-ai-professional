@@ -1,12 +1,12 @@
 // R1 · 운영자가 "지금 내가 해야 할 일"을 먼저 보도록 진행 중 장애를 정렬한다 (pure, no React).
-import type { Incident, IncidentCounts, OpenIncident } from './api.ts';
+import type { ActiveIncident, Incident, IncidentCounts } from './api.ts';
 
 export type QueueTone = 'danger' | 'warning' | 'info' | 'neutral';
 export type QueueItem = {
   id: number; workload: string; status: string; severity_level: string | null; created_at: string;
   environment?: string | null; system?: string | null; namespace: string; claimed: boolean;
 };
-type Source = (Incident | OpenIncident) & { handoff?: Record<string, unknown> | null };
+type Source = Pick<ActiveIncident, 'id' | 'workload' | 'status' | 'severity_level' | 'created_at' | 'environment' | 'system' | 'namespace' | 'handoff'>;
 
 const LEVEL_RANK: Record<string, number> = { HIGH_RISK: 0, COMPLEX: 1, NORMAL: 2, SIMPLE: 3 };
 /** 승인·인수처럼 운영자 결정이 없으면 멈춰 있는 상태만 '대응 필요'다. 분석·조치 중은 AI가 진행한다. */

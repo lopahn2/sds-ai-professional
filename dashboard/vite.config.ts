@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import nariaFontAssets from './vite.naria-fonts.mjs';
 
 function mockGatewayDocument(): Plugin {
   return {
@@ -26,7 +27,7 @@ export default defineConfig(({ mode }) => {
   const mock = env.LIVEPROBE_MOCK_API;
   const mockPreview = env.LIVEPROBE_MOCK === '1' && mock && /^http:\/\/127\.0\.0\.1:\d+$/.test(mock);
   return {
-    plugins: [react(), ...(mockPreview ? [mockGatewayDocument()] : [])],
+    plugins: [nariaFontAssets(), react(), ...(mockPreview ? [mockGatewayDocument()] : [])],
     server: { proxy: { '/api': mock || 'http://localhost:8000' } },
     preview: { proxy: mock ? { '/api': mock } : undefined },
   };

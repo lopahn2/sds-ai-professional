@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { atlasLanes, caseHref, caseSummary, chipLabel, laneSummary, linkSummary, loadWaiting, mergeCases, readingLabel, readingStatus, readingTone, serviceAtlas, wirePath, type AtlasService, type Reading } from '../src/serviceAtlasModel.ts';
+import { atlasLanes, caseHref, caseSummary, chipLabel, laneSummary, linkSummary, loadLiveApplication, loadWaiting, mergeCases, readingLabel, readingStatus, readingTone, serviceAtlas, wirePath, type AtlasService, type Reading } from '../src/serviceAtlasModel.ts';
 import type { Incident, Overview } from '../src/api.ts';
 import type { ApplicationIncident } from '../src/unified.ts';
+
+test('Application 진행과 개입 목록은 같은 기준으로 페이지를 읽고 두 그룹으로 나눈다', async () => {
+  const requests: string[] = [];
+  const snapshot = await loadLiveApplication(async path => {
+    requests.push(path);
+    const group = requests.length === 1 ? 'automatic' as const : 'waiting_people' as const;
+    const row = {id: group, state: group === 'automatic' ? 'analyzing' : 'qa_failed', environment: 'dev',
+      system: 'trade', service: 'order', reason: '요청 실패', live_group: group};
+    return {incidents: [row], total: 2, as_of: 10, live: true};
+  });
+  assert.deepEqual(requests, ['/unified/summaries?group=live&limit=200&offset=0', '/unified/summaries?group=live&limit=200&offset=1&as_of=10']);
+  assert.equal(snapshot?.waiting[0].state, 'qa_failed');
+  assert.equal(snapshot?.automatic[0].state, 'analyzing');
+  assert.equal(await loadLiveApplication(async () => ({incidents:[], total:0})), null);
+  await assert.rejects(loadLiveApplication(async () => { throw Object.assign(new Error('gateway denied'), {status:403}); }), /gateway denied/);
+});
 const fixture = () => JSON.parse(readFileSync(new URL('../e2e/fixtures/samsung-overview.mock.json', import.meta.url),'utf8')) as Overview;
 const root = (id:number,status='action_pending') => ({id,status,environment:'dev',workload:'payment',system:'samsung-trade',title:'결제 처리 지연',namespace:'dev'} as Incident);
 const application = (id:string, root_incident_id:number|null=null): ApplicationIncident => ({id,root_incident_id,environment:'dev',state:'awaiting_prd_approval',service:'payment',system:'samsung-trade',reason:'결제 처리 지연',data:{},created_at:1});
@@ -122,6 +138,10 @@ test('P21 연결선은 사이에 다른 노드가 있으면 옆 열 간격으로
   const b = { left: 0, top: 220, right: 200, bottom: 300 }, beside = { left: 216, top: 0, right: 416, bottom: 80 };
   assert.equal(wirePath(a, b, [a, middle, b, beside]), 'M200,40 H208 V260 H200');
   assert.equal(wirePath(a, b, [a, b, beside]), 'M100,80 V220');
+  assert.equal(wirePath(a, b, [a, middle, b,
+    { left: 205, top: 120, right: 280, bottom: 180 },
+    { left: -80, top: 120, right: -5, bottom: 180 },
+  ]), 'M200,40 H288 V260 H200');
   const { observationLabel } = await import('../src/serviceAtlasModel.ts');
   const item = { key: '3' } as Parameters<typeof readingLabel>[0]['cases'][number];
   assert.equal(observationLabel(reading({ cases: [item], states: new Set(['ready']) })), '준비');

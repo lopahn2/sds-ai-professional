@@ -13,6 +13,29 @@ async function data(page,{roots=[],apps=[],appStatus=200}={}) {
   });
   await page.route('**/api/unified/summaries?*',r=>r.fulfill({status:appStatus,json:{incidents:apps,total:apps.length,as_of:10}}));
 }
+
+test('관제 홈은 일반 글꼴만 먼저 받고 희귀 한글을 표시할 때 전체 글꼴을 받는다', async ({page}) => {
+  await data(page);
+  await page.goto('/');
+  await expect(page.getByRole('article', {name: 'payment', exact: true})).toBeVisible();
+  const initial = await page.evaluate(async () => {
+    await document.fonts.ready;
+    return performance.getEntriesByType('resource').map(entry => new URL(entry.name).pathname)
+      .filter(path => path.includes('/wanted-sans-') && path.endsWith('.woff2'));
+  });
+  expect(initial.length).toBeGreaterThan(0);
+  expect(initial.every(path => path.includes('-core-'))).toBe(true);
+
+  const requestsFullFont = page.waitForRequest(request => {
+    const path = new URL(request.url()).pathname;
+    return path.includes('/wanted-sans-') && path.endsWith('.woff2') && !path.includes('-core-');
+  });
+  await page.evaluate(async () => {
+    await document.fonts.load('400 16px "Wanted Sans"', '뷁');
+  });
+  await requestsFullFont;
+});
+
 test('서비스 하나에 dev·prd, 사건 수에 따른 진입과 개입·이관 이력 분리',async({page})=>{
   const roots=[make(1,'payment','analyzing'),make(2,'payment','action_pending'),make(3,'inventory','analyzing')];
   const apps=[{id:'child',state:'awaiting_prd_approval',service:'payment',system:'samsung-trade',environment:'dev',reason:'결제 수정본 검토',root_incident_id:2}];
@@ -60,6 +83,21 @@ test('Application 읽기 권한 누락은 0건으로 집계하지 않고 인프�
   await expect(page.getByRole('heading',{name:'수집 진단',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'지도로 돌아가기'}).click();
   await expect(page.getByRole('heading',{name:'서비스 지도',exact:true})).toBeVisible();
+});
+test('서비스 상세와 인프라 지도는 각각 열 때 필요한 화면만 불러온다', async ({page}) => {
+  await data(page);
+  const requested = [];
+  page.on('request', request => requested.push(new URL(request.url()).pathname));
+  const graphLoaded = () => requested.some(path => /\/(TopologyMap|graphShared)-[^/]+\.js$/.test(path));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'payment prd · 준비 · 상세 보기' }).click();
+  await page.getByRole('button', { name: '인프라 자원 상세', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: '자원 상세', exact: true })).toContainText('payment');
+  expect(graphLoaded()).toBe(false);
+  await page.getByRole('navigation', { name: '수집원 상태' }).getByRole('button').first().click();
+  await page.getByRole('button', { name: '인프라 연결 지도 열기', exact: true }).click();
+  await expect(page.getByRole('region', { name: '클러스터 연결 지도' })).toBeVisible();
+  expect(graphLoaded()).toBe(true);
 });
 test('노트북과 큰 화면은 지도 옆 작업 목록과 읽을 수 있는 서비스 이름을 유지한다', async({page},info)=>{
   test.skip(info.project.name!=='width-1440','두 데스크톱 크기를 한 번씩 확인합니다.');
