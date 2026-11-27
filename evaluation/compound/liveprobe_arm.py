@@ -32,7 +32,17 @@ CLAUDE_ARM = {"arm_id": "liveprobe-claude", "strategy": "adaptive", "provider": 
 # step uses it (app/evalrun.py `only_model`); each role keeps the effort of the tiered arm.
 CLAUDE_OPUS_ARM = {**CLAUDE_ARM, "arm_id": "liveprobe-claude-opus", "only_model": "claude-opus-5-5", "roles": {
     role: {**rm, "model": "claude-opus-5-5"} for role, rm in CLAUDE_ARM["roles"].items()}}
-ARMS = {"codex": ARM, "claude": CLAUDE_ARM, "claude-opus": CLAUDE_OPUS_ARM}
+# Owner instruction 2026-11-28 (model-name basis): the Codex placement above with only the model ids replaced --
+# gpt-6.2-astra -> Opus 5.5 xhigh, gpt-6.2-sol -> Opus 5.5 high, gpt-6-luna -> Haiku 5.5 (effort kept), terra ->
+# Sonnet 5.5 high (no slot uses terra now). app/evalrun.py `model_map` applies it to every role, group role, router
+# candidate and the escalation ladder.
+TIER_MAP = {"gpt-6.2-astra": {"model": "claude-opus-5-5", "effort": "xhigh"},
+            "gpt-6.2-sol": {"model": "claude-opus-5-5", "effort": "high"},
+            "gpt-6-luna": {"model": "claude-haiku-5-5"},
+            "gpt-5.6-terra": {"model": "claude-sonnet-5-5", "effort": "high"}}
+CLAUDE_TIERED_ARM = {"arm_id": "liveprobe-claude-tiered", "strategy": "adaptive", "provider": "claude_cli",
+                     "model_map": TIER_MAP, "roles": ARM["roles"]}
+ARMS = {"codex": ARM, "claude": CLAUDE_ARM, "claude-opus": CLAUDE_OPUS_ARM, "claude-tiered": CLAUDE_TIERED_ARM}
 SIGNAL = {"C1": "pool_exhaustion", "C2": "upstream_5xx", "C3": "pool_exhaustion", "C3b": "pool_exhaustion", "C2b": "upstream_5xx",
           "C1c": "pool_exhaustion", "C2c": "upstream_5xx", "C3c": "pool_exhaustion"}
 ROOT = Path(__file__).resolve().parents[2]

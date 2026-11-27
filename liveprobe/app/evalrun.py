@@ -74,9 +74,58 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc) if dt else None
 
 
+def _substitute_models(cfg, source: dict, arm_roles: dict, model_map: dict) -> None:
+    """Replace every OpenAI model id of the captured placement by its mapped model (owner instruction 2026-11-28).
+
+    `model_map` is {openai_model_id: {"model": target, "effort": optional}}. A mapped effort replaces the role's
+    effort; without one the role keeps its effort. Roles, group roles, router candidates and the escalation ladder
+    all follow the map, so no slot keeps an unmapped id and no candidate outside the map is scored.
+    """
+    from .config import RoleModel
+    anthropic = cfg.llm.provider in ("claude_cli", "anthropic_api")
+    vendor = "anthropic" if anthropic else "openai"
+
+    def target(model: str) -> dict:
+        spec = model_map.get(model)
+        if not spec or not spec.get("model"):
+            raise ValueError(f"model_map has no target for {model!r}")
+        if spec["model"].startswith("claude") != anthropic:
+            raise ValueError(f"model_map target {spec['model']!r} does not belong to provider {cfg.llm.provider!r}")
+        return spec
+
+    def mapped(rm):
+        spec = target(rm.model)
+        return RoleModel(model=spec["model"], effort=spec.get("effort") or rm.effort)
+
+    cfg.llm.roles = {r: mapped(rm) for r, rm in {**source["roles"], **arm_roles}.items()}
+    cfg.workflows.group_roles[vendor] = {r: mapped(rm) for r, rm in source["group"].items()}
+    cfg.workflows.model_ladder[vendor] = list(dict.fromkeys(target(m)["model"] for m in source["ladder"]))
+    keep = {target(m)["model"] for m in source["candidates"]}
+    for table in ("model_quality", "model_throughput"):
+        values = getattr(cfg.router, table)
+        missing = keep - set(values)
+        if missing:
+            raise ValueError(f"model_map targets {sorted(missing)} have no router {table} entry")
+        same = lambda m: m.startswith("claude") == anthropic  # noqa: E731
+        setattr(cfg.router, table, {m: v for m, v in values.items() if not same(m) or m in keep})
+    unpriced = sorted(m for m in keep | {rm.model for rm in cfg.llm.roles.values()} if m not in cfg.llm.prices)
+    if unpriced:
+        raise ValueError(f"model_map targets {unpriced} have no price")
+
+
 def build_cfg(arm: dict):
     from .config import LLM_PROVIDERS, LLMConfig, RoleModel, load_app_config
     cfg = load_app_config()
+    model_map = arm.get("model_map")
+    source = None
+    if model_map:
+        # Model substitution keeps the configured OpenAI placement (the Codex lineup) and swaps only model ids, so
+        # capture that placement before a provider switch replaces the role map.
+        if cfg.llm.provider not in ("codex_cli", "openai_api"):
+            raise ValueError(f"model_map substitutes the OpenAI placement; configured provider is {cfg.llm.provider!r}")
+        source = {"roles": dict(cfg.llm.roles), "group": dict(cfg.workflows.group_roles["openai"]),
+                  "ladder": list(cfg.workflows.model_ladder["openai"]),
+                  "candidates": [m for m in cfg.router.model_quality if not m.startswith("claude")]}
     provider = arm.get("provider")
     if provider is not None and provider not in LLM_PROVIDERS:
         raise ValueError(f"arm provider must be one of {LLM_PROVIDERS}, got {provider!r}")
@@ -85,13 +134,18 @@ def build_cfg(arm: dict):
         # switch vendor without editing the ConfigMap and without any role keeping the other vendor's model id.
         cfg.llm = LLMConfig.model_validate({**cfg.llm.model_dump(), "provider": provider})
     roles = {k: RoleModel(model=v["model"], effort=v.get("effort")) for k, v in (arm.get("roles") or {}).items()}
-    cfg.llm.roles.update({k: v for k, v in roles.items() if k in ("router", "signal_analyst", "result_verifier",
-                                                                   "evidence_curator", "safety_verifier")})
+    top = ("router", "signal_analyst", "result_verifier", "evidence_curator", "safety_verifier")
+    if source is not None:
+        _substitute_models(cfg, source, {k: v for k, v in roles.items() if k in top}, model_map)
+    else:
+        cfg.llm.roles.update({k: v for k, v in roles.items() if k in top})
     if arm["strategy"] == "fixed_group":
         for grp_role, spec_role in FIXED_ROLE_MAP.items():
-            cfg.llm.roles[grp_role] = roles[spec_role]
+            cfg.llm.roles[grp_role] = cfg.llm.roles[spec_role] if source is not None else roles[spec_role]
     anthropic = cfg.llm.provider in ("claude_cli", "anthropic_api")
     only = arm.get("only_model")
+    if only and source is not None:
+        raise ValueError("only_model and model_map are exclusive")
     if only:
         # One-model lineup: every role, group role, router candidate and escalation step of the vendor uses `only`;
         # each role keeps its reasoning effort. Escalation can then only raise the effort.

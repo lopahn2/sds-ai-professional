@@ -593,3 +593,37 @@ def test_only_model_puts_every_role_router_candidate_and_ladder_on_one_model():
         assert R.score_models(level, cfg)["selected_model"] == "claude-opus-5-5"
     with pytest.raises(ValueError):
         evalrun.build_cfg({**arm, "only_model": "gpt-6-luna"})
+
+
+# Owner instruction 2026-11-28, model-name basis: only the model ids of the Codex placement change.
+TIER_MAP = {"gpt-6.2-astra": {"model": "claude-opus-5-5", "effort": "xhigh"},
+            "gpt-6.2-sol": {"model": "claude-opus-5-5", "effort": "high"},
+            "gpt-6-luna": {"model": "claude-haiku-5-5"},
+            "gpt-5.6-terra": {"model": "claude-sonnet-5-5", "effort": "high"}}
+
+
+def test_model_map_swaps_every_openai_model_id_and_keeps_unmapped_efforts():
+    from app import router as R
+    from app.config import load_app_config
+    base = load_app_config()
+    arm = {"arm_id": "liveprobe-claude-tiered", "strategy": "adaptive", "provider": "claude_cli",
+           "model_map": TIER_MAP, "roles": {"router": {"model": "gpt-6-luna", "effort": "low"}}}
+    cfg = evalrun.build_cfg(arm)
+    expect = lambda rm: (TIER_MAP[rm.model]["model"], TIER_MAP[rm.model].get("effort") or rm.effort)  # noqa: E731
+    for role, rm in base.llm.roles.items():
+        assert (cfg.llm.roles[role].model, cfg.llm.roles[role].effort) == expect(rm), role
+    for role, rm in base.workflows.group_roles["openai"].items():
+        got = cfg.workflows.group_roles["anthropic"][role]
+        assert (got.model, got.effort) == expect(rm), role
+    assert cfg.llm.roles["router"].model == "claude-haiku-5-5" and cfg.llm.roles["router"].effort == "low"
+    assert cfg.llm.roles["safety_verifier"].effort == "xhigh"
+    assert cfg.workflows.model_ladder["anthropic"] == ["claude-haiku-5-5", "claude-opus-5-5"]
+    assert {m for m in cfg.router.model_quality if m.startswith("claude")} == {"claude-haiku-5-5", "claude-opus-5-5"}
+    for level in ("NORMAL", "COMPLEX", "HIGH_RISK"):
+        assert R.score_models(level, cfg)["selected_model"] == "claude-opus-5-5"
+    with pytest.raises(ValueError, match="no target"):
+        evalrun.build_cfg({**arm, "model_map": {k: v for k, v in TIER_MAP.items() if k != "gpt-6.2-sol"}})
+    with pytest.raises(ValueError, match="exclusive"):
+        evalrun.build_cfg({**arm, "only_model": "claude-opus-5-5"})
+    with pytest.raises(ValueError, match="does not belong"):
+        evalrun.build_cfg({**arm, "model_map": {**TIER_MAP, "gpt-6-luna": {"model": "gpt-6-luna"}}})
