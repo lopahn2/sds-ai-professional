@@ -43,13 +43,13 @@ def test_factory_structured_request_usage_and_versioned_cost():
     model = cfg.llm.roles["safety_verifier"]
     result = provider.complete("safety_verifier", "diagnose", AGENT_SCHEMA, model.model, model.effort, 10)
     AgentOutput.model_validate(result.data)
-    assert (result.provider, result.model, result.effort) == ("anthropic_api", "claude-opus-5-5", "high")
+    assert (result.provider, result.model, result.effort) == ("anthropic_api", "claude-opus-5-5", "xhigh")
     assert (result.usage.input_tokens, result.usage.cached_input_tokens, result.usage.output_tokens) == (150, 30, 40)
     assert estimate_cost(cfg, result.model, result.usage) is not None
     assert cfg.llm.prices_version
     sent = msgs.calls[0]
     assert sent["messages"] == [{"role": "user", "content": "diagnose"}]
-    assert sent["output_config"]["effort"] == "high"
+    assert sent["output_config"]["effort"] == "xhigh"
     assert sent["output_config"]["format"]["schema"]["additionalProperties"] is False
 
 

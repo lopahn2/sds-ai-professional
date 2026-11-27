@@ -358,8 +358,12 @@ def test_factory_all_four_providers(name, cls):
 def test_role_map_follows_provider_and_rejects_cross_vendor_models():
     assert LLMConfig(provider="codex_cli").roles["router"].model == "gpt-6-luna"
     a = LLMConfig(provider="anthropic_api")
-    assert a.roles["router"].model == "claude-haiku-4-5" and a.roles["router"].effort is None
+    assert a.roles["router"].model == "claude-haiku-5-5" and a.roles["router"].effort == "low"
     assert a.roles["safety_verifier"].model == "claude-opus-5-5"
+    # each Claude tier mirrors the GPT tier's effort, and every placement is priced
+    o = LLMConfig(provider="openai_api")
+    assert {r: rm.effort for r, rm in a.roles.items()} == {r: rm.effort for r, rm in o.roles.items()}
+    assert all(rm.model in a.prices for rm in a.roles.values())
     assert set(a.roles) == set(LLMConfig(provider="openai_api").roles)
     # legacy ConfigMap: explicit OpenAI roles + provider switch to claude -> loud config error
     with pytest.raises(ValueError):

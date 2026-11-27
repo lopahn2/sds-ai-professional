@@ -21,6 +21,14 @@ ARM = {"arm_id": "liveprobe", "strategy": "adaptive", "roles": {
     "result_verifier": {"model": "gpt-6.2-sol", "effort": "low"},
     "evidence_curator": {"model": "gpt-6.2-sol", "effort": "medium"},
     "safety_verifier": {"model": "gpt-6.2-astra", "effort": "xhigh"}}}
+# Same tiers and efforts on the Claude lineup (Haiku 5.5 / Sonnet 5.5 / Opus 5.5), through the Claude Code CLI.
+CLAUDE_ARM = {"arm_id": "liveprobe-claude", "strategy": "adaptive", "provider": "claude_cli", "roles": {
+    "router": {"model": "claude-haiku-5-5", "effort": "low"},
+    "signal_analyst": {"model": "claude-haiku-5-5", "effort": "low"},
+    "result_verifier": {"model": "claude-sonnet-5-5", "effort": "low"},
+    "evidence_curator": {"model": "claude-sonnet-5-5", "effort": "medium"},
+    "safety_verifier": {"model": "claude-opus-5-5", "effort": "xhigh"}}}
+ARMS = {"codex": ARM, "claude": CLAUDE_ARM}
 SIGNAL = {"C1": "pool_exhaustion", "C2": "upstream_5xx", "C3": "pool_exhaustion", "C3b": "pool_exhaustion", "C2b": "upstream_5xx",
           "C1c": "pool_exhaustion", "C2c": "upstream_5xx", "C3c": "pool_exhaustion"}
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,8 +157,10 @@ def fault_state(scenario: str) -> dict:
     return state
 
 
-def run_engine(scenario: str, memory: bool = False) -> dict:
-    arm = {**ARM, "arm_id": "liveprobe-memory", "rag_memory": True} if memory else ARM
+def run_engine(scenario: str, memory: bool = False, arm: dict | None = None) -> dict:
+    arm = arm or ARM
+    if memory:
+        arm = {**arm, "arm_id": f"{arm['arm_id']}-memory", "rag_memory": True}
     args = ["-n", "liveprobe-system", "exec", "deploy/liveprobe-api", "-c", "api", "--", "python", "-m", "app.evalrun",
             "run", "--case", f"compound-{scenario}", "--target", "shop-stock", "--signal", SIGNAL[scenario],
             "--arm", json.dumps(arm)]
@@ -280,13 +290,14 @@ def wait_decision(out: Path, n: int, timeout: int = 1800) -> dict:
     return {"stop": True, "note": "no operator decision within the timeout"}
 
 
-def operator_rounds(scenario: str, out: Path, record: dict, marks: dict, rounds: int, memory: bool) -> None:
+def operator_rounds(scenario: str, out: Path, record: dict, marks: dict, rounds: int, memory: bool,
+                    arm: dict | None = None) -> None:
     from .liveprobe_answer import answer_of, fetch
     record["rounds"] = []
     for n in range(1, rounds + 1):
         if n > 1:
             record["rounds"][-1]["engine"] = None  # keep the list lean; the full result is in round files
-            engine = run_engine(scenario, memory=memory)
+            engine = run_engine(scenario, memory=memory, arm=arm)
         else:
             engine = record["engine"]
         iid = engine.get("incident_id")
@@ -331,20 +342,23 @@ def main() -> None:
     parser.add_argument("--observe", type=int, default=300)
     parser.add_argument("--operator-rounds", type=int, default=0,
                         help="C2 family: apply operator decisions after each hand-off and re-analyse (max rounds)")
+    parser.add_argument("--provider", choices=sorted(ARMS), default="codex",
+                        help="LLM provider of every LiveProbe role: codex (GPT lineup) or claude (Claude lineup)")
     args = parser.parse_args()
+    arm = ARMS[args.provider]
     args.out.mkdir(parents=True, exist_ok=False)
     marks: dict = {"start": stamp()}
-    record: dict = {"scenario": args.scenario, "arm": ARM}
+    record: dict = {"scenario": args.scenario, "arm": arm}
     try:
         setup(args.scenario, marks)
         inject(args.scenario, marks, args.observe)
         record["fault_state"] = fault_state(args.scenario)
         if not record["fault_state"].get("fault_in_place"):
             raise RuntimeError(f"fault not in place: {record['fault_state']}")
-        record["engine"] = run_engine(args.scenario, memory=args.memory)
+        record["engine"] = run_engine(args.scenario, memory=args.memory, arm=arm)
         marks["engine_end"] = stamp()
         if args.operator_rounds:
-            operator_rounds(args.scenario, args.out, record, marks, args.operator_rounds, args.memory)
+            operator_rounds(args.scenario, args.out, record, marks, args.operator_rounds, args.memory, arm)
         collect(args.out)
     finally:
         record["marks"] = marks

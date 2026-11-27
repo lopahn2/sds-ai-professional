@@ -64,6 +64,26 @@ def test_arm_config_maps_roles_for_fixed_group_and_single():
     assert {rm.model for rm in cfg2.llm.roles.values() if rm.model} >= {"gpt-6-astra"}
 
 
+def test_arm_provider_switches_the_whole_role_map_without_crossing_vendors():
+    claude = {"arm_id": "liveprobe-claude", "strategy": "adaptive", "provider": "claude_cli", "roles": {
+        "router": {"model": "claude-haiku-5-5", "effort": "low"},
+        "safety_verifier": {"model": "claude-opus-5-5", "effort": "xhigh"}}}
+    cfg = evalrun.build_cfg(claude)
+    assert cfg.llm.provider == "claude_cli"
+    assert cfg.llm.roles["router"] == RoleModel(model="claude-haiku-5-5", effort="low")
+    # roles the arm does not name come from the provider's own map, never the GPT defaults
+    assert cfg.llm.roles["result_verifier"].model == "claude-sonnet-5-5"
+    assert all(rm.model.startswith("claude") for rm in cfg.llm.roles.values())
+    group = cfg.workflows.group_roles["anthropic"]
+    assert {group["k8s_analyst"].model, group["log_summarizer"].model} == {"claude-opus-5-5", "claude-haiku-5-5"}
+    # no provider -> the configured one (codex) is untouched
+    assert evalrun.build_cfg({"arm_id": "a", "strategy": "adaptive", "roles": {}}).llm.provider == "codex_cli"
+    with pytest.raises(ValueError):    # a GPT model id under the Claude provider is refused before any call
+        evalrun.build_cfg({**claude, "roles": {"router": {"model": "gpt-6-luna", "effort": "low"}}})
+    with pytest.raises(ValueError):
+        evalrun.build_cfg({**claude, "provider": "gemini_api"})
+
+
 @pytest.mark.parametrize("text,cls", [
     ("Container was OOMKilled (exit code 137) after hitting the memory limit", "memory_exhaustion"),
     ("ErrImagePull: the image tag does not exist", "image_pull_failure"),

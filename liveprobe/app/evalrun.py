@@ -73,14 +73,25 @@ def _utc(dt: datetime | None) -> datetime | None:
 
 
 def build_cfg(arm: dict):
-    from .config import RoleModel, load_app_config
+    from .config import LLM_PROVIDERS, LLMConfig, RoleModel, load_app_config
     cfg = load_app_config()
+    provider = arm.get("provider")
+    if provider is not None and provider not in LLM_PROVIDERS:
+        raise ValueError(f"arm provider must be one of {LLM_PROVIDERS}, got {provider!r}")
+    if provider and provider != cfg.llm.provider:
+        # The selected provider's own role map replaces the configured one (llm.provider_roles), so a run can
+        # switch vendor without editing the ConfigMap and without any role keeping the other vendor's model id.
+        cfg.llm = LLMConfig.model_validate({**cfg.llm.model_dump(), "provider": provider})
     roles = {k: RoleModel(model=v["model"], effort=v.get("effort")) for k, v in (arm.get("roles") or {}).items()}
     cfg.llm.roles.update({k: v for k, v in roles.items() if k in ("router", "signal_analyst", "result_verifier",
                                                                    "evidence_curator", "safety_verifier")})
     if arm["strategy"] == "fixed_group":
         for grp_role, spec_role in FIXED_ROLE_MAP.items():
             cfg.llm.roles[grp_role] = roles[spec_role]
+    anthropic = cfg.llm.provider in ("claude_cli", "anthropic_api")
+    bad = sorted({rm.model for rm in cfg.llm.roles.values() if rm.model.startswith("claude") != anthropic})
+    if bad:
+        raise ValueError(f"arm roles {bad} do not belong to provider {cfg.llm.provider!r}")
     return cfg
 
 
@@ -244,7 +255,7 @@ def run_one(case: str, target: str, signal: str, arm: dict, wait_s: int) -> dict
     if arm["strategy"] in ("adaptive", "fixed_group"):
         selected = level if decided_by != "router_failure" else "HIGH_RISK"
     return {
-        "schema": SCHEMA, "case": case, "arm": arm["arm_id"], "incident_id": iid,
+        "schema": SCHEMA, "case": case, "arm": arm["arm_id"], "incident_id": iid, "provider": cfg.llm.provider,
         "selected_workflow": selected, "decided_by": decided_by,
         "model_calls": model_calls, "cost_basis": "estimated", "cost_usd": cost,
         "role_executions": run_rows, "accounting": accounting,

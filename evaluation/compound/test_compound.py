@@ -61,3 +61,13 @@ def test_grader_screens_a_symptom_only_answer():
     verdict = grade.grade("C1", result)
     assert verdict["screening_verdict"] == "fail"
     assert "probe_liveness_group" in verdict["proposed_primitives"]
+
+
+def test_provider_arms_mirror_each_other():
+    from evaluation.compound.liveprobe_arm import ARMS
+    codex, claude = ARMS["codex"], ARMS["claude"]
+    assert claude["provider"] == "claude_cli" and "provider" not in codex
+    assert set(codex["roles"]) == set(claude["roles"])
+    assert all(r["model"].startswith("gpt-") for r in codex["roles"].values())
+    assert all(r["model"].startswith("claude-") for r in claude["roles"].values())
+    assert {k: r["effort"] for k, r in codex["roles"].items()} == {k: r["effort"] for k, r in claude["roles"].items()}

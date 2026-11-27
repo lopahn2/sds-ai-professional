@@ -118,15 +118,19 @@ def _openai_roles() -> dict[str, RoleModel]:
     }
 
 
+# Current Claude lineup, one tier per GPT tier at matching or lower list prices (Haiku 5.5 = luna's price,
+# Sonnet 5.5 = sol's, Opus 5.5 half of astra's). All three take an effort level, so placements mirror the GPT ones.
+CLAUDE_LOW, CLAUDE_MID, CLAUDE_HIGH = "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"
+
+
 def _anthropic_roles() -> dict[str, RoleModel]:
-    # Haiku 4.5 does not take an effort level; Sonnet 5 / Opus 5.5 do (low..max).
     # IDs are the current API aliases listed at platform.claude.com/docs/en/about-claude/models/overview.
     return {
-        "router": RoleModel(model="claude-haiku-4-5", effort=None),
-        "signal_analyst": RoleModel(model="claude-haiku-4-5", effort=None),
-        "result_verifier": RoleModel(model="claude-sonnet-5", effort="low"),
-        "evidence_curator": RoleModel(model="claude-sonnet-5", effort="medium"),
-        "safety_verifier": RoleModel(model="claude-opus-5-5", effort="high"),
+        "router": RoleModel(model=CLAUDE_LOW, effort="low"),
+        "signal_analyst": RoleModel(model=CLAUDE_LOW, effort="low"),
+        "result_verifier": RoleModel(model=CLAUDE_MID, effort="low"),
+        "evidence_curator": RoleModel(model=CLAUDE_MID, effort="medium"),
+        "safety_verifier": RoleModel(model=CLAUDE_HIGH, effort="xhigh"),
     }
 
 
@@ -158,6 +162,9 @@ def _default_prices() -> dict[str, dict[str, float]]:
         "claude-sonnet-5": {"input": 2.00, "cached_input": 0.20, "output": 10.00},
         "claude-opus-5-5": {"input": 4.00, "cached_input": 0.20, "output": 20.00},
         "claude-opus-5": {"input": 5.00, "cached_input": 0.50, "output": 25.00},
+        # current Claude lineup, 2026-11-27 (Claude API list prices; Haiku 5.5 at its <=100K-token prompt rate)
+        "claude-haiku-5-5": {"input": 0.10, "cached_input": 0.01, "output": 0.50},
+        "claude-sonnet-5-5": {"input": 2.00, "cached_input": 0.10, "output": 10.00},
     }
 
 
@@ -203,10 +210,10 @@ class RouterPolicy(BaseModel):
     # Relative estimates, not benchmark claims. Unknown pricing disqualifies a candidate.
     model_quality: dict[str, float] = Field(default_factory=lambda: {
         GPT_LOW: 0.5, GPT_MID: 0.75, GPT_HIGH: 1.0,
-        "claude-haiku-4-5": 0.5, "claude-sonnet-5": 0.75, "claude-opus-5-5": 1.0})
+        CLAUDE_LOW: 0.5, CLAUDE_MID: 0.75, CLAUDE_HIGH: 1.0, "claude-haiku-4-5": 0.5, "claude-sonnet-5": 0.75})
     model_throughput: dict[str, float] = Field(default_factory=lambda: {
         GPT_LOW: 1.0, GPT_MID: 0.6, GPT_HIGH: 0.3,
-        "claude-haiku-4-5": 1.0, "claude-sonnet-5": 0.6, "claude-opus-5-5": 0.3})
+        CLAUDE_LOW: 1.0, CLAUDE_MID: 0.6, CLAUDE_HIGH: 0.3, "claude-haiku-4-5": 1.0, "claude-sonnet-5": 0.6})
     min_quality: dict[str, float] = Field(default_factory=lambda: {
         "SIMPLE": 0.5, "NORMAL": 0.7, "COMPLEX": 0.7, "HIGH_RISK": 0.9})
 
@@ -259,9 +266,8 @@ def _group_roles() -> dict[str, dict[str, RoleModel]]:
     # luna/terra/sol are the plan's tier names (low/mid/high); the model ids are the current lineup.
     luna, terra, sol = (RoleModel(model=GPT_LOW, effort="low"), RoleModel(model=GPT_MID, effort="medium"),
                         RoleModel(model=GPT_HIGH, effort="high"))
-    haiku, sonnet, opus = (RoleModel(model="claude-haiku-4-5", effort=None),
-                           RoleModel(model="claude-sonnet-5", effort="medium"),
-                           RoleModel(model="claude-opus-5-5", effort="high"))
+    haiku, sonnet, opus = (RoleModel(model=CLAUDE_LOW, effort="low"), RoleModel(model=CLAUDE_MID, effort="medium"),
+                           RoleModel(model=CLAUDE_HIGH, effort="high"))
 
     def roles(l: RoleModel, t: RoleModel, s: RoleModel) -> dict[str, RoleModel]:
         return {
@@ -299,7 +305,7 @@ class WorkflowPolicy(BaseModel):
     projected_input_overhead_tokens: int = Field(default=16000, ge=0)
     model_ladder: dict[str, list[str]] = Field(default_factory=lambda: {
         "openai": [GPT_LOW, GPT_MID, GPT_HIGH],
-        "anthropic": ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-5-5"]})
+        "anthropic": [CLAUDE_LOW, CLAUDE_MID, CLAUDE_HIGH]})
     effort_ladder: list[str] = Field(default_factory=lambda: ["low", "medium", "high", "xhigh"])
     group_roles: dict[str, dict[str, RoleModel]] = Field(default_factory=_group_roles)
 
