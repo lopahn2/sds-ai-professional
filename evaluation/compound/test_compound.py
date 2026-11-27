@@ -71,3 +71,27 @@ def test_provider_arms_mirror_each_other():
     assert all(r["model"].startswith("gpt-") for r in codex["roles"].values())
     assert all(r["model"].startswith("claude-") for r in claude["roles"].values())
     assert {k: r["effort"] for k, r in codex["roles"].items()} == {k: r["effort"] for k, r in claude["roles"].items()}
+
+
+def test_claude_baseline_prices_cache_writes_and_keeps_the_answer(monkeypatch):
+    import subprocess
+    from evaluation.compound import baseline
+    answer = {"root_causes": [], "actions": [], "verification": "v"}
+    raw = {"usage": {"input_tokens": 2, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 100_000,
+                     "cache_creation": {"ephemeral_1h_input_tokens": 60_000}, "output_tokens": 10_000},
+           "num_turns": 1}
+    seen = {}
+
+    def fake_run(cmd, input, **kw):
+        seen["cmd"], seen["req"] = cmd, json.loads(input)
+        line = "RESULT " + json.dumps({"raw": raw, "answer": answer, "error": None, "wall_s": 3.0})
+        return subprocess.CompletedProcess(cmd, 0, stdout="log\n" + line + "\n", stderr="")
+    monkeypatch.setattr(baseline.subprocess, "run", fake_run)
+    r = baseline.run("LOGS", "claude-opus-5-5", "xhigh", 60)
+    assert "deploy/liveprobe-api" in seen["cmd"] and seen["req"]["model"] == "claude-opus-5-5"
+    assert seen["req"]["prompt"].endswith("LOGS</logs>\n") and seen["req"]["schema"] == baseline.SCHEMA
+    assert r["usage"] == {"input_tokens": 101_002, "cached_input_tokens": 1000, "cache_write_input_tokens": 100_000,
+                          "cache_write_1h_input_tokens": 60_000, "output_tokens": 10_000}
+    # 2 fresh + 40k 5-min writes x1.25 + 60k 1-h writes x2 at $4, 1k reads at $0.20, 10k out at $20
+    expected = (2 * 4 + 40_000 * 4 * 1.25 + 60_000 * 4 * 2 + 1000 * 0.20 + 10_000 * 20) / 1e6
+    assert r["estimated_usd"] == round(expected, 6) and r["answer"] == answer and r["exit_code"] == 0
