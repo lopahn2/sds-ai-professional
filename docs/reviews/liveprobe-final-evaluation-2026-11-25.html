@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiveProbe 장애 대응 비교 최종 보고서</title>
+  <style>
+:root {
+  color-scheme: light;
+  --paper: #fff;
+  --page: #f4f7f8;
+  --ink: #15252c;
+  --muted: #405760;
+  --line: #dce6e8;
+  --accent: #0b6259;
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-block-start: 1.5rem; }
+body { margin: 0; color: var(--ink); background: var(--page); line-height: 1.7; word-break: keep-all; overflow-wrap: break-word; }
+.sheet { width: min(1080px, calc(100% - 48px)); margin: 36px auto; background: var(--paper); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+.hero { padding: clamp(1.5rem, 5.5vw, 4.4rem); padding-bottom: 2.5rem; border-top: 6px solid var(--accent); background: linear-gradient(130deg, #edf7f4 0%, #fff 80%); }
+h1, h2, h3 { line-height: 1.25; text-wrap: balance; }
+h1 { font-size: clamp(1.8rem, 4.1vw, 3rem); margin: 0 0 .55rem; letter-spacing: -.035em; }
+.hero p { color: var(--muted); margin: 0; font-size: .95rem; }
+.contents { display: flex; flex-wrap: wrap; gap: .35rem .95rem; padding: 1rem clamp(1.5rem, 5.5vw, 4.4rem); border-block: 1px solid var(--line); font-size: .88rem; }
+main, footer { padding: 0 clamp(1.5rem, 5.5vw, 4.4rem); }
+.section { padding: 1.75rem 0 1.35rem; border-bottom: 1px solid var(--line); }
+.section:last-child { border: 0; }
+h2 { margin: 0 0 .85rem; font-size: clamp(1.25rem, 2.4vw, 1.65rem); letter-spacing: -.025em; }
+h3 { margin: 1.65rem 0 .7rem; font-size: 1.15rem; }
+p { margin: .65rem 0; }
+ul { margin: .55rem 0; padding-left: 1.35rem; }
+li + li { margin-top: .55rem; }
+li::marker { color: var(--accent); }
+a { color: var(--accent); text-underline-offset: .18em; }
+a:focus-visible, .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.citation { font-size: .86em; }
+code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .86em; }
+.table-scroll { margin: .95rem 0 1.1rem; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; }
+table { width: 100%; min-width: 575px; border-collapse: collapse; font-size: .88rem; font-variant-numeric: tabular-nums; }
+th, td { padding: .55rem .65rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+thead th { background: #edf5f3; color: #203e3a; }
+tbody tr:last-child > * { border-bottom: 0; }
+tbody th { font-weight: 650; }
+tbody tr:nth-child(even) { background: #f8fbfb; }
+.number { text-align: right; }
+td.number { white-space: nowrap; }
+footer { padding-top: 1.65rem; padding-bottom: 2.25rem; background: #f8fbfb; border-top: 1px solid var(--line); }
+footer ol { padding-left: 1.65rem; font-size: .87rem; }
+footer code { overflow-wrap: anywhere; color: var(--muted); }
+footer [id]:target { background: #e0f2ec; }
+@media (max-width: 620px) {
+  .sheet { width: 100%; margin: 0; border-radius: 0; border: 0; }
+  nav, main, footer { padding-inline: 1rem; }
+  .hero { padding: 1.5rem 1rem 1.25rem; }
+  .section { padding-top: 1.45rem; }
+  body { font-size: .95rem; }
+}
+@media print {
+  body, .sheet, .hero, footer { background: #fff; }
+  .sheet { margin: 0; border: 0; border-radius: 0; width: auto; overflow: visible; }
+  .contents { display: none; }
+  .hero, main, footer { padding-inline: 0; }
+  .hero { padding-block: .7rem; }
+  .section { padding-block: .65rem; }
+  .table-scroll { overflow: visible; break-inside: avoid; }
+  table { min-width: 0; font-size: 8pt; }
+  td.number { white-space: normal; }
+  h2, h3 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header class="hero">
+    <h1>LiveProbe 장애 대응 비교 최종 보고서</h1>
+    <p>2026년 11월 25일 · 저장된 시험 결과 재집계 · 커널 OOM 제외</p>
+  </header>
+  <nav class="contents" aria-label="목차"><a href="#conclusions">핵심 결론</a><a href="#scope">시험 범위와 판정</a><a href="#recovery">방식별 복구 결과</a><a href="#response-and-cost">방식별 대응 시간·토큰·비용</a><a href="#limits">가설 판정과 해석 한계</a><a href="#provenance">재집계 근거</a><a href="#references">근거 자료</a></nav>
+  <main>
+<section aria-labelledby="conclusions" class="section"><h2 id="conclusions">핵심 결론</h2>
+<ul>
+<li><strong>조치 후 실제 서비스 복구</strong>를 확인한 사례는 LiveProbe 11개, Astra와 Sol 각 54개, Terra 55개, Luna 45개였다. 다섯 방식 모두 대응 시간이 기록된 동일 50개 사례에서도 LiveProbe 11개, 단독 모델 34~44개로 차이가 유지됐다. LiveProbe에서 사건이 생성되지 않은 18개는 분석 미실행으로 따로 확인했다. 그중 7개는 서비스가 자연 회복했고 11개는 관측 종료까지 장애가 지속됐다. <a class="citation" href="#source-1">공식 실행 원장</a></li>
+<li><strong>AI 환산 비용</strong>은 동일 49개 사례에서 LiveProbe가 Astra보다 <strong>53.4% 낮았다</strong>. Sol·Terra·Luna보다는 높았다. 동일 50개 사례의 기록상 대응 시간 합은 LiveProbe가 네 단독 모델보다 <strong>2.21~3.48배</strong> 길었다. 비용 절감 신호는 Astra 비교에서 확인됐으며, 같은 수준의 복구 성과와 더 빠른 대응을 함께 달성한다는 가설은 입증되지 않았다. <a class="citation" href="#source-1">공식 실행 원장</a> · <a class="citation" href="#source-2">비교 판정과 집계 코드</a></li>
+</ul>
+</section>
+<section aria-labelledby="scope" class="section"><h2 id="scope">시험 범위와 판정</h2>
+<p>전체 캠페인의 진행 현황은 <strong>355/375회 완료</strong>였다. 이 보고서의 비교 범위는 <strong>68개 시나리오 × 5개 방식 = 340회</strong>다. 기본 20개, 신규 Kubernetes 18개, Application 30개를 포함한다. 커널 <code>OOMKilled</code> 주입이 시험 조건인 <code>F2-01</code>, <code>F2-03</code>, <code>F2-05</code>, <code>F2-07</code>, <code>F2-10</code>, <code>F2-13</code>, <code>F2-15</code>를 제외했다. 제외한 35회는 완료 15회와 미실행 20회다. Application의 <code>delivery-09</code>, <code>delivery-29</code>, <code>notification-20</code>은 격리 서비스의 메모리 증가·업무 오류를 검증한 사례로 포함했다. <a class="citation" href="#source-3">선정 카탈로그</a> · <a class="citation" href="#source-4">커널 OOM 정의</a> · <a class="citation" href="#source-5">Application 메모리 관측</a></p>
+<p>단독 모델은 최초 오류 로그와 조사·복구 요청으로 시작하고, 이후 필요한 자료를 시험 도구로 조회했다. LiveProbe는 시험별 수집·분류·분석·조치 절차를 사용했다. 포함한 68개 사례 모두에서 다섯 방식의 초기 입력 지문이 일치했다. 비교에는 dev 실워크로드, 별도 Kubernetes 시험 클러스터, 격리 Application 시험 환경이 들어 있다. <a class="citation" href="#source-6">시험 프로토콜</a> · <a class="citation" href="#source-7">원본 영수증 대조</a></p>
+<ul>
+<li><strong>조치 후 복구</strong>는 해당 방식이 적용한 조치에 이어 독립 업무 확인 또는 리소스 확인을 통과한 기록이다.</li>
+<li><strong>자연 회복</strong>은 장애 만료 등으로 정상 응답을 다시 확인한 기록이다. 자동 복구 건수에는 합산하지 않았다.</li>
+<li><strong>분석 후 미복구</strong>는 대응이 실행됐고 관측 구간 내 조치 후 복구를 확인하지 못한 기록이다. <strong>미감지·장애 지속</strong>은 시험기가 장애 지속을 확인했으나 LiveProbe 사건이 생성되지 않아 분석이 실행되지 않은 경우다. 이 경우는 분석 후 미복구와 구분하며 비용을 0으로 대체하지 않았다. <a class="citation" href="#source-8">판정 코드</a></li>
+</ul>
+</section>
+<section aria-labelledby="recovery" class="section"><h2 id="recovery">방식별 복구 결과</h2>
+<p>각 방식은 68개 독립 서비스 결과를 보유한다. 원장의 LiveProbe <code>unrecovered</code> 44개 중 사건 미감지 11개를 별도 열로 옮겼다. 자연 회복 13개 중 7개도 사건 없이 회복됐으므로 실행이 관측된 LiveProbe 대응은 50개다. <a class="citation" href="#source-1">공식 실행 원장</a> · <a class="citation" href="#source-9">미감지 원인 분류</a></p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="방식별 복구 결과 표 1"><table>
+<thead><tr><th scope="col">방식</th><th scope="col" class="number">서비스 결과 관측</th><th scope="col" class="number">조치 후 복구</th><th scope="col" class="number">자연 회복</th><th scope="col" class="number">분석 후 미복구</th><th scope="col" class="number">미감지·장애 지속</th></tr></thead><tbody>
+<tr><th scope="row">LiveProbe</th><td class="number">68</td><td class="number"><strong>11</strong></td><td class="number">13</td><td class="number">33</td><td class="number">11</td></tr>
+<tr><th scope="row">GPT-6.2 Astra · xhigh</th><td class="number">68</td><td class="number">54</td><td class="number">13</td><td class="number">1</td><td class="number">—</td></tr>
+<tr><th scope="row">GPT-6.2 Sol · high</th><td class="number">68</td><td class="number">54</td><td class="number">13</td><td class="number">1</td><td class="number">—</td></tr>
+<tr><th scope="row">GPT-6.1 Terra · medium</th><td class="number">68</td><td class="number">55</td><td class="number">13</td><td class="number">—</td><td class="number">—</td></tr>
+<tr><th scope="row">GPT-6 Luna · low</th><td class="number">68</td><td class="number">45</td><td class="number">13</td><td class="number">10</td><td class="number">—</td></tr>
+</tbody></table></div>
+<p>아래는 <strong>조치 후 복구</strong>만 시험군별로 나눈 결과다. 신규 Kubernetes에서 LiveProbe는 11개 사례를 감지하지 못했고, 사건이 관측된 7개에서도 시험 중 조치 후 복구가 없었다. Application에서는 LiveProbe의 나머지 22개가 운영자 이관으로 끝났다. 이관 사유는 수정 미지원 18개, 근거 인용 검증 실패 3개, 시험·빌드 증빙 검증 실패 1개였다. 사유 기록은 개별 이관에 대한 독립적인 적정성 판정까지 제공하지 않는다. <a class="citation" href="#source-1">공식 실행 원장</a> · <a class="citation" href="#source-10">이관 처리 코드</a></p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="방식별 복구 결과 표 2"><table>
+<thead><tr><th scope="col">시험군</th><th scope="col" class="number">사례 수</th><th scope="col" class="number">LiveProbe</th><th scope="col" class="number">Astra</th><th scope="col" class="number">Sol</th><th scope="col" class="number">Terra</th><th scope="col" class="number">Luna</th></tr></thead><tbody>
+<tr><th scope="row">기본</th><td class="number">20</td><td class="number">3</td><td class="number">7</td><td class="number">7</td><td class="number">7</td><td class="number">6</td></tr>
+<tr><th scope="row">신규 Kubernetes</th><td class="number">18</td><td class="number">0</td><td class="number">18</td><td class="number">18</td><td class="number">18</td><td class="number">18</td></tr>
+<tr><th scope="row">Application</th><td class="number">30</td><td class="number">8</td><td class="number">29</td><td class="number">29</td><td class="number">30</td><td class="number">21</td></tr>
+</tbody></table></div>
+</section>
+<section aria-labelledby="response-and-cost" class="section"><h2 id="response-and-cost">방식별 대응 시간·토큰·비용</h2>
+<p>대응 시간은 원장의 <code>wall_duration_ms</code>를 초로 변환했다. 사례에 따라 조사 시작, 서비스 오류, 사건 종료, 모델 평가의 경계가 다르므로 <strong>시험 기록상 대응 구간</strong>으로 해석한다. 다섯 방식에 시간이 모두 기록된 50개 사례는 기본 13개, 신규 Kubernetes 7개, Application 30개다. 토큰과 비용은 두 값과 모델 호출이 모두 관측된 49개 사례를 사용했다. 시간만 확인된 <code>F1-12</code>는 비용·토큰 집계에서 제외했다. 비용은 원장에 기록된 모델 단가 기반 USD 환산액이며 구독 청구액과 별개다. <a class="citation" href="#source-1">공식 실행 원장</a> · <a class="citation" href="#source-11">대응 시간 집계</a> · <a class="citation" href="#source-12">단독 모델 비용 산식</a></p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="방식별 대응 시간·토큰·비용 표 3"><table>
+<thead><tr><th scope="col">방식</th><th scope="col" class="number">대응 시간 중앙값 · 50개</th><th scope="col" class="number">대응 시간 합 · 50개</th><th scope="col" class="number">총 토큰 · 49개</th><th scope="col" class="number">비용 합 · 49개</th><th scope="col" class="number">사례당 비용 중앙값 · 49개</th></tr></thead><tbody>
+<tr><th scope="row">LiveProbe</th><td class="number">84.15초</td><td class="number">9,461.73초</td><td class="number">3,848,699</td><td class="number"><strong>$10.1362</strong></td><td class="number">$0.0624</td></tr>
+<tr><th scope="row">GPT-6.2 Astra</th><td class="number">68.00초</td><td class="number">3,277.49초</td><td class="number">3,515,352</td><td class="number">$21.7383</td><td class="number">$0.4220</td></tr>
+<tr><th scope="row">GPT-6.2 Sol</th><td class="number">58.80초</td><td class="number">3,000.42초</td><td class="number">3,358,495</td><td class="number">$5.5644</td><td class="number">$0.1168</td></tr>
+<tr><th scope="row">GPT-6.1 Terra</th><td class="number">51.06초</td><td class="number">2,719.15초</td><td class="number">3,380,994</td><td class="number">$1.0522</td><td class="number">$0.0200</td></tr>
+<tr><th scope="row">GPT-6 Luna</th><td class="number">80.07초</td><td class="number">4,283.41초</td><td class="number">8,556,937</td><td class="number">$0.4094</td><td class="number">$0.0074</td></tr>
+</tbody></table></div>
+<h3>시험군별 비용과 시간</h3>
+<p>Astra 대비 비용 차이는 시험군마다 달랐다. 전체 순 절감액의 87.1%는 Application에서 나왔고, 신규 Kubernetes의 공통 관측 7개에서는 LiveProbe 비용이 Astra보다 27.8% 높았다. 아래 표에서 음수는 LiveProbe 비용 절감, 양수는 비용 증가다. <a class="citation" href="#source-1">공식 실행 원장</a></p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="방식별 대응 시간·토큰·비용 표 4"><table>
+<thead><tr><th scope="col">시험군</th><th scope="col" class="number">공통 시간 / 비용 사례 수</th><th scope="col" class="number">대응 시간 중앙값 · LiveProbe</th><th scope="col" class="number">대응 시간 중앙값 · 단독 모델 4종 범위</th><th scope="col" class="number">비용 합 · LiveProbe / Astra</th><th scope="col" class="number">Astra 대비 비용 차이</th></tr></thead><tbody>
+<tr><th scope="row">기본</th><td class="number">13 / 12</td><td class="number">246.69초</td><td class="number">45.18~64.02초</td><td class="number">$2.7281 / $4.8310</td><td class="number">−43.5%</td></tr>
+<tr><th scope="row">신규 Kubernetes</th><td class="number">7 / 7</td><td class="number">238.56초</td><td class="number">31.47~47.86초</td><td class="number">$2.7708 / $2.1678</td><td class="number">+27.8%</td></tr>
+<tr><th scope="row">Application</th><td class="number">30 / 30</td><td class="number">45.98초</td><td class="number">56.46~98.65초</td><td class="number">$4.6373 / $14.7395</td><td class="number">−68.5%</td></tr>
+</tbody></table></div>
+<p>Application에서 LiveProbe의 대응 중앙값 45.98초에는 운영자 이관 22개가 포함된다. 이관 22개의 중앙값은 39.17초, 조치 후 복구 8개의 중앙값은 321.31초였다. 원본 대조에서 LiveProbe는 소스 수정 대상 9개 중 8개를 복구했고, 설정 복원이 필요한 21개는 모두 이관했다. 단독 모델은 격리 시험기가 제공한 설정 복원 도구로 그 21개 중 14~21개를 복구했다. 전체 대응 중앙값을 비교할 때 종료 결과와 사용할 수 있었던 조치를 함께 봐야 한다. <a class="citation" href="#source-13">Application 150회 원자료 대조</a> · <a class="citation" href="#source-1">공식 실행 원장</a></p>
+<h3>다섯 방식이 모두 조치로 복구한 사례</h3>
+<p>공통 10개 사례에서 LiveProbe 비용은 Astra보다 45.4% 낮았고 대응 시간 합은 3.20배였다. 이 10개는 기본 3개와 Application 7개로 구성된다. <a class="citation" href="#source-1">공식 실행 원장</a></p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="방식별 대응 시간·토큰·비용 표 5"><table>
+<thead><tr><th scope="col">방식</th><th scope="col" class="number">대응 시간 합 · 10개</th><th scope="col" class="number">총 토큰 · 10개</th><th scope="col" class="number">비용 합 · 10개</th></tr></thead><tbody>
+<tr><th scope="row">LiveProbe</th><td class="number">2,551.97초</td><td class="number">1,119,852</td><td class="number">$3.1277</td></tr>
+<tr><th scope="row">GPT-6.2 Astra</th><td class="number">797.68초</td><td class="number">817,510</td><td class="number">$5.7257</td></tr>
+<tr><th scope="row">GPT-6.2 Sol</th><td class="number">803.43초</td><td class="number">800,187</td><td class="number">$1.4635</td></tr>
+<tr><th scope="row">GPT-6.1 Terra</th><td class="number">703.25초</td><td class="number">786,765</td><td class="number">$0.2620</td></tr>
+<tr><th scope="row">GPT-6 Luna</th><td class="number">1,016.19초</td><td class="number">2,001,677</td><td class="number">$0.1028</td></tr>
+</tbody></table></div>
+</section>
+<section aria-labelledby="limits" class="section"><h2 id="limits">가설 판정과 해석 한계</h2>
+<ul>
+<li><strong>비용과 고성능 호출.</strong> 과제계획서 초안의 30% 비용 절감 기준은 Astra와 공동 관측한 49개 사례에서 수치상 넘었다. 같은 사례의 Astra 호출은 LiveProbe 24회, Astra 단독 247회로 90.3% 줄었다. 양쪽에서 토큰·비용을 모두 확인한 범위의 결과이며, 전체 범위의 복구 품질을 유지한 비용 절감으로 일반화할 수 없다. <a class="citation" href="#source-14">과제계획서</a> · <a class="citation" href="#source-1">공식 실행 원장</a></li>
+<li><strong>원인과 근거.</strong> 독립 검토 기록이 있는 Kubernetes 13개 사례에서 최초 분석의 상위 3개 후보에 실제 원인이 모두 포함됐다. 원장에는 LiveProbe 22개 사례의 인용 367개 중 353개가 모델에 제시된 근거와 일치한 것으로 기록됐다. 표본 일치율은 96.2%다. 전체 68개 사례의 원인 적중률이나 원본 로그 일치율을 산출할 정도로 검토 범위가 넓지 않다. 역할·모델 조합의 기준 일치와 운영자 이관 적정성도 전체 범위에서 미검증이다. <a class="citation" href="#source-15">원인 순위 독립 검토</a> · <a class="citation" href="#source-16">검증 근거 대조</a></li>
+<li><strong>운영 권한과 버전.</strong> 단독 모델의 조치는 독립 시험기가 해당 시험 자원에 한해 실행했다. LiveProbe는 배포된 권한과 허용 조치에 따라 동작했다. 신규 Kubernetes의 차이에는 탐지 범위와 권한 차이도 포함된다. 공식 원장은 당시 실행 결과를 유지한다. 뒤에 고친 감시 경로의 로그 재생과 회귀 통과는 그 원장에 추가하지 않았다. <a class="citation" href="#source-17">시험 경계와 후속 검증 기록</a> · <a class="citation" href="#source-18">Admission 장애 LiveProbe 기록</a> · <a class="citation" href="#source-19">같은 장애의 단독 시험 기록</a></li>
+</ul>
+<h3>관제 홈 시간과 메모리</h3>
+<p>기준 커밋 <code>47e2bbd</code>와 개선본을 비교한 기존 계측에서 <strong>8개 조건 모두 시간·메모리 10% 개선 기준을 충족</strong>했다. 조건별 중앙값 기준으로 홈 표시 시간은 26.3~46.0%, 브라우저·API·DB 프로세스 트리의 합산 최대 RSS는 12.8~21.3% 줄었다. 활성 사건 12개·200개, 관측원 응답 재생 지연 10ms·200ms, 화면 폭 375px·1,440px 조합이다. 96회 계측에는 기준본, 직전 작업본, 개선본이 각각 32회 포함된다. 서비스 지도와 사건 표시, 기존 RAG 검색 결과는 각 비교에서 일치했다. <a class="citation" href="#source-20">8개 조건의 집계</a> · <a class="citation" href="#source-21">96회 원자료</a></p>
+<p>Application 분석이 실제로 동시에 실행된 별도 4회에서 홈 표시 시간 중앙값은 3,058.85ms에서 1,729.90ms로 43.45% 줄었다. 분석 프로세스까지 포함한 합산 최대 RSS 중앙값은 1,124.34MiB에서 963.02MiB로 14.35% 줄었다. 이 결과는 활성 사건 200개, 재생 지연 200ms, 1,440px 화면 한 조건에 해당한다. 실제 클러스터 복구 조치 중의 성능과 다른 동시 분석 부하는 관측 범위 밖이다. <a class="citation" href="#source-22">동시 분석 계측 요약</a> · <a class="citation" href="#source-23">계측 원자료</a></p>
+</section>
+<section aria-labelledby="provenance" class="section"><h2 id="provenance">재집계 근거</h2>
+<p>원장의 <code>case</code>와 <code>arm</code>을 한 행의 기준으로 사용했다. 커널 OOM 정의의 7개 ID를 제거한 뒤 각 사례에 다섯 방식이 하나씩 존재하는지 확인했다. 복구 건수는 원장의 상태별로 집계했고, 장애가 지속되면서 사건이 없었던 기록은 판정 코드가 지정한 미감지 사유로 식별했다. 대응 시간과 비용·토큰은 지표별로 값이 있는 동일 사례의 교집합을 사용했다. 비용 절감률은 <code>1 − (LiveProbe 합계 ÷ 단독 모델 합계)</code>로 구했다. 원장 SHA-256은 <code>cd530ad195fff74a68d21f502cb2038ed68b03dccf1c597b4c9f7c37291c129c</code>다. 보고서 작성을 위해 새 장애를 실행하거나 기존 원장·로그·DB를 수정하지 않았다. <a class="citation" href="#source-1">공식 실행 원장</a> · <a class="citation" href="#source-24">비교 집계 코드</a> · <a class="citation" href="#source-7">원본 영수증 대조</a></p>
+</section>
+  </main>
+  <footer id="references" aria-labelledby="references-title">
+    <h2 id="references-title">근거 자료</h2>
+    <p>근거 경로는 저장소의 <code>docs/reviews</code> 폴더를 기준으로 표시했습니다.</p>
+    <ol><li id="source-1"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-status-dev-native-campaign-355.csv">공식 실행 원장</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-status-dev-native-campaign-355.csv</code></li>
+<li id="source-2"><a href="../../evaluation/comparison_summary.py">비교 판정과 집계 코드</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-3"><a href="../../evaluation/catalogs/comparative-2026-11-23.json">선정 카탈로그</a><br><code>../../evaluation/catalogs/comparative-2026-11-23.json</code></li>
+<li id="source-4"><a href="../../evaluation/dev_oom_case.py">커널 OOM 정의</a><br><code>../../evaluation/dev_oom_case.py</code></li>
+<li id="source-5"><a href="../plans/liveprobe-comparison-2026-11-23.md">Application 메모리 관측</a><br><code>../plans/liveprobe-comparison-2026-11-23.md</code></li>
+<li id="source-6"><a href="../plans/liveprobe-comparison-2026-11-23.md#입출력과-판정">시험 프로토콜</a><br><code>../plans/liveprobe-comparison-2026-11-23.md#입출력과-판정</code></li>
+<li id="source-7"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json">원본 영수증 대조</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json</code></li>
+<li id="source-8"><a href="../../evaluation/comparison_summary.py">판정 코드</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-9"><a href="../../evaluation/comparison_summary.py">미감지 원인 분류</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-10"><a href="../../liveprobe/app/application/worker.py">이관 처리 코드</a><br><code>../../liveprobe/app/application/worker.py</code></li>
+<li id="source-11"><a href="../../evaluation/comparison_summary.py">대응 시간 집계</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-12"><a href="../../evaluation/single_baseline.py">단독 모델 비용 산식</a><br><code>../../evaluation/single_baseline.py</code></li>
+<li id="source-13"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/application-comparison-audit-20261125.json">Application 150회 원자료 대조</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/application-comparison-audit-20261125.json</code></li>
+<li id="source-14"><a href="../../과제계획서.md#개선-목표">과제계획서</a><br><code>../../과제계획서.md#개선-목표</code></li>
+<li id="source-15"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/dev-kubernetes-cause-rank-adjudication-through-f411.json">원인 순위 독립 검토</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/dev-kubernetes-cause-rank-adjudication-through-f411.json</code></li>
+<li id="source-16"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json">검증 근거 대조</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json</code></li>
+<li id="source-17"><a href="../plans/liveprobe-comparison-2026-11-23.md">시험 경계와 후속 검증 기록</a><br><code>../plans/liveprobe-comparison-2026-11-23.md</code></li>
+<li id="source-18"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v37/KI-02/liveprobe.json">Admission 장애 LiveProbe 기록</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v37/KI-02/liveprobe.json</code></li>
+<li id="source-19"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v37/KI-02/single_astra.json">같은 장애의 단독 시험 기록</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v37/KI-02/single_astra.json</code></li>
+<li id="source-20"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-fonts-20261125/final-browser-summary.json">8개 조건의 집계</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-fonts-20261125/final-browser-summary.json</code></li>
+<li id="source-21"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-fonts-20261125/final-browser-runs.jsonl">96회 원자료</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-fonts-20261125/final-browser-runs.jsonl</code></li>
+<li id="source-22"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-active-analysis-20261125/summary.json">동시 분석 계측 요약</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-active-analysis-20261125/summary.json</code></li>
+<li id="source-23"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-active-analysis-20261125/runs.jsonl">계측 원자료</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/atlas-active-analysis-20261125/runs.jsonl</code></li>
+<li id="source-24"><a href="../../evaluation/comparison_summary.py">비교 집계 코드</a><br><code>../../evaluation/comparison_summary.py</code></li></ol>
+  </footer>
+</div>
+</body>
+</html>

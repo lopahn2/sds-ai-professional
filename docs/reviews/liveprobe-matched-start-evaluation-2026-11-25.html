@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiveProbe 동일 장애 출발점 재평가</title>
+<style>
+:root {
+  color-scheme: light;
+  --paper: #fff;
+  --page: #f4f7f8;
+  --ink: #15252c;
+  --muted: #405760;
+  --line: #dce6e8;
+  --accent: #0b6259;
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-block-start: 1.5rem; }
+body { margin: 0; color: var(--ink); background: var(--page); line-height: 1.7; word-break: keep-all; overflow-wrap: break-word; }
+.sheet { width: min(1080px, calc(100% - 48px)); margin: 36px auto; background: var(--paper); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+.hero { padding: clamp(1.5rem, 5.5vw, 4.4rem); padding-bottom: 2.5rem; border-top: 6px solid var(--accent); background: linear-gradient(130deg, #edf7f4 0%, #fff 80%); }
+h1, h2, h3 { line-height: 1.25; text-wrap: balance; }
+h1 { font-size: clamp(1.8rem, 4.1vw, 3rem); margin: 0 0 .55rem; letter-spacing: -.035em; }
+.hero p { color: var(--muted); margin: 0; font-size: .95rem; }
+.contents { display: flex; flex-wrap: wrap; gap: .35rem .95rem; padding: 1rem clamp(1.5rem, 5.5vw, 4.4rem); border-block: 1px solid var(--line); font-size: .88rem; }
+main, footer { padding: 0 clamp(1.5rem, 5.5vw, 4.4rem); }
+.section { padding: 1.75rem 0 1.35rem; border-bottom: 1px solid var(--line); }
+.section:last-child { border: 0; }
+h2 { margin: 0 0 .85rem; font-size: clamp(1.25rem, 2.4vw, 1.65rem); letter-spacing: -.025em; }
+h3 { margin: 1.65rem 0 .7rem; font-size: 1.15rem; }
+p { margin: .65rem 0; }
+ul { margin: .55rem 0; padding-left: 1.35rem; }
+li + li { margin-top: .55rem; }
+li::marker { color: var(--accent); }
+a { color: var(--accent); text-underline-offset: .18em; }
+a:focus-visible, .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.citation { font-size: .86em; }
+code { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .86em; }
+.table-scroll { margin: .95rem 0 1.1rem; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; }
+table { width: 100%; min-width: 575px; border-collapse: collapse; font-size: .88rem; font-variant-numeric: tabular-nums; }
+th, td { padding: .55rem .65rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+thead th { background: #edf5f3; color: #203e3a; }
+tbody tr:last-child > * { border-bottom: 0; }
+tbody th { font-weight: 650; }
+tbody tr:nth-child(even) { background: #f8fbfb; }
+.number { text-align: right; }
+td.number { white-space: nowrap; }
+footer { padding-top: 1.65rem; padding-bottom: 2.25rem; background: #f8fbfb; border-top: 1px solid var(--line); }
+footer ol { padding-left: 1.65rem; font-size: .87rem; }
+footer code { overflow-wrap: anywhere; color: var(--muted); }
+footer [id]:target { background: #e0f2ec; }
+@media (max-width: 620px) {
+  .sheet { width: 100%; margin: 0; border-radius: 0; border: 0; }
+  nav, main, footer { padding-inline: 1rem; }
+  .hero { padding: 1.5rem 1rem 1.25rem; }
+  .section { padding-top: 1.45rem; }
+  body { font-size: .95rem; }
+}
+@media print {
+  body, .sheet, .hero, footer { background: #fff; }
+  .sheet { margin: 0; border: 0; border-radius: 0; width: auto; overflow: visible; }
+  .contents { display: none; }
+  .hero, main, footer { padding-inline: 0; }
+  .hero { padding-block: .7rem; }
+  .section { padding-block: .65rem; }
+  .table-scroll { overflow: visible; break-inside: avoid; }
+  table { min-width: 0; font-size: 8pt; }
+  td.number { white-space: normal; }
+  h2, h3 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+<header class="hero"><h1>LiveProbe 동일 장애 출발점 재평가</h1><p>2026년 11월 25일까지 보존된 원장과 실행 기록 재분석</p></header>
+<nav class="contents" aria-label="목차"><a href="#conclusion">결론</a><a href="#classification">사례 분류와 채택 기준</a><a href="#selected-cases">채택한 이미지 실패 3건</a><a href="#results">방식별 복구 시간과 비용</a><a href="#references">근거 자료</a></nav>
+<main>
+<section class="section" aria-labelledby="conclusion"><h2 id="conclusion">결론</h2>
+<p>기존 dev에서 <strong>동일한 장애 상태, 같은 정상 상태로 돌아갈 수 있는 조치 범위, 동일한 복구 확인 기준</strong>이 확인된 시험은 이미지 가져오기 실패 <strong>3건, 다섯 방식의 실행 15회</strong>였다. 첫 비교에서 LiveProbe는 3건 중 2건, 단독 모델 네 종은 각각 3건을 조치로 복구했다. 다섯 방식이 모두 복구한 공통 2건에서 LiveProbe의 복구 시간 합은 가장 길었고, 모델 환산 비용은 Astra·Sol보다 낮았다. <a class="citation" href="#source-1">사례 연결과 원본 지문</a> · <a class="citation" href="#source-2">이미지 시험 기록</a></p>
+<p>이 세 사례에서 LiveProbe는 Kubernetes 신호로 사건을 만들었고 단독 모델은 같은 이미지 오류를 시험기로부터 전달받았다. 따라서 결과는 <strong>동일하게 재현된 장애의 최초 관측부터 업무 복구까지 각 방식이 걸린 시간과 비용</strong>을 보여준다. 첫 모델 호출에 들어간 입력과 조회 도구까지 동일함을 증명할 기록은 <strong>0건</strong>이다. 모델 판단력만의 우열이나 전체 장애 유형의 성과는 이 자료로 확정할 수 없다. <a class="citation" href="#source-3">오류 관측·입력·원복 실행기</a></p>
+</section>
+<section class="section" aria-labelledby="classification"><h2 id="classification">사례 분류와 채택 기준</h2>
+<p>OOM을 제외한 원장에는 68개 사례·340개 실행이 있다. 각 사례에서 다섯 방식의 시험판 지문, 최초 오류의 비교 지문과 저장된 실행 기록의 SHA-256을 대조했다. 68개 모두 지문은 일치했다. 지문은 장애 재현이 일치했음을 확인하는 데 사용했고, 입력 전달 경로·조치 범위·시간과 종료 판정의 일치는 실행 코드와 영수증으로 별도 판정했다. 아래 표는 재집계 대상의 선정 근거이며, 채택한 세 건만 성과 표에 사용했다. <a class="citation" href="#source-4">공식 원장</a> · <a class="citation" href="#source-5">실행별 지문 목록</a></p>
+<div class="table-scroll" role="region" aria-label="사례 분류와 채택 기준 표" tabindex="0"><table><thead><tr><th scope="col">시험 종류</th><th scope="col" class="number">사례 수</th><th scope="col">채택 여부와 근거</th></tr></thead><tbody>
+<tr><th scope="row">기존 dev의 이미지 가져오기 실패</th><td class="number">3</td><td><strong>채택.</strong> <code>F1-01</code>, <code>F1-07</code>, <code>F1-13</code>. 같은 이미지 오류를 재현했고 각 방식이 원래 이미지로 원복할 수 있었다. 복구 확인에 같은 업무 요청을 사용했다.</td></tr>
+<tr><th scope="row">기존 dev의 반복 종료·연결 풀·지연·짧은 연결 장애</th><td class="number">13</td><td>제외. 다섯 방식의 서비스 정상화는 시험 설정의 만료로 관측됐다. 대응 방식이 실행한 복구의 시간과 비용을 직접 대조할 수 없다.</td></tr>
+<tr><th scope="row">기존 dev의 Service 선택자 불일치</th><td class="number">4</td><td>제외. <code>F4-01</code>, <code>F4-03</code>, <code>F4-09</code>, <code>F4-11</code>. LiveProbe는 고위험 이관 정책을 탔고 단독 모델에는 선택자 원복 도구가 열려 있었다.</td></tr>
+<tr><th scope="row">신규 Kubernetes 인프라·버전 호환·워크로드 장애</th><td class="number">18</td><td>제외. <code>KI-01</code>~<code>KI-11</code>, <code>KW-01</code>~<code>KW-07</code>. 별도 노드나 제어면을 사용한 시험을 포함한다. 배포 제품이 받는 신호와 단독 모델이 받는 최초 오류 또는 실행할 수 있는 조치의 동등성이 확인되지 않았다.</td></tr>
+<tr><th scope="row">Application 설정 복원</th><td class="number">21</td><td>제외. 단독 모델이 이용한 격리 시험기의 설정 원복 기능에 대응하는 LiveProbe 실행 경로가 없었다.</td></tr>
+<tr><th scope="row">Application 소스 수정</th><td class="number">9</td><td>제외. 같은 최초 오류 지문과 소스 기준선을 확인했으나, LiveProbe는 트레이스와 소스 판본을 묶어 접수하고 이미지 빌드·후보 확인까지 실행했다. 단독 모델은 최초 로그에서 도구 조회를 시작했고, 수정한 시험 프로세스의 복구를 확인했다. 입력과 측정 흐름이 다르다.</td></tr>
+</tbody></table></div>
+<p>자연 회복 13건은 <code>F1-04·06·12</code>, <code>F3-02·05·07·08·09·11·14</code>, <code>F4-02·08·12</code>다. Application의 소스 수정 9건은 <code>catalog-24</code>, <code>delivery-25·29</code>, <code>member-13·23</code>, <code>order-11·21</code>, <code>payment-12·22</code>다. 제외한 결과는 원장에 그대로 남아 있다. 제외는 결과의 성공 여부와 무관하게 실험 조건으로 정했다. <a class="citation" href="#source-6">자연 회복 판정 코드</a> · <a class="citation" href="#source-7">선택자 장애 원기록</a> · <a class="citation" href="#source-8">신규 유형 카탈로그</a> · <a class="citation" href="#source-9">Application 실행 대조</a> · <a class="citation" href="#source-10">Application 제품 실행기</a> · <a class="citation" href="#source-11">단독 실행기</a></p>
+</section>
+<section class="section" aria-labelledby="selected-cases"><h2 id="selected-cases">채택한 이미지 실패 3건</h2>
+<p>세 사례는 기존 dev의 재고·주문 Deployment에서 새 Pod의 이미지 가져오기 실패를 재현했다. 각 사례에서 기존 정상 Pod와 Service는 계속 업무 요청에 응답했다. 복구는 새 롤아웃이 정상 이미지와 준비 상태를 회복하고, 시험기의 정리 전에 독립 확인 두 차례를 통과했을 때 인정했다. LiveProbe는 <code>rollout_undo</code>, 단독 모델은 시험 도구의 이미지 필드 변경을 사용했으며 같은 버전으로 돌아갔다. 사용자 요청이 계속 실패하는 서비스 장애의 복구 시간으로 일반화할 수 없다. <a class="citation" href="#source-12">dev 기준선과 검증</a> · <a class="citation" href="#source-13">실행기</a></p>
+<div class="table-scroll" role="region" aria-label="채택한 이미지 실패 3건 표" tabindex="0"><table><thead><tr><th scope="col">사례</th><th scope="col">기존 dev 대상</th><th scope="col">LiveProbe 첫 비교 결과</th><th scope="col">단독 모델 4종</th></tr></thead><tbody>
+<tr><th scope="row"><code>F1-01</code></th><td>재고</td><td>이관. 모델 조치 0건</td><td>모두 원복</td></tr>
+<tr><th scope="row"><code>F1-07</code></th><td>주문</td><td>자동 원복</td><td>모두 원복</td></tr>
+<tr><th scope="row"><code>F1-13</code></th><td>재고</td><td>자동 원복</td><td>모두 원복</td></tr>
+</tbody></table></div>
+<p><code>F1-01</code>은 원장이 분석 지침 보완 뒤의 성공 재시험을 채택했다. 이 보고서는 최초로 다섯 방식을 대조한 제품 실행의 이관을 사용했고, 다른 두 사례는 복구 전후 업무 검증을 충족한 원장 기록을 사용했다. 재시험에서 LiveProbe는 82.359초에 원복했지만 최초 비교 분자에는 합산하지 않았다. <a class="citation" href="#source-14">F1-01 첫 제품 실행</a> · <a class="citation" href="#source-15">F1-01 보완 뒤 재시험</a> · <a class="citation" href="#source-16">F1-07 제품 실행</a> · <a class="citation" href="#source-17">F1-13 제품 실행</a></p>
+</section>
+<section class="section" aria-labelledby="results"><h2 id="results">방식별 복구 시간과 비용</h2>
+<p>복구 시간은 시험기가 첫 이미지 오류를 관측한 때부터 원래 배포가 준비되고 업무 확인을 마친 때까지다. LiveProbe의 <code>wall_duration_ms − first_error_ms</code>와 단독 실행의 <code>first_error_to_verified_ms</code>를 대조했다. 시간·토큰·비용은 다섯 방식이 <strong>모두 실제 복구한 `F1-07`, `F1-13` 두 건</strong>에서 계산했다. <code>F1-01</code> LiveProbe 실행에는 확인된 복구 시각이 없어 이 표의 시간 집계에 넣지 않았다. 비용은 USD 모델 단가 환산액이며, 당시 구독 사용 요금과 구분된다. <a class="citation" href="#source-18">시간 및 판정 집계 코드</a> · <a class="citation" href="#source-4">공식 원장</a></p>
+<div class="table-scroll" role="region" aria-label="방식별 복구 시간과 비용 표" tabindex="0"><table><thead><tr><th scope="col">방식</th><th scope="col" class="number">조치 후 원복 · 3건</th><th scope="col" class="number">공통 복구 시간 중앙값 · 2건</th><th scope="col" class="number">공통 복구 시간 합 · 2건</th><th scope="col" class="number">총 토큰 · 2건</th><th scope="col" class="number">환산 비용 · 2건</th></tr></thead><tbody>
+<tr><th scope="row">LiveProbe</th><td class="number">2/3</td><td class="number">87.77초</td><td class="number">175.55초</td><td class="number">110,107</td><td class="number">$0.117910</td></tr>
+<tr><th scope="row">GPT-6.2 Astra</th><td class="number">3/3</td><td class="number">48.77초</td><td class="number">97.53초</td><td class="number">113,630</td><td class="number">$0.830448</td></tr>
+<tr><th scope="row">GPT-6.2 Sol</th><td class="number">3/3</td><td class="number">44.85초</td><td class="number">89.70초</td><td class="number">114,759</td><td class="number">$0.214150</td></tr>
+<tr><th scope="row">GPT-6.1 Terra</th><td class="number">3/3</td><td class="number">35.87초</td><td class="number">71.74초</td><td class="number">89,055</td><td class="number">$0.030122</td></tr>
+<tr><th scope="row">GPT-6 Luna</th><td class="number">3/3</td><td class="number">49.95초</td><td class="number">99.90초</td><td class="number">193,794</td><td class="number">$0.011470</td></tr>
+</tbody></table></div>
+<p>이 범위에서 LiveProbe는 Astra와 Sol보다 적은 토큰으로 낮은 환산 비용을 기록했다. Terra는 LiveProbe보다 토큰·비용이 모두 적었고, Luna는 토큰이 더 많았지만 환산 비용은 낮았다. 숫자는 두 사례의 관측 합계다. 원래 보고서의 68개 사례 수치는 방식별로 달랐던 시험 조건에서 관측한 기록으로 보존하며, 여기서는 대조군 간 성능 결론에 사용하지 않았다. 새 장애 시험이나 노드 생성 없이 기존 실행 자료만 사용했다. <a class="citation" href="#source-19">기존 보고서</a> · <a class="citation" href="#source-4">공식 원장</a></p>
+</section>
+</main>
+<footer id="references" aria-labelledby="references-title">
+<h2 id="references-title">근거 자료</h2>
+<p>근거 경로는 저장소의 <code>docs/reviews</code> 폴더를 기준으로 표시했습니다.</p>
+<ol><li id="source-1"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json">사례 연결과 원본 지문</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json</code></li>
+<li id="source-2"><a href="../plans/liveprobe-comparison-2026-11-23.md#dev-주문재고-이미지-실패-비교">이미지 시험 기록</a><br><code>../plans/liveprobe-comparison-2026-11-23.md#dev-주문재고-이미지-실패-비교</code></li>
+<li id="source-3"><a href="../../evaluation/k8s_dev_image_trial.py">오류 관측·입력·원복 실행기</a><br><code>../../evaluation/k8s_dev_image_trial.py</code></li>
+<li id="source-4"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-status-dev-native-campaign-355.csv">공식 원장</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-status-dev-native-campaign-355.csv</code></li>
+<li id="source-5"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json">실행별 지문 목록</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/campaign-355-source-reconciliation-20261125/verification.json</code></li>
+<li id="source-6"><a href="../../evaluation/comparison_summary.py">자연 회복 판정 코드</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-7"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F4-01/liveprobe.json">선택자 장애 원기록</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F4-01/liveprobe.json</code></li>
+<li id="source-8"><a href="../../evaluation/catalogs/comparative-2026-11-23.json">신규 유형 카탈로그</a><br><code>../../evaluation/catalogs/comparative-2026-11-23.json</code></li>
+<li id="source-9"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/application-comparison-audit-20261125.json">Application 실행 대조</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/application-comparison-audit-20261125.json</code></li>
+<li id="source-10"><a href="../../evaluation/application_release_trial.py">Application 제품 실행기</a><br><code>../../evaluation/application_release_trial.py</code></li>
+<li id="source-11"><a href="../../evaluation/live_repair.py">단독 실행기</a><br><code>../../evaluation/live_repair.py</code></li>
+<li id="source-12"><a href="../operations/liveprobe-dev-only-comparison-gate-2026-11-23.md">dev 기준선과 검증</a><br><code>../operations/liveprobe-dev-only-comparison-gate-2026-11-23.md</code></li>
+<li id="source-13"><a href="../../evaluation/k8s_dev_image_trial.py">실행기</a><br><code>../../evaluation/k8s_dev_image_trial.py</code></li>
+<li id="source-14"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-01/liveprobe.json">F1-01 첫 제품 실행</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-01/liveprobe.json</code></li>
+<li id="source-15"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-01/retry/grounded-image-observation.json">F1-01 보완 뒤 재시험</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-01/retry/grounded-image-observation.json</code></li>
+<li id="source-16"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-07/liveprobe.json">F1-07 제품 실행</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-07/liveprobe.json</code></li>
+<li id="source-17"><a href="../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-13/liveprobe.json">F1-13 제품 실행</a><br><code>../../.hermes/evidence/liveprobe-comparison-2026-11-23/live-repair-v36/F1-13/liveprobe.json</code></li>
+<li id="source-18"><a href="../../evaluation/comparison_summary.py">시간 및 판정 집계 코드</a><br><code>../../evaluation/comparison_summary.py</code></li>
+<li id="source-19"><a href="liveprobe-final-evaluation-2026-11-25.md">기존 보고서</a><br><code>liveprobe-final-evaluation-2026-11-25.md</code></li></ol>
+</footer>
+</div>
+</body>
+</html>
