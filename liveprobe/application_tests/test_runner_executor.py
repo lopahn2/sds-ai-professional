@@ -24,7 +24,7 @@ class ExecutorTests(unittest.TestCase):
                 observed=deepcopy(doc)
                 observed['spec']['template']['spec']['containers']=[{'name':service,'image':registry.images[service]}]
                 return observed
-            def logs(self,env,service,since):return [{'service':service,'text':'Authorization: Bearer should-not-escape','since':since}]
+            def logs(self,env,service,since,*,deployment=None):return [{'service':service,'text':'Authorization: Bearer should-not-escape','since':since}]
         class Host:
             def observe_manifest(self,expected):return expected
         with tempfile.TemporaryDirectory() as tmp:

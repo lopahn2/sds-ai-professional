@@ -43,6 +43,8 @@ def expire(control, session):
     rows = session.scalars(select(Incident).where(Incident.state == 'collecting',
         Incident.document['data']['evidence_inquiry']['deadline'].as_float() <= control.clock()))
     for incident in rows:
+        if control.environment_paused(incident.document.get('environment')):
+            continue
         inquiry = incident.document['data']['evidence_inquiry']
         job = session.get(Job, inquiry.get('job_id'))
         if job and job.status in ('leased', 'queued'):
@@ -59,6 +61,20 @@ def finish(control, session, incident, inquiry, refs, message):
         control.transition(session, incident, 'analysis_queued')
     else:
         control.stop(session, incident, EXHAUSTED)
+
+
+def close_review(control, session, incident, outcome, code=None):
+    inquiry = (incident.document.get('data') or {}).get('evidence_inquiry') or {}
+    if inquiry.get('state') != 'reviewing':
+        return
+    result = {'state': 'reviewed', 'review_outcome': outcome, 'review_finished_at': control.clock()}
+    if code:
+        result['review_code'] = code
+    control.data(incident, 'evidence_inquiry', {**inquiry, **result})
+    control.event(session, incident, 'investigation_reviewed', {
+        'job_id': inquiry.get('job_id'), 'call_id': inquiry.get('call_id'),
+        'evidence_refs': inquiry.get('evidence_refs', []), 'status': outcome, 'code': code,
+    })
 
 
 def fact_key(row):

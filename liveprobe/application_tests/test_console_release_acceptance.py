@@ -246,7 +246,7 @@ class LocalCluster(Observer):
         image = self.read(env, service)['spec']['template']['spec']['containers'][0]['image']
         return [{'image': image, 'image_id': image, 'owned': True, 'ready': True}]
 
-    def logs(self, env, service, since):
+    def logs(self, env, service, since, *, deployment=None):
         if env != 'dev' or service != SERVICE or self.incident_log is None:
             return []
         return [{'text': json.dumps(self.incident_log), 'observed_at': self.incident_log['timestamp']}]

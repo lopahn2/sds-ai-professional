@@ -26,17 +26,29 @@ ASSIST_ROLES = {"router", "interpreter", "steering", "operator_planner"}
 FULL_REF = {"E1": "E1_deployment", "E2": "E2_pods", "E3": "E3_service", "E4": "E4_callers", "E5": "E5_recent_events",
             "E6": "E6_metrics", "E7": "E7_error_logs", "E8": "E8_node", "E9": "E9_config"}
 ACTION_KO = {"rollout_undo": "이전 버전으로 롤백", "rollout_restart": "Deployment 재시작", "pod_delete": "Pod 재생성",
-             "scale_replicas": "레플리카 수 조정", "set_memory_limit": "메모리 한도 조정", "configmap_restore": "ConfigMap 복원"}
+             "scale_replicas": "레플리카 수 조정", "set_memory_limit": "메모리 한도 조정", "configmap_restore": "ConfigMap 복원",
+             "pvc_reference_restore": "Deployment의 PVC 참조 복원"}
 SIGNAL_KO = {
     "TargetWorkloadOOMKilled": "메모리 초과 강제 종료(OOMKilled)", "OOMKilled": "메모리 초과 강제 종료(OOMKilled)",
     "TargetWorkloadImagePullFailing": "이미지 내려받기 실패", "ErrImagePull": "이미지 내려받기 실패",
     "ImagePullBackOff": "이미지 내려받기 실패", "TargetWorkloadCrashLooping": "반복 재시작(CrashLoop)",
     "CrashLoopBackOff": "반복 재시작(CrashLoop)", "NoEndpoints": "Service 연결 대상 없음",
     "TargetServiceNoEndpoints": "Service 연결 대상 없음", "TargetHighLatency": "응답 지연",
+    "TargetRouteSlowRequests": "업무 경로 응답 지연",
+    "TargetProxyListenerUpdateRejected": "Envoy 리스너 설정 반영 실패",
     "TargetConnectionPoolExhausted": "DB 연결 풀 고갈", "OrderHigh5xxRate": "5xx 오류 증가",
     "InventoryHigh5xxRate": "5xx 오류 증가", "NetworkDrop": "네트워크 차단",
     "TargetHigh5xxRate": "5xx 오류 증가", "ApplicationException": "애플리케이션 예외",
     "TargetWorkloadNotReady": "준비되지 않은 워크로드", "Unhealthy": "상태 확인(probe) 실패",
+    "FailedScheduling": "Pod 노드 배치 실패", "RequiredContainerReferenceMissing": "컨테이너 필수 설정 누락",
+    "ProgressDeadlineExceeded": "Deployment 롤아웃 기한 초과",
+    "ReplicaCreationFailed": "ReplicaSet의 Pod 생성 실패", "FailedMount": "영속 볼륨 마운트 실패",
+    "AdmissionWebhookCallFailed": "Kubernetes 승인 웹훅 호출 실패",
+    "RetiredIngressApiRejected": "종료된 Ingress API 사용으로 적용 실패",
+    "CniVersionMismatch": "노드 CNI 버전 불일치",
+    "NodeStartupBlocked": "노드 시작 실패로 미등록",
+    "NodeDiskPressureEviction": "노드 디스크 압박으로 Pod 퇴출",
+    "ResourceMetricsHpaBlocked": "자원 지표 API 장애로 자동 확장 계산 중단",
 }
 COMMAND_STATUS = {"planning": "running", "awaiting_confirmation": "running", "awaiting_secret": "running",
                   "executing": "running", "succeeded": "done", "rolled_back": "done", "rolling_back": "running",
@@ -163,7 +175,9 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
     g.node("evidence", "evidence", f"근거 수집 {ev_count}건" if n_evidence else "근거 수집", 1,
            status="done" if n_evidence else ("failed" if finished else "running"))
     g.edge("signal", "evidence")
-    router_run = next((r for r in runs if r.role == "router"), None)
+    from .routing_ko import classifier_was_skipped
+    router_run = (None if routing and classifier_was_skipped(routing[0])
+                  else next((r for r in runs if r.role == "router"), None))
     started = Counter(e.detail.get("role") for e in events if e.kind == "agent_started" and isinstance(e.detail, dict))
     finished_runs = Counter(r.role for r in runs)
     if router_run is not None:
@@ -304,6 +318,9 @@ def build_flow(s, iid: int, items: list[dict] | None = None) -> dict[str, Any]:
         prev_tail = [n["id"]]
         depth += 1
     label = {"resolved": "자동 복구 완료", "handed_off": "운영자 인계", "failed": "처리 실패", "closed": "운영자 종료", "recovery_review": "서비스 복구 관측 · 운영자 소명 확인 대기"}.get(inc.status, "결과 대기")
+    from .hpa_metrics import RECOVERY_LABEL, RECOVERY_SCOPE
+    if inc.status == 'recovery_review' and ((inc.handoff or {}).get('observed_recovery') or {}).get('scope') == RECOVERY_SCOPE:
+        label = RECOVERY_LABEL
     if inc.status == 'resolved' and (inc.handoff or {}).get('observed_recovery'):
         label = inc.status_reason if (inc.status_reason or '').startswith('정상 ·') else '정상 상태 확인 · 원인 미확정'
     from .readings_ko import status_reason_ko

@@ -1,12 +1,17 @@
 """P18 environment/system contracts."""
+import pytest
+
 from app.config import AppConfig
 
 
 def test_default_environments_and_legacy_config():
-    assert AppConfig().target_namespaces == ["dev", "stg", "prd"]
+    assert AppConfig().target_namespaces == ["dev", "prd"]
+    assert AppConfig(target_namespaces=["dev", "stg", "prd"]).history_namespaces == ["dev", "stg", "prd"]
     assert AppConfig(target_namespace="legacy").target_namespaces == ["legacy"]
     assert AppConfig(target_namespace="old", target_namespaces=["prd", "dev"]).target_namespaces == ["prd", "dev"]
     assert AppConfig().environment("prd") == "prd"
+    assert AppConfig().environment("stg") == "stg"
+    assert not AppConfig().is_active_environment("stg")
     assert AppConfig().environment("legacy") is None
 
 
@@ -25,7 +30,7 @@ def test_system_is_observed_and_environments_never_merge(db_url):
         assert dev.system == prd.system == "payment"
     k.deployments.clear()
     with db.session() as s:
-        unknown, _ = ingest(s, cfg, Signal("stg", "Deployment", "unknown", "CrashLoopBackOff", "pod_watch"), kube=k)
+        unknown, _ = ingest(s, cfg, Signal("dev", "Deployment", "unknown", "CrashLoopBackOff", "pod_watch"), kube=k)
         assert unknown.system is None
 
 
@@ -37,18 +42,20 @@ def test_watch_threads_cover_each_environment(monkeypatch):
         def start(self): pass
     monkeypatch.setattr("app.watcher.threading.Thread", Thread)
     Watchers(None, AppConfig(), lambda s: None).start()
-    for env in ("dev", "stg", "prd"):
+    for env in ("dev", "prd"):
         assert f"pod_watch/{env}" in names
         assert f"event_watch/{env}" in names
         assert f"endpoint_poller/{env}" in names
+    assert all(not name.endswith("/stg") for name in names)
 
 
 def test_alert_accepts_all_configured_environments():
     from app.main import alert_signal
-    for env in ("dev", "stg", "prd"):
+    for env in ("dev", "prd"):
         sig = alert_signal({"labels": {"namespace": env, "app": "payment", "alertname": "InventoryHigh5xxRate"}}, AppConfig(), None)
         assert sig is not None and sig.namespace == env
-    assert alert_signal({"labels": {"namespace": "other", "app": "payment", "alertname": "InventoryHigh5xxRate"}}, AppConfig(), None) is None
+    for env in ("stg", "other"):
+        assert alert_signal({"labels": {"namespace": env, "app": "payment", "alertname": "InventoryHigh5xxRate"}}, AppConfig(), None) is None
 
 
 def test_overview_environment_order_missing_and_system_groups():
@@ -59,10 +66,12 @@ def test_overview_environment_order_missing_and_system_groups():
            "pods": [], "services": []}
     d = assemble(inv, {}, cfg=AppConfig())
     envs = d["cluster"]["environments"]
-    assert [e["name"] for e in envs] == ["dev", "stg", "prd"]
+    assert [e["name"] for e in envs] == ["dev", "prd"]
     assert envs[0]["workloads"] == 1 and envs[0]["order"] == 1
-    assert envs[1]["missing"] is True and envs[1]["workloads"] is None
-    assert envs[2]["workloads"] == 0
+    assert envs[1]["workloads"] == 0
+    missing = assemble({**inv, "namespaces": inv["namespaces"][:1]}, {}, cfg=AppConfig())
+    assert missing["cluster"]["environments"][1]["missing"] is True
+    assert missing["cluster"]["environments"][1]["workloads"] is None
     assert d["workloads"][0]["system"] == "payment"
     assert d["workloads"][0]["environment"] == "dev"
     node = next(n for n in d["topology"]["nodes"] if n["kind"] == "Deployment")
@@ -106,25 +115,27 @@ def test_exception_and_5xx_are_one_workload_incident_in_both_orders(db_url):
         assert len(list(s.scalars(select(Incident)))) == 2
 
 
+@pytest.mark.parametrize("db_url", ["0009"], indirect=True)
 def test_0009_migration_roundtrip_preserves_legacy_incidents(db_url):
     from alembic import command
     from alembic.config import Config
     from sqlalchemy import inspect, text
     from app import db
-    from app.models import Incident
     from conftest import ROOT
     cfg = Config(str(ROOT / 'alembic.ini'))
     cfg.set_main_option('script_location', str(ROOT / 'alembic'))
     cfg.attributes['sqlalchemy_url'] = db_url
     with db.session() as s:
-        s.add(Incident(fingerprint='f', namespace='prd', workload='payment', system='payment', title='legacy'))
+        assert s.execute(text('select version_num from alembic_version')).scalar_one() == '0009'
+        s.execute(text("""INSERT INTO incidents
+            (fingerprint, namespace, workload, system, status, title, created_at, updated_at)
+            VALUES ('f','prd','payment','payment','open','legacy',now(),now())"""))
     command.downgrade(cfg, '0008')
     assert 'system' not in {c['name'] for c in inspect(db.engine()).get_columns('incidents')}
     command.upgrade(cfg, '0009')
     with db.engine().connect() as c:
         assert c.execute(text('select system from incidents')).scalar_one() is None
         assert c.execute(text('select title from incidents')).scalar_one() == 'legacy'
-    command.upgrade(cfg, 'head')
 
 
 def test_system_missing_on_incident_must_deny_execution(db_url):
@@ -160,7 +171,7 @@ def test_api_environment_system_and_remediation_contract(db_url, monkeypatch):
         def cluster_inventory(self):
             return {'namespaces': [{'metadata': {'name': 'prd'}}], 'pods': [], 'deployments': []}
         def cluster_warning_events(self): return []
-    monkeypatch.setattr(overview, 'fetch_metrics', lambda *a: ({}, {}))
+    monkeypatch.setattr(overview, 'fetch_metrics', lambda *args, **kwargs: ({}, {}))
     with TestClient(main.app, base_url='http://liveprobe.localhost') as client:
         monkeypatch.setitem(main.STATE, 'kube', K())
         main._TOPO_CACHE.clear()
@@ -217,7 +228,7 @@ def test_network_owner_resolution_is_namespace_local_and_missing_env_isolated():
     adapter = NetworkSignalAdapter(FlowStore(), k, AppConfig(), lambda s: None)
     targets, errors = adapter._targets(time.monotonic() + 5)
     assert targets['prd/pod/inventory-bbb-1'] == 'prd/Deployment/inventory'
-    assert targets['stg/pod/inventory-bbb-1'] == 'stg/Deployment/inventory'
+    assert not any(key.startswith('stg/') for key in targets)
     assert errors and not any(key.startswith('dev/') for key in targets)
 
 
@@ -232,7 +243,7 @@ def test_real_executor_factory_keeps_app_config_separate_from_client_config(tmp_
     cfg = AppConfig()
     executor = kube.executor(str(token), cfg=cfg)
     assert executor.cfg is cfg
-    assert executor.cfg.target_namespaces == ['dev', 'stg', 'prd']
+    assert executor.cfg.target_namespaces == ['dev', 'prd']
 
 
 def test_pod_system_label_must_match_owning_workload():

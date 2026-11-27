@@ -129,6 +129,44 @@ def test_canonical_signal_stays_valid_after_scrub():
     CreateIncident.model_validate(normalized)
     assert 'synthetic-secret-token' not in normalized['signal']['sample']
 
+
+@needs_db
+def test_live_application_snapshot_keeps_link_authority_and_pages(service, monkeypatch, tmp_path):
+    from contextlib import closing
+
+    from app.main import app, STATE
+    from fastapi.testclient import TestClient
+
+    seed()
+    linked = service.continue_incident(1, ACTOR)['application_id']
+    with service.control.store.transaction() as s:
+        for name, state in (('waiting', 'qa_failed'), ('closed', 'completed')):
+            s.add(AppIncident(id=name, state=state, created_at=1,
+                              document={'environment': 'dev', 'service': 'payment', 'reason': '업무 검증',
+                                        'data': {'audit': ['stored internal detail']}}))
+    key = 'integration-read-key-' + 'x' * 32
+    path = tmp_path / 'read-key'
+    path.write_text(key)
+    path.chmod(0o600)
+    monkeypatch.setenv('LIVEPROBE_LOCAL_READ_KEY_FILE', str(path))
+    monkeypatch.setitem(STATE, 'unified', service)
+    with closing(TestClient(app, base_url='http://liveprobe.localhost')) as c:
+        route = '/api/unified/summaries'
+        assert c.get(route, params={'group': 'live'}).status_code == 403
+        headers = {'X-LiveProbe-Local-Read': key}
+        params = {'group': 'live', 'limit': 1}
+        response = c.get(route, params=params, headers=headers)
+        assert response.status_code == 200
+        first = response.json()
+        assert first['live'] and first['total'] == 2
+        assert [(r['id'], r['live_group'], r['root_incident_id']) for r in first['incidents']] == [(linked, 'automatic', 1)]
+        second = c.get(route, params={**params, 'offset': 1, 'as_of': first['as_of']}, headers=headers).json()
+        assert second['total'] == 2 and second['incidents'] == [{
+            'id': 'waiting', 'state': 'qa_failed', 'environment': 'dev', 'service': 'payment', 'system': None,
+            'reason': '업무 검증', 'root_incident_id': None, 'live_group': 'waiting_people'}]
+        assert c.get(route, params={**params, 'state': 'completed'}, headers=headers).status_code == 422
+
+
 @needs_db
 def test_list_filter_counts_and_terminal_time_use_stable_projection(service,monkeypatch):
     from app.main import app, STATE
@@ -139,6 +177,24 @@ def test_list_filter_counts_and_terminal_time_use_stable_projection(service,monk
     c=TestClient(app,base_url='http://liveprobe.localhost',headers={'X-LiveProbe-Client':'dashboard'})
     first=c.get('/api/incidents',params={'status':'analyzing','limit':1}).json()
     assert first['total']==1 and first['items'][0]['kubernetes_status']=='handed_off'
+    active=c.get('/api/incidents',params={'view':'active','limit':1}).json()
+    assert active['total']==1 and active['items']==first['items'] and active['as_of']==first['as_of']
+    params = {'view': 'active', 'compact': 'true', 'limit': 1}
+    compact = c.get('/api/incidents', params=params).json()
+    assert (compact['total'], compact['as_of']) == (active['total'], active['as_of'])
+    expected = {key: active['items'][0][key] for key in (
+        'id', 'title', 'title_ko', 'namespace', 'environment', 'workload', 'system', 'status',
+        'severity_level', 'created_at')}
+    assert compact['items'] == [{**expected, 'code_action': {'state': 'collecting'}}]
+    assert c.get('/api/incidents', params={**params, 'offset': 1}).json() == {**compact, 'items': []}
+    assert c.get('/api/incidents', params={**params, 'work': 'approval'}).json()['total'] == 0
+    lean=c.get('/api/incidents',params={'status':'analyzing','limit':1,'view':'alerts'}).json()
+    assert lean == {'items': [{'id': 1, 'title': 'order parsing failure', 'namespace': 'dev', 'workload': 'order',
+                              'severity_level': 'COMPLEX', 'status': 'analyzing', 'code_action': {'state': 'collecting'}}]}
+    live = c.get('/api/incidents', params={'view': 'live', 'limit': 1}).json()
+    assert live == {**compact, 'alerts': lean['items']}
+    assert c.get('/api/incidents', params={'view': 'live', 'limit': 1, 'offset': 1, 'as_of': live['as_of']}).json() == {
+        **compact, 'items': []}
     assert c.get('/api/incidents',params={'status':'handed_off'}).json()['total']==0
     with db.session() as s: assert incident_counts(s)['in_progress']==1
     with service.control.store.transaction() as s:
@@ -149,7 +205,11 @@ def test_list_filter_counts_and_terminal_time_use_stable_projection(service,monk
     two=c.get('/api/incidents/1').json()['incident']
     assert one['closed_at']==two['closed_at'] and one['updated_at']==two['updated_at']
     assert two['status']=='resolved' and two['kubernetes_status']=='handed_off'
+    assert c.get('/api/incidents',params={'status':'resolved','view':'alerts'}).json()['items'][0]['code_action'] == {
+        'state': 'completed'}
     assert c.get('/api/incidents',params={'status':'resolved'}).json()['total']==1
+    assert c.get('/api/incidents',params={'view':'active'}).json()['total']==0
+    assert c.get('/api/incidents', params=params).json()['items'] == []
     with db.session() as s: assert incident_counts(s)['in_progress']==0
     c.close()
 

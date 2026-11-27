@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import re
 import time
-from .build import Builder
+from .build import Builder, TestBuildFailure
 from .deploy import Deployer,summarize
 from .profiles import digest
 from .source import snapshot
@@ -130,6 +130,7 @@ class Executor:
         if not isinstance(since,str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z',since):
             raise ValueError('invalid_log_since')
         datetime.fromisoformat(since.replace('Z','+00:00'))
+        from .detect import exception_samples
         from .observations import utc_now,bounded,deployment_text,rollout_text
         doc=self.kube.read(env,service)
         target=summarize(doc,env,service,self.registry)
@@ -139,8 +140,10 @@ class Executor:
         def evidence_row(selected,source,text,when):
             if not isinstance(text,str) or not text.strip():return
             clean,quality=bounded(text)
-            evidence.append({'id':f'E{len(evidence)+1}-{selected}','service':selected,'environment':env,
-                             'observed_at':when,'source':source,'text':clean,'quality':quality})
+            row = {'id': f'E{len(evidence)+1}-{selected}', 'service': selected, 'environment': env,
+                   'observed_at': when, 'source': source, 'text': clean, 'quality': quality}
+            evidence.append(row)
+            return row
         for selected in sorted({service,*dependencies}):
             self.registry.target({'service':selected,'environment':env})
             self.guard()
@@ -150,15 +153,22 @@ class Executor:
             evidence_row(selected,'deployment',deployment_text(selected_doc,selected_target),when)
             evidence_row(selected,'rollout',rollout_text(selected_doc),when)
             self.observe('read_logs')
-            for row in self.kube.logs(env,selected,since):
+            for row in self.kube.logs(env, selected, since, deployment=selected_doc):
                 if not isinstance(row.get('text'),str) or not row['text'].strip():continue
                 when=row.get('observed_at') or utc_now()  # receipt time of actual HTTP observation
-                clean,_=bounded(row['text'])
-                logs.append({'service':selected,'environment':env,'observed_at':when,'text':clean})
-                from .detect import exception_samples
-                samples = exception_samples(row['text'])
-                for sample in [row['text'], *samples]:
-                    evidence_row(selected, 'pod_log', sample, when)
+                prefix = ''
+                if row.get('previous_pod'):
+                    prefix = (f"Previous terminated container: pod={row['previous_pod']} "
+                              f"container={selected} finished_at={row['previous_finished_at']}\n")
+                full = evidence_row(selected, 'pod_log', prefix + row['text'], when)
+                logs.append({'service': selected, 'environment': env, 'observed_at': when, 'text': full['text']})
+                # Keep a separate excerpt when the capped log does not already contain all of its lines.
+                complete_lines = '\n' + full['text'][len(prefix):]
+                if full['quality'] == 'observed' and not complete_lines.endswith('\n'):
+                    complete_lines += '\n'
+                for sample in exception_samples(row['text']):
+                    if f'\n{sample}\n' not in complete_lines:
+                        evidence_row(selected, 'pod_log', prefix + sample, when)
             if hasattr(self.kube,'events'):
                 for row in self.kube.events(env,selected,selected_doc['metadata']['uid']):
                     evidence_row(selected,'k8s_event',row['text'],row['observed_at'])
@@ -196,7 +206,10 @@ class Executor:
         builder=Builder(self.state_root/'workspaces',self.host,
                        self.config.get('provenance_dir') or self.state_root/'provenance')
         builder.observe=self.observe
-        result=builder.run(source,payload['patch'],p)
+        try:
+            result=builder.run(source,payload['patch'],p)
+        except TestBuildFailure as failure:
+            return {'ok':False,'write_outcome':'not_written','error':str(failure),'tests':failure.tests}
         durable_write(self.artifact_receipt(self.artifact_key(result['artifact'])),result)
         return result
 

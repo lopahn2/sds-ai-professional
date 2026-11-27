@@ -163,16 +163,24 @@ def test_binary_configmap_changes_are_hashed_and_cannot_claim_data_only_approval
     assert "QQ==" not in json.dumps(a) and "Qg==" not in json.dumps(b)
 
 
-def test_configmap_rbac_is_target_namespaced_get_list_only_and_no_secrets():
+def test_configmap_and_pvc_evidence_rbac_is_target_namespaced_and_read_only():
     from pathlib import Path
     import yaml
     docs = list(yaml.safe_load_all((Path(__file__).resolve().parents[2] / "deploy/base/liveprobe/liveprobe.yaml").read_text()))
-    cm_roles = [d for d in docs if d and d.get("kind") in ("Role", "ClusterRole")
-                and any("configmaps" in r.get("resources", []) or "*" in r.get("resources", []) for r in d.get("rules", []))]
-    assert len(cm_roles) == 1
-    role = cm_roles[0]
+    protected = {"configmaps", "persistentvolumeclaims", "*"}
+    evidence_roles = []
+    for doc in docs:
+        if not doc or doc.get("kind") not in ("Role", "ClusterRole"):
+            continue
+        rules = [rule for rule in doc.get("rules", []) if protected.intersection(rule.get("resources", []))]
+        if rules:
+            evidence_roles.append((doc, rules))
+    (role, rules), = evidence_roles
     assert role["kind"] == "Role" and role["metadata"]["namespace"] == NS
-    assert role["rules"] == [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]}]
+    assert rules == [
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]},
+        {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get"]},
+    ]
     binding = next(d for d in docs if d and d.get("kind") == "RoleBinding" and d["roleRef"]["name"] == role["metadata"]["name"])
     assert binding["metadata"]["namespace"] == NS
     assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "liveprobe", "namespace": "liveprobe-system"}]

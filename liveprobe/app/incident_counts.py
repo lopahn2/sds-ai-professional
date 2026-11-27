@@ -11,7 +11,7 @@ the count instead of silently making the numbers differ. Counting never closes o
 """
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 AUTOMATIC = ("open", "analyzing", "acting")
 AWAITING_APPROVAL = ("action_pending",)
@@ -36,20 +36,29 @@ def bucket_of(status: str | None, claimed: bool = False) -> str:
 
 def incident_counts(s, namespaces: list[str] | None = None) -> dict:
     """Read-only counts over the whole history (not a recent window). `by_environment` uses the same buckets."""
-    from .models import Incident
-    from .unified import effective_status_expr
-    rows = s.execute(select(Incident.namespace, effective_status_expr(), Incident.handoff)
-                     .where(effective_status_expr().in_(IN_PROGRESS + ("handed_off",)))).all()
+    from .models import CodeActionLink, Incident
+
+    # The link is unique per incident. Selecting just the operator marker keeps the
+    # old truthiness rule even for legacy values without decoding whole handoff records.
+    status = func.coalesce(CodeActionLink.projected_status, Incident.status)
+    claimed = case((status == "handed_off", Incident.handoff["claimed_by"]))
+    joined = Incident.__table__.outerjoin(CodeActionLink, CodeActionLink.incident_id == Incident.id)
+    rows = s.execute(select(Incident.namespace, status, claimed, func.count()).select_from(joined)
+                     .where(status.in_(IN_PROGRESS + ("handed_off",) + CLOSED))
+                     .group_by(Incident.namespace, status, claimed))
     total = {"automatic": 0, "awaiting_approval": 0, "unclaimed_handoff": 0}
     by_env: dict[str, dict] = {ns: dict(total) for ns in namespaces or []}
-    for namespace, status, handoff in rows:
-        bucket = bucket_of(status, bool((handoff or {}).get("claimed_by")))
+    closed = 0
+    for namespace, state, claim, count in rows:
+        bucket = bucket_of(state, bool(claim))
+        if bucket == "closed":
+            closed += count
+            continue
         if bucket not in total:
             continue
-        total[bucket] += 1
+        total[bucket] += count
         if namespace in by_env:
-            by_env[namespace][bucket] += 1
-    closed = s.scalar(select(func.count()).select_from(Incident).where(effective_status_expr().in_(CLOSED))) or 0
+            by_env[namespace][bucket] += count
     return {**total, "in_progress": total["automatic"] + total["awaiting_approval"], "closed_history": closed,
             "map_handoff_window_hours": map_handoff_window_hours(),
             "by_environment": {ns: {**c, "in_progress": c["automatic"] + c["awaiting_approval"]} for ns, c in by_env.items()}}

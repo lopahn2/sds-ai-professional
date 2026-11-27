@@ -8,11 +8,16 @@ import re
 import shutil
 import subprocess
 import tarfile
+from tempfile import TemporaryDirectory
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from .build import test_command,final_manifest
 from .profiles import digest, manifest_image
+if __package__.startswith('liveprobe.'):
+    from ..app.application.catalog import DEV_RESERVATION_PROFILE
+else:
+    from app.application.catalog import DEV_RESERVATION_PROFILE
 
 
 @dataclass
@@ -64,8 +69,18 @@ class DockerHost:
         if guarded:self.guard()
         return result
 
-    def tests(self,workspace,profile,phase,added):
+    def tests(self,workspace,profile,phase,added,*,jar_destination=None):
         language=profile['language']
+        reservation=profile == DEV_RESERVATION_PROFILE
+        if jar_destination is not None and (not reservation or phase != 'after'):
+            raise ValueError('unexpected_reservation_package_request')
+        java_paths = []
+        if language == 'java' and phase == 'before':
+            from .reports import test_file
+
+            java_paths = sorted({test_file(identifier, 'java') for identifier in added})
+            if not java_paths or any(not (workspace / path).is_file() for path in java_paths):
+                raise ValueError('added_regression_required')
         image=self.config.get('test_images',{}).get(language)
         manifest_image(image)
         owner='application-'+uuid.uuid4().hex
@@ -105,35 +120,60 @@ class DockerHost:
                 (workspace/'target').mkdir(exist_ok=True)
                 (reports/'java-target').mkdir()
                 base+=['--mount','type=bind,src='+str((reports/'java-target').resolve())+',dst=/workspace/target']
+            if reservation:
+                cache=Path(self.config.get('reservation_maven_cache') or '.')
+                if not cache.is_absolute() or cache.is_symlink() or not cache.is_dir():
+                    raise ValueError('reservation_maven_cache_unconfigured')
+                base+=['--pull=never','--mount','type=bind,src='+str(cache.resolve())+',dst=/reservation-deps,readonly',
+                       '-e','MAVEN_OPTS=-Xmx256m -Duser.home=/tmp']
             if language=='domain':
                 base+=['-e','TEST_DOMAIN_DSN=host=database user=postgres dbname=postgres connect_timeout=3',
                        '-e','APPLICATION_TEST_MODE='+profile['mode']]
             base+=['-e','APPLICATION_TEST_PHASE='+phase]
             if language=='node':
+                from .reports import tap_rows, test_file
+
                 paths=sorted(p.relative_to(workspace).as_posix() for p in (workspace/'test').rglob('*.js'))
+                declared = {}
+                if phase == 'before':
+                    for identifier in added:
+                        path = test_file(identifier, 'node')
+                        declared.setdefault(path, []).append(identifier.split('::', 1)[1])
+                    if not declared or not declared.keys() <= set(paths):
+                        raise ValueError('added_regression_required')
+                    paths = sorted(declared)
                 # 파일별 프로세스를 실행하여 그 파일의 실제 native TAP 결과를 연결한다.
                 rows=[];total=failed=errors=0;exit_code=0
                 for path in paths:
-                    result=self.invoke(base+[image,*test_command(profile,[path])],timeout=240)
+                    names = declared.get(path, ())
+                    result = self.invoke(base + [image, *test_command(profile, [path], node_names=names)], timeout=240)
+                    tests_in_file = tap_rows(result.stdout, path, phase)
+                    required = {f'{path}::{name}' for name in names}
+                    observed_failures = {row['id'] for row in tests_in_file if row['status'] == 'failed'}
+                    if (required and result.returncode in (0, 1)
+                            and (result.returncode != 1 or not required <= observed_failures)):
+                        # A test may depend on setup done by another test in this file.
+                        result = self.invoke(base + [image, *test_command(profile, [path])], timeout=240)
+                        tests_in_file = tap_rows(result.stdout, path, phase)
                     tests=re.findall(r'^# tests (\d+)$',result.stdout,re.M)
                     failures=re.findall(r'^# fail (\d+)$',result.stdout,re.M)
                     if len(tests)!=1 or len(failures)!=1:raise ValueError('native_test_report_missing')
                     count=int(tests[0]);bad=int(failures[0]);total+=count;failed+=bad
                     # TAP의 실제 leaf 시험 수가 없는 파일은 실행 증거로 인정하지 않는다.
                     if count>0:
-                        from .reports import tap_rows
-                        rows.extend(tap_rows(result.stdout,path,phase))
+                        rows.extend(tests_in_file)
                     if result.returncode not in (0,1):errors+=1
                     exit_code=max(exit_code,result.returncode)
                 return {'exit_code':exit_code,'total':total,'failed':failed,'errors':errors,'executed_tests':rows,'phase':phase}
-            result=self.invoke(base+[image,*test_command(profile,[])],timeout=300)
-            from .reports import junit_rows,totals
+            command=test_command(profile,java_paths)
+            if reservation:
+                command.insert(1,'-Dmaven.repo.local=/reservation-deps')
+                if jar_destination is not None:
+                    command[-1]='package'
+            result=self.invoke(base+[image,*command],timeout=300)
+            from .reports import java_surefire_report,junit_rows,totals
             if language=='java':
-                rows=[]
-                for report_path in (reports/'java-target/surefire-reports').glob('TEST-*.xml'):
-                    if report_path.is_symlink():raise ValueError('unsafe_test_report')
-                    rows.extend(junit_rows(report_path.read_text(),'java',phase))
-                report=totals(rows)
+                report=java_surefire_report(reports/'java-target/surefire-reports',result,phase)
             elif language=='python':
                 path=reports/'pytest.xml'
                 if not path.is_file() or path.is_symlink():raise ValueError('native_test_report_missing')
@@ -143,6 +183,14 @@ class DockerHost:
                 if not path.is_file() or path.is_symlink():raise ValueError('native_test_report_missing')
                 report=json.loads(path.read_text())
             report.update(exit_code=result.returncode,phase=phase,mode=profile.get('mode'))
+            if jar_destination is not None and result.returncode == 0:
+                archive=reports/'java-target/reservation-1.0.0.jar'
+                if archive.is_symlink() or not archive.is_file() or not 100_000 < archive.stat().st_size < 48*1024*1024:
+                    raise ValueError('reservation_build_archive_invalid')
+                with archive.open('rb') as compiled, jar_destination.open('xb') as target:
+                    shutil.copyfileobj(compiled,target)
+                    # The image runs as UID 10001 and Docker preserves the staged JAR's mode.
+                    os.fchmod(target.fileno(), 0o644)
             return report
         finally:
             from .worker import durable_write
@@ -184,10 +232,22 @@ class DockerHost:
                 re.search(r'^\s*(?:ADD|COPY)\s+[^\n]*(?:https?://|git@|ssh://)',text,re.I|re.M) or
                 re.search(r'^\s*#\s*syntax\s*=',text,re.I|re.M)):
                 raise ValueError('unsafe_build_recipe')
+        if profile == DEV_RESERVATION_PROFILE:
+            with TemporaryDirectory(prefix='reservation-package-',dir=workspace.parent) as scratch:
+                context=Path(scratch)
+                (context/'target').mkdir()
+                report=self.tests(workspace,profile,'after',[],jar_destination=context/'target/reservation-1.0.0.jar')
+                if report['exit_code'] or report['failed'] or report.get('errors') or not report['total']:
+                    raise ValueError('reservation_package_test_failed')
+                shutil.copyfile(recipe,context/'Dockerfile')
+                return self._build_image(context,profile,tree_sha,workspace.name)
+        return self._build_image(workspace,profile,tree_sha,workspace.name)
+
+    def _build_image(self,context,profile,tree_sha,release):
         platform=self.config.get('platform','linux/arm64')
         if platform not in ('linux/arm64','linux/amd64'):raise ValueError('platform_not_registered')
-        tag=profile['image_repository']+':'+workspace.name
-        result=self.invoke(['build','--network=none','--pull=false','--platform',platform,'--tag',tag,str(workspace)],timeout=600)
+        tag=profile['image_repository']+':'+release
+        result=self.invoke(['build','--network=none','--pull=false','--platform',platform,'--tag',tag,str(context)],timeout=600)
         if result.returncode:raise ValueError('final_build_failed')
         inspected=self.invoke(['image','inspect',tag])
         if inspected.returncode:raise ValueError('manifest_digest_not_observed')

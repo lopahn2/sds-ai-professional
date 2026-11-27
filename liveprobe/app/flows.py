@@ -280,12 +280,14 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
     """
     from .config import AppConfig
     cfg = cfg or AppConfig()
-    inventory, retired = current_inventory(inventory)
+    historical = set(cfg.historical_namespaces)
+    inventory, retired = current_inventory(inventory, historical)
     nodes: dict[str, dict] = {}
     structure: list[dict] = []
     pod_to_wl: dict[str, str] = {}
     ip_to_node: dict[str, str] = {}
     images: dict[str, set[str]] = {}
+    pods_by_namespace: dict[str, list[tuple[dict, str]]] = defaultdict(list)
 
     for n in inventory.get("nodes", []):
         md = n.get("metadata") or {}
@@ -308,11 +310,13 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
         ns, name = md.get("namespace"), md.get("name")
         wl = _wl_name(p)
         wid = f"{ns}/{wl}"
+        labels = md.get("labels") or {}
+        pods_by_namespace[ns].append((labels, wid))
         pod_to_wl[f"{ns}/pod/{name}"] = wid
         if st.get("podIP"):
             ip_to_node[f"ip/{st['podIP']}"] = wid
         w = nodes.setdefault(wid, {"id": wid, "kind": wl.split("/")[0], "name": wl.split("/", 1)[1], "namespace": ns,
-                                   "system": (md.get("labels") or {}).get("app.kubernetes.io/part-of") or None,
+                                   "system": labels.get("app.kubernetes.io/part-of") or None,
                                    "pods": 0, "ready": 0, "status": "unknown", "node": (p.get("spec") or {}).get("nodeName")})
         for img in (p.get("spec") or {}).get("images") or []:
             if img:
@@ -363,10 +367,9 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
             ip_to_node[f"ip/{sp['clusterIP']}"] = sid
         sel = sp.get("selector") or {}
         if sel:
-            for p in inventory.get("pods", []):
-                pmd = p.get("metadata") or {}
-                if pmd.get("namespace") == ns and all((pmd.get("labels") or {}).get(k) == v for k, v in sel.items()):
-                    structure.append({"from": sid, "to": f"{ns}/{_wl_name(p)}", "type": "selects"})
+            for labels, wid in pods_by_namespace.get(ns, []):
+                if all(labels.get(k) == v for k, v in sel.items()):
+                    structure.append({"from": sid, "to": wid, "type": "selects"})
     structure = [dict(t) for t in {(e["from"], e["to"], e["type"]): e for e in structure}.values()]
     svc_to_wl: dict[str, str] = {}
     for e in structure:
@@ -380,7 +383,9 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
 
     # observed edges
     folded: dict[tuple[str, str], EdgeStat] = {}
-    for (s, d), e in aggregate(flows).items():
+    current_flows = (flow for flow in flows if not historical.intersection((flow.src_ns, flow.dst_ns,
+        flow.src.partition('/')[0], flow.dst.partition('/')[0], (flow.dst_service or '').partition('/')[0])))
+    for (s, d), e in aggregate(current_flows).items():
         if s in retired or d in retired:
             continue
         fs, fd = fold(s), fold(d)
@@ -422,7 +427,7 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
 
     warnings = {}
     for inc in incidents or []:
-        if inc.get("status") in ("resolved", "failed", "closed"):
+        if inc.get("namespace") in historical or inc.get("status") in ("resolved", "failed", "closed"):
             continue
         if inc.get("status") == "handed_off":
             # An old hand-off nobody picked up is history, not a live problem; it stays in the incident list.
@@ -453,7 +458,8 @@ def build_topology(inventory: dict, flows: list[FlowRec], freshness: dict, incid
         elif n.get("namespace") and not n["environment"]:
             ns = n["namespace"]
             groups.setdefault(ns, {"id": ns, "kind": "namespace", "label": ns})
-    incident_rows = [{**i, "system": i.get("system"), "environment": cfg.environment(i.get("namespace"))} for i in incidents or []]
+    incident_rows = [{**i, "system": i.get("system"), "environment": cfg.environment(i.get("namespace"))}
+                     for i in incidents or [] if i.get("namespace") not in historical]
     return {"groups": list(groups.values()), "incidents": incident_rows, "contract_edges": contract_edges(nodes, cfg.target_namespaces),
             "generated_at": time.time(), "freshness": freshness, "nodes": sorted(nodes.values(), key=lambda n: n["id"]),
             "structure_edges": structure, "observed_edges": sorted(observed, key=lambda e: -e["flows"]),

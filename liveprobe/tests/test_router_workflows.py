@@ -52,22 +52,22 @@ def test_transient_caller_error_log_with_healthy_endpoint_keeps_simple():
 
 def test_router_family4_high_risk_cannot_be_lowered():
     d = decide(family4(), 15, lambda prompt: {"level": "SIMPLE", "rationale": "wrong", "confidence": 1})
-    assert d.level == "HIGH_RISK" and d.decided_by == "rules+llm"
-    assert "rules win" in d.rationale
+    assert d.level == "HIGH_RISK" and d.decided_by == "rules"
+    assert "Service selector matches 0 pods" in d.rationale
 
 
 @pytest.mark.parametrize("risk", ["network", "protected", "routing"])
-@pytest.mark.parametrize("suggested", ["SIMPLE", "NORMAL", "COMPLEX", "HIGH_RISK"])
-def test_deterministic_high_risk_remains_high_even_when_classifier_agrees(risk, suggested):
+def test_deterministic_high_risk_does_not_call_the_classifier(risk):
     bundle = family1() if risk != "routing" else family4()
     signals = ["NetworkDrop"] if risk == "network" else []
     if risk == "protected":
         bundle.add("incident", "liveprobe-target/Node/worker", {})
-    decision = decide(bundle, 15, lambda _: {
-        "level": suggested, "rationale": "classifier result", "confidence": 1.0,
-    }, signal_reasons=signals)
+    decision = decide(bundle, 15, lambda _: pytest.fail("deterministic risk does not need classification"),
+                      signal_reasons=signals)
     assert decision.level == "HIGH_RISK"
     assert decision.workflow == "high_risk_group"
+    assert decision.confidence is None and decision.llm is None
+    assert decision.policy["classifier_skipped"] == "deterministic_high_risk"
 
 
 def test_router_llm_failure_keeps_rules():

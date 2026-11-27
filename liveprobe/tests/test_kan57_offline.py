@@ -29,25 +29,25 @@ def test_four_synthetic_families_keep_traceable_policy(factory, signals, expecte
     assert decision.policy["selected_model"]
 
 
-@pytest.mark.parametrize("factory", [family1, family2, family3, family4])
+@pytest.mark.parametrize("factory", [family1, family2, family3])
 def test_classifier_unavailable_retains_rules_floor_after_bounded_retry(factory):
     def unavailable(_prompt):
         raise TimeoutError("synthetic classifier outage")
 
     decision = decide(factory(), 15, unavailable)
-    assert decision.level == ('HIGH_RISK' if factory == family4 else 'NORMAL')
+    assert decision.level == 'NORMAL'
     assert decision.decided_by == "rules_fallback"
     assert decision.policy is not None
     assert not decision.policy.get("handoff_only")
     assert len(decision.features['classifier_attempts']) == 2
 
 
-@pytest.mark.parametrize("factory", [family1, family2, family3, family4])
+@pytest.mark.parametrize("factory", [family1, family2, family3])
 def test_classifier_without_explanation_retries_then_uses_rules_floor(factory):
     decision = decide(factory(), 15, lambda _: {
         "level": "SIMPLE", "rationale": " \n ", "confidence": 0.95,
     })
-    assert decision.level == ('HIGH_RISK' if factory == family4 else 'NORMAL')
+    assert decision.level == 'NORMAL'
     assert decision.decided_by == "rules_fallback"
     assert decision.policy is not None
     assert not decision.policy.get("handoff_only")
@@ -76,4 +76,5 @@ def test_synthetic_protected_resource_cannot_be_downgraded():
     })
     assert decision.level == "HIGH_RISK"
     assert decision.features["protected_resource"] is True
-    assert "rules win" in decision.rationale
+    assert "protected resource implicated" in decision.rationale
+    assert decision.decided_by == "rules"

@@ -18,12 +18,13 @@ from .unified import effective_status_expr, projected_status
 def _core_kind():
     from .main import ALERT_KIND
     from .watcher import SIGNAL_REASONS as pod_reasons
+    from .workload_signals import REASONS as workload_reasons
 
     # These are ingested signal reasons, not evidence collected during a routine investigation.
     app_reasons = {'ApplicationException', 'ApplicationSignal'} | {
         reason for reason, target in ALERT_KIND.items() if target == 'app'
     }
-    infra_reasons = pod_reasons | {'NoEndpoints', 'NetworkDrop'} | {
+    infra_reasons = pod_reasons | workload_reasons | {'NoEndpoints', 'NetworkDrop'} | {
         reason for reason, target in ALERT_KIND.items() if target in ('pod', 'endpoint')
     }
 

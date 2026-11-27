@@ -1,14 +1,70 @@
 """detect는 로그 transport만 대체, 상태·서명·API 요청은 실제 경로."""
 import json
+from io import BytesIO
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from liveprobe.application_runner.profiles import Registry,digest
 
 class DetectTests(unittest.TestCase):
+    def test_watch_leaves_paused_environment_checkpoint_and_logs_alone(self):
+        from liveprobe.application_runner.detect import Detector
+
+        registry = Registry(ROOT)
+        kube = Mock()
+        kube.logs.return_value = []
+        api = Mock()
+        api.active_environments.return_value = {'dev'}
+        first_since = '2026-11-23T00:00:00Z'
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            checkpoints = state / 'watch'
+            checkpoints.mkdir()
+            prd_path = checkpoints / 'prd-catalog.json'
+            saved = '{"since":"2026-11-22T15:00:00Z","reported":1}\n'
+            prd_path.write_text(saved)
+            detector = Detector(registry, kube, api, state / 'detect')
+            detector.watch_once(checkpoints, ['catalog'], first_since)
+            kube.logs.assert_called_once_with('dev', 'catalog', first_since)
+            api.post.assert_not_called()
+            self.assertEqual(prd_path.read_text(), saved)
+            dev_path = checkpoints / 'dev-catalog.json'
+            dev_checkpoint = dev_path.read_bytes()
+
+            api.active_environments.side_effect = OSError('unavailable')
+            with self.assertRaises(OSError):
+                detector.watch_once(checkpoints, ['catalog'], first_since)
+            kube.logs.assert_called_once()
+            self.assertEqual(dev_path.read_bytes(), dev_checkpoint)
+            self.assertEqual(prd_path.read_text(), saved)
+
+            api.active_environments.side_effect = None
+            api.active_environments.return_value = {'dev', 'prd'}
+            kube.logs.reset_mock()
+            detector.watch_once(checkpoints, ['catalog'], first_since)
+            self.assertIn(unittest.mock.call('prd', 'catalog', '2026-11-22T15:00:00Z'), kube.logs.call_args_list)
+
+    def test_public_catalog_environment_lookup_uses_no_machine_credentials(self):
+        from liveprobe.application_runner.worker import API
+
+        api = API('http://127.0.0.1:4175', Path('/missing-test-credentials'))
+        api.opener = Mock()
+        for document, expected in (({'environments': ['dev'], 'historical_environments': ['prd']}, {'dev'}),
+                                   ({'environments': []}, set())):
+            api.opener.open.return_value = BytesIO(json.dumps(document).encode())
+            self.assertEqual(api.active_environments(), expected)
+            request = api.opener.open.call_args.args[0]
+            self.assertEqual(request.full_url, 'http://127.0.0.1:4175/api/application/v1/catalog')
+            self.assertEqual(request.get_method(), 'GET')
+            self.assertFalse(request.has_header('Authorization'))
+        api.opener.open.return_value = BytesIO(b'{"environments":["dev","stg"]}')
+        with self.assertRaisesRegex(OSError, 'invalid_application_catalog_environments'):
+            api.active_environments()
+
     def test_first_sanitized_signal_and_durable_signature_dedup(self):
         from liveprobe.application_runner.detect import Detector
         class Logs:

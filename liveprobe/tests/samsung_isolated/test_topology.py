@@ -1,5 +1,6 @@
 """DB fixture를 가져오지 않는 삼성 관제 경계 회귀."""
 from __future__ import annotations
+from collections import Counter
 import copy
 import json
 from pathlib import Path
@@ -28,7 +29,8 @@ class TopologyBoundaryTests(unittest.TestCase):
         before = copy.deepcopy(inv)
         topo = build_topology(inv, [], FlowStore().freshness(), cfg=AppConfig())
         contracts = topo.get("contract_edges", [])
-        self.assertEqual(len(contracts), 15, "환경별 발행 1·소비 2·복구 2 계약이 필요하다")
+        self.assertEqual(Counter(edge["environment"] for edge in contracts), {"dev": 5, "prd": 5},
+                         "활성 환경별 발행 1·소비 2·복구 2 계약이 필요하다")
         self.assertFalse(any(n["name"] == "kafka" for n in topo["nodes"]), "미배포 브로커를 실자원으로 만들면 안 된다")
         self.assertEqual(topo["observed_edges"], [])
         self.assertEqual(inv, before)

@@ -10,6 +10,36 @@ SERVICE_SYSTEMS = {
     'delivery': 'samsung-delivery', 'notification': 'samsung-delivery',
     'delivery-member': 'samsung-delivery', 'business-api': 'samsung-business',
 }
+DEV_RESERVATION = 'lp-eval-reservation'
+DEV_RESERVATION_PROFILE = {
+    'id': 'liveprobe-reservation-jdbc-dev-v1',
+    'service': DEV_RESERVATION,
+    'system': 'liveprobe-verification',
+    'source_root': 'evaluation/fixtures/jdbc-recovery/common',
+    'runtime_root': '/app',
+    'language': 'java',
+    'test_root': 'src/test',
+    'image_repository': 'liveprobe/eval-reservation',
+    'affected_services': [DEV_RESERVATION],
+    'verification': {'path': '/api/stock/a', 'kind': 'stock'},
+}
+
+
+def catalog_services(catalog):
+    dev_only = catalog.get('dev_only_services', [])
+    if dev_only not in ([], [DEV_RESERVATION]):
+        raise ValueError('unregistered_dev_only_service')
+    services = dict(SERVICE_SYSTEMS)
+    if dev_only:
+        services[DEV_RESERVATION] = DEV_RESERVATION_PROFILE['system']
+        dependencies = catalog.get('dependencies', {})
+        if (not isinstance(dependencies, dict) or DEV_RESERVATION in dependencies or
+                any(not isinstance(targets, dict) or DEV_RESERVATION in targets.values()
+                    for targets in dependencies.values())):
+            raise ValueError('dev_profile_dependency_forbidden')
+    if catalog['service_to_system'] != services or catalog['environments'] != ['dev', 'prd']:
+        raise ValueError('service_catalog_mismatch')
+    return services, frozenset(dev_only)
 
 # Business assertions consumed by the five installed dev UI adapters, relative to the pinned service source.
 CONTROLLER_TESTS = {
@@ -35,26 +65,34 @@ class Catalog:
         self.profiles = {}
         self.configured = False
         self.dependencies = {}
+        self.services = dict(SERVICE_SYSTEMS)
+        self.dev_only = frozenset()
         self.systems = sorted(set(SERVICE_SYSTEMS.values()))
         try:
             if not settings.catalog_file or not settings.profiles_file:
                 raise ValueError()
             raw = Path(settings.catalog_file).read_bytes()
             catalog = json.loads(raw)
-            if catalog['service_to_system'] != SERVICE_SYSTEMS or catalog['environments'] != ['dev', 'prd']:
-                raise ValueError()
+            services, dev_only = catalog_services(catalog)
             profiles = json.loads(Path(settings.profiles_file).read_text())['profiles']
             self.profiles = {profile['service']: profile for profile in profiles}
-            if len(profiles) != 9 or set(self.profiles) != set(SERVICE_SYSTEMS):
+            if len(profiles) != len(services) or set(self.profiles) != set(services):
                 raise ValueError()
             for service, profile in self.profiles.items():
-                if (profile['system'] != SERVICE_SYSTEMS[service] or not isinstance(profile['id'], str) or
+                if (profile['system'] != services[service] or not isinstance(profile['id'], str) or
                     not profile['id'] or profile['language'] not in ('java', 'node', 'python', 'domain') or
                     not profile['affected_services'] or service not in profile['affected_services'] or
-                    any(item not in SERVICE_SYSTEMS for item in profile['affected_services'])):
+                    any(item not in services for item in profile['affected_services'])):
                     raise ValueError()
+                if service in dev_only and profile != DEV_RESERVATION_PROFILE:
+                    raise ValueError('dev_profile_mismatch')
+                if service not in dev_only and any(item in dev_only for item in profile['affected_services']):
+                    raise ValueError('dev_profile_dependency_forbidden')
             self.sha256 = hashlib.sha256(raw).hexdigest()
             self.dependencies = catalog.get('dependencies', {})
+            self.services = services
+            self.dev_only = dev_only
+            self.systems = sorted(set(services.values()))
             self.configured = True
         except (OSError, ValueError, TypeError, KeyError):
             self.profiles = {}
@@ -83,5 +121,5 @@ class Catalog:
         return {'systems': self.systems, 'services': [{'service': service, 'system': system,
             'profile_id': self.profiles.get(service, {}).get('id'),
             'affected_services': self.profiles.get(service, {}).get('affected_services', [])}
-            for service, system in SERVICE_SYSTEMS.items()], 'environments': ['dev', 'prd'], 'historical_environments': ['dev', 'stg', 'prd'],
+            for service, system in self.services.items()], 'environments': ['dev', 'prd'], 'historical_environments': ['dev', 'stg', 'prd'],
             'catalog_sha256': self.sha256, 'profiles_configured': self.configured}

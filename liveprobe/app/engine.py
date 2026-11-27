@@ -6,7 +6,7 @@ import threading
 import time
 from contextlib import nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,12 +14,18 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from . import db
+from . import business_http
 from .config import AppConfig, Settings
 from .db import audit
-from .evidence import Bundle, collect, compact_summary
-from .incidents import REASON_CLASS, Signal, ingest
+from .evidence import Bundle, collect, compact_summary, freeze_collection
+from .incidents import (ADMISSION_WEBHOOK_FAILURE, CNI_EVENT_SOURCE, CNI_VERSION_MISMATCH,
+                        DISK_PRESSURE_EVICTION, DISK_PRESSURE_SOURCE,
+                        HPA_METRICS_BLOCKED, HPA_METRICS_SOURCE, NODE_STARTUP_BLOCKED,
+                        NODE_STARTUP_FINGERPRINT_PREFIX, NODE_STARTUP_SOURCE,
+                        PROXY_LDS_REJECTED, REASON_CLASS,
+                        RETIRED_INGRESS_API, Signal, ingest)
 from .llm import AGENT_SCHEMA, ROUTER_SCHEMA, AgentOutput, LLMError, RouterOutput, estimate_cost
-from .models import INCIDENT_CLOSED_STATES, Action, AgentRun, Citation, Evidence, Incident, IncidentEvent, RoutingDecision, WorkflowRun
+from .models import INCIDENT_CLOSED_STATES, Action, AgentRun, AuditLog, Citation, Evidence, Incident, IncidentEvent, RoutingDecision, WorkflowRun
 from .lifecycle import transition, update_run
 from .rag import RAG
 from .agent_groups import (GROUP_SCHEMA, EvidenceStore, GroupController, GroupMessage, StopGroup, check_citations,
@@ -27,6 +33,8 @@ from .agent_groups import (GROUP_SCHEMA, EvidenceStore, GroupController, GroupMe
 from .config import RoleModel
 from .redact import redact, redact_obj
 from . import router as R
+from .route_latency import (ALERT as ROUTE_LATENCY_ALERT, METRIC as ROUTE_LATENCY_METRIC,
+                            RECORDING_INTERVAL_SECONDS, observed_routes)
 from . import safety
 from .sse import broker
 from . import runlog
@@ -35,6 +43,15 @@ from .proposals import bounds_text
 from .workflows import AgentCall, build_high_risk_graph, build_simple_graph, build_single_graph
 
 log = logging.getLogger(__name__)
+
+
+def _recovery_metric_options(signals) -> dict:
+    from .observed_recovery import HTTP_SIGNALS
+
+    return {option: True for option, needed in (
+        ('include_route_latency', ROUTE_LATENCY_ALERT in signals),
+        ('include_business_http', bool(HTTP_SIGNALS.intersection(signals))),
+    ) if needed}
 
 
 @dataclass
@@ -90,7 +107,7 @@ class Engine:
 
     # ------------------------------------------------------------------ intake
     def on_signal(self, sig: Signal) -> None:
-        if evaluation_lock_active():     # evaluation campaign owns the fault namespace; signals are its own
+        if evaluation_lock_active():  # Legacy global campaign. Scoped leases are checked atomically in ingest.
             return
         with db.session() as s:
             inc, outcome = ingest(s, self.cfg, sig, kube=self.kube)
@@ -111,9 +128,11 @@ class Engine:
         if placement is None:
             with db.session() as s:
                 inc = s.get(Incident, incident_id)
-                if inc is None:
+                if inc is None or NODE_STARTUP_BLOCKED in (inc.signal_reasons or []):
                     return
                 placement = _QueuePlacement.for_incident(inc)
+        if placement.target[0] in self.cfg.historical_namespaces:
+            return
         with self._work_changed:
             if self._stop.is_set() or incident_id in self._scheduled:
                 return
@@ -194,7 +213,10 @@ class Engine:
         run_ids: list[int] = []
         pending: dict[int, tuple[float, _QueuePlacement]] = {}
         with db.session() as s:
-            for inc in s.scalars(select(Incident).where(Incident.status.in_(("analyzing", "acting")))):
+            historical = self.cfg.historical_namespaces
+            active = Incident.namespace.not_in(historical) & ~Incident.fingerprint.startswith(NODE_STARTUP_FINGERPRINT_PREFIX)
+            for inc in s.scalars(select(Incident).where(Incident.status.in_(("analyzing", "acting")),
+                                                       active)):
                 prev = inc.status
                 read_run = s.scalar(select(WorkflowRun).where(WorkflowRun.incident_id == inc.id,
                     WorkflowRun.status.in_(("running", "resume_pending"))).order_by(WorkflowRun.id.desc()).limit(1))
@@ -211,7 +233,9 @@ class Engine:
                 update_run(s, inc.id, "failed", prev, inc.status_reason)
                 audit(s, "liveprobe", "incident_interrupted", inc.id, previous_status=prev)
                 failed_ids.append(inc.id)
-            for act in s.scalars(select(Action).where(Action.status.in_(("executing", "approved")))):
+            for act in s.scalars(select(Action).join(Incident, Incident.id == Action.incident_id)
+                                 .where(Action.status.in_(("executing", "approved")),
+                                        ~Incident.fingerprint.startswith(NODE_STARTUP_FINGERPRINT_PREFIX))):
                 act.status = "failed"
                 act.reason = "LiveProbe restarted during action; outcome indeterminate, inspect target manually"
                 act.after_state = {**(act.after_state or {}), 'reconciliation': {
@@ -225,10 +249,12 @@ class Engine:
                     run.snapshot = {**(run.snapshot or {}), 'write_reconciliation': {
                         'action_ids': sorted(set([*previous.get('action_ids', []), act.id])), 'status': 'required'}}
                 action_ids.append(act.incident_id)
-            for run in s.scalars(select(WorkflowRun).where(WorkflowRun.status == "running")):
+            for run in s.scalars(select(WorkflowRun).join(Incident, Incident.id == WorkflowRun.incident_id)
+                                 .where(WorkflowRun.status == "running", active)):
                 run.status, run.reason = "failed", "LiveProbe restarted; work not replayed"
                 run_ids.append(run.incident_id)
-            for inc in s.scalars(select(Incident).where(Incident.status == "open").order_by(Incident.id)):
+            for inc in s.scalars(select(Incident).where(Incident.status == "open", active)
+                                 .order_by(Incident.id)):
                 pending[inc.id] = (self.cfg.settle_seconds, _QueuePlacement.for_incident(inc))
         for iid in dict.fromkeys(failed_ids):
             broker.publish(iid, "failed", "failed")
@@ -340,6 +366,88 @@ class Engine:
         return runlog.CleanupResult.COMPLETED
 
     # ------------------------------------------------------------ processing
+    def _handoff_observed_authority(self, iid: int, ns: str, signal: str) -> None:
+        from .admission_audit import SOURCE as ADMISSION_SOURCE
+        from .handoff_classes import AUTHORITY_BOUNDARY, record
+
+        if signal == ADMISSION_WEBHOOK_FAILURE:
+            source, label, target_field = ADMISSION_SOURCE, "Kubernetes API 감사", "resource"
+            summary = "Kubernetes API가 승인 웹훅을 호출하지 못해 리소스 변경 요청이 실패했습니다."
+            boundary = "승인 웹훅 설정은 클러스터 범위라 운영자 확인이 필요합니다."
+            reason_code = "admission_webhook_cluster_authority"
+            next_step = "대상 승인 웹훅의 응답 버전·TLS·서비스 상태를 확인하세요."
+            observed_field = "api_response_observed"
+        elif signal == RETIRED_INGRESS_API:
+            source, label, target_field = ADMISSION_SOURCE, "Kubernetes API 감사", "requested_api_version"
+            summary = "클러스터가 더 이상 제공하지 않는 Ingress API로 변경을 요청해 적용에 실패했습니다."
+            boundary = "요청 메타데이터에서 원본 선언과 배포 경로를 확인할 수 없어 변경 권한을 가진 운영자의 확인이 필요합니다."
+            reason_code = "retired_ingress_manifest_authority"
+            next_step = "배포 원본의 Ingress 선언을 networking.k8s.io/v1 형식으로 이전하고 실제 적용과 라우팅을 확인하세요."
+            observed_field = "retired_ingress_api_rejection_observed"
+        elif signal == CNI_VERSION_MISMATCH:
+            source, label, target_field = CNI_EVENT_SOURCE, "kubelet CNI 경고", "node"
+            summary = "노드의 CNI 설정 버전을 플러그인이 지원하지 않아 Pod 네트워크를 준비하지 못했습니다."
+            boundary = "노드 CNI 설정은 클러스터 권한 범위라 운영자 확인이 필요합니다."
+            reason_code = "node_cni_cluster_authority"
+            next_step = "해당 노드의 CNI 설정 버전과 설치된 플러그인의 지원 버전을 대조하세요."
+            observed_field = "cni_warning_observed"
+        elif signal == NODE_STARTUP_BLOCKED:
+            from .node_startup_feed import FAILURES
+
+            source, label, target_field = NODE_STARTUP_SOURCE, "등록 전 노드 시작 관측", "node"
+            summary = "노드가 시작 오류로 등록되지 않았습니다. 업무 요청 영향은 미관측입니다."
+            boundary = "노드 설치·런타임·호스트 설정은 인프라 운영 권한이 필요합니다."
+            reason_code = "node_startup_provisioning_authority"
+            next_step = "시작 실패 원인을 확인하고 노드 등록, Ready 상태와 실제 업무 요청을 확인하세요."
+            observed_field = "node_startup_block_observed"
+        elif signal == DISK_PRESSURE_EVICTION:
+            source, label, target_field = DISK_PRESSURE_SOURCE, "노드 디스크 압박과 Pod 퇴출", "node"
+            summary = "노드의 임시 저장 공간이 부족해 kubelet이 Pod를 퇴출했습니다. 업무 요청 영향은 미관측입니다."
+            boundary = "노드 저장 공간 관리는 클러스터 권한 범위라 운영자 확인이 필요합니다."
+            reason_code = "node_disk_pressure_cluster_authority"
+            next_step = "노드의 디스크 사용량과 inode를 확인한 뒤 압박 해제, 새 Pod 배치, 실제 업무 요청을 확인하세요."
+            observed_field = "disk_eviction_observed"
+        else:
+            source, label, target_field = HPA_METRICS_SOURCE, "자원 지표 API와 HPA 상태", "api_service"
+            summary = "자원 지표 API에 장애가 발생해 HPA의 자동 확장 계산이 중단됐습니다. 업무 요청 영향은 미관측입니다."
+            boundary = "집계 지표 API 공급원은 클러스터 범위라 운영자 확인이 필요합니다."
+            reason_code = "resource_metrics_cluster_authority"
+            next_step = "자원 지표 API의 연결 상태를 복구한 뒤 영향받은 HPA의 지표 계산 재개를 확인하세요."
+            observed_field = "hpa_metric_failure_observed"
+        runlog.gate(iid, f"{label} 근거 확인")
+        with db.session() as s:
+            observation = s.scalar(select(AuditLog).where(
+                AuditLog.incident_id == iid, AuditLog.event == "signal_observed",
+                AuditLog.detail["reason"].as_string() == signal,
+                AuditLog.detail["signal"]["source"].as_string() == source,
+            ).order_by(AuditLog.id.desc()).limit(1))
+            detail = observation.detail["signal"]["detail"] if observation else None
+            if detail:
+                observed = datetime.fromisoformat(detail["observed_at"]) if detail.get("observed_at") else observation.ts
+                kind = {ADMISSION_WEBHOOK_FAILURE: ns, RETIRED_INGRESS_API: f"{ns}/Ingress",
+                        CNI_VERSION_MISMATCH: "Node", HPA_METRICS_BLOCKED: "APIService",
+                        DISK_PRESSURE_EVICTION: "Node", NODE_STARTUP_BLOCKED: "Node"}[signal]
+                target = f"{kind}/{detail[target_field]}"
+                s.add(Evidence(incident_id=iid, source=source, target=target,
+                               payload=detail, collected_at=observed))
+        if detail:
+            if signal == NODE_STARTUP_BLOCKED and (explanation := FAILURES.get(detail.get("failure"))):
+                summary = f"{detail['node']} 노드 미등록. {explanation} 업무 요청 영향은 미관측입니다."
+            runlog.emit(iid, "evidence_collected", f"{label} 근거 1건", {"sources": [source], "errors": []})
+        else:
+            summary = f"{label} 관련 신호가 기록됐으나 대응하는 근거를 조회하지 못했습니다."
+        decision = R.Decision("HIGH_RISK", R.WORKFLOW["HIGH_RISK"],
+                              {"reason_code": reason_code, "signal_reasons": [signal],
+                               observed_field: bool(detail)}, boundary, None, "rules_authority_boundary",
+                              policy={"handoff_only": True, "selected_reason": boundary})
+        self._record_decision(iid, decision)
+        classification = record(reason_code, {reason_code: AUTHORITY_BOUNDARY},
+                                authorization={"level": decision.level}, provenance={"source": source})
+        self._set_status(iid, "handed_off", summary=summary, status_reason=boundary,
+                         handoff={"summary": summary, "summary_ko": summary,
+                                  "handoff_classification": classification,
+                                  "recommended_steps": [next_step]})
+
     def _request_readings(self, iid: int) -> None:
         if self.interpret_worker is not None:
             try:
@@ -352,28 +460,35 @@ class Engine:
             inc = s.get(Incident, iid)
             if inc is None:
                 raise ValueError("incident not found")
-            transition(inc, status)
-            if status == 'handed_off':
-                from .handoff_classes import record, RECOVERY_EXHAUSTED
-                handoff = dict(fields.get('handoff') or inc.handoff or {})
-                diagnostic = handoff.get('workflow_status') in ('unverified', 'stopped', 'failed', 'verified')
-                code = 'group_diagnostic_exhausted' if diagnostic else 'operator_authority_required'
-                if 'handoff_classification' not in handoff:
-                    handoff['handoff_classification'] = record(code, {'group_diagnostic_exhausted': RECOVERY_EXHAUSTED},
-                        authorization={'level': inc.severity_level}, budget=handoff.get('budget'),
-                        attempts=[{'kind': 'group_diagnosis', 'outcome': handoff['workflow_status']}] if diagnostic else [])
-                fields['handoff'] = handoff
-            for k, v in fields.items():
-                if k == "handoff" and isinstance(v, dict):
-                    v = {**(inc.handoff or {}), **v}
-                setattr(inc, k, v)
-            update_run(s, iid, "failed" if status == "failed" else "succeeded" if status in ("resolved", "handed_off") else "running", status, fields.get("status_reason"))
-            audit(s, "liveprobe", "incident_status", iid, status=status, reason=fields.get("status_reason"))
+            self._persist_status(s, inc, status, fields)
+        self._publish_status(iid, status, fields.get("status_reason"))
+
+    @staticmethod
+    def _persist_status(s, inc: Incident, status: str, fields: dict) -> None:
+        transition(inc, status)
+        if status == 'handed_off':
+            from .handoff_classes import record, RECOVERY_EXHAUSTED
+            handoff = dict(fields.get('handoff') or inc.handoff or {})
+            diagnostic = handoff.get('workflow_status') in ('unverified', 'stopped', 'failed', 'verified')
+            code = 'group_diagnostic_exhausted' if diagnostic else 'operator_authority_required'
+            if 'handoff_classification' not in handoff:
+                handoff['handoff_classification'] = record(code, {'group_diagnostic_exhausted': RECOVERY_EXHAUSTED},
+                    authorization={'level': inc.severity_level}, budget=handoff.get('budget'),
+                    attempts=[{'kind': 'group_diagnosis', 'outcome': handoff['workflow_status']}] if diagnostic else [])
+            fields['handoff'] = handoff
+        for k, v in fields.items():
+            if k == "handoff" and isinstance(v, dict):
+                v = {**(inc.handoff or {}), **v}
+            setattr(inc, k, v)
+        update_run(s, inc.id, "failed" if status == "failed" else "succeeded" if status in ("resolved", "handed_off") else "running", status, fields.get("status_reason"))
+        audit(s, "liveprobe", "incident_status", inc.id, status=status, reason=fields.get("status_reason"))
+
+    def _publish_status(self, iid: int, status: str, reason: str | None) -> None:
         self._request_readings(iid)
         broker.publish(iid, status if status in ("resolved", "handed_off", "failed") else "updated", status)
         if status in ("resolved", "handed_off", "failed"):
             runlog.emit(iid, "completed", {"resolved": "해결됨", "handed_off": "운영자 인계", "failed": "실패"}[status] +
-                        (f": {redact(str(fields.get('status_reason') or ''))[:300]}" if fields.get("status_reason") else ""),
+                        (f": {redact(str(reason))[:300]}" if reason else ""),
                         {"outcome": status})
         elif status == "action_pending":
             runlog.emit(iid, "status", "운영자 승인을 기다립니다.", {"status": status})
@@ -406,10 +521,9 @@ class Engine:
             finally:
                 _worker_attempt.reset(token)
 
-    def _collect_or_reuse(self, ns: str, workload: str, since: datetime | None) -> Bundle:
-        import json
+    def _collect_or_reuse(self, ns: str, workload: str, since: datetime | None, *,
+                          include_route_latency: bool = False, include_business_http: bool = False) -> Bundle:
         from copy import deepcopy
-        from dataclasses import asdict
         from .evidence import EvidenceItem
 
         def restore(value):
@@ -423,13 +537,23 @@ class Engine:
             value['items'] = [EvidenceItem(**item) for item in value.get('items', [])]
             return Bundle(**value)
 
+        def reuse(snapshot):
+            collection = snapshot['collection']
+            attempts = snapshot.get('collection_attempts')
+            if attempts is None:
+                attempts = [*snapshot.get('prior_collections', []), collection]
+            self._collection_attempts = [restore(item) for item in attempts]
+            return restore(collection)
+
         if self._workflow_run_id is not None:
             with db.session() as s:
                 row = s.get(WorkflowRun, self._workflow_run_id)
                 if row and 'collection' in (row.snapshot or {}):
-                    self._collection_attempts = [restore(v) for v in row.snapshot.get('collection_attempts', [row.snapshot['collection']])]
-                    return restore(row.snapshot['collection'])
-        bundle = collect(self.kube, self.cfg, self.settings, ns, workload, since=since)
+                    return reuse(row.snapshot)
+        options = {"include_route_latency": True} if include_route_latency else {}
+        if include_business_http:
+            options['include_business_http'] = True
+        bundle = collect(self.kube, self.cfg, self.settings, ns, workload, since=since, **options)
         self._collection_attempts = [bundle]
         core = [item for item in bundle.items if item.source in R.CRITICAL_SOURCES]
         if self.cfg.recovery.evidence_recollect and (any(item.error for item in core) or not bundle.deployment or not bundle.pods):
@@ -440,20 +564,25 @@ class Engine:
                 runlog.gate(iid, '핵심 근거 재수집')
                 runlog.emit(iid, 'analysis_retry', '핵심 조회 근거가 부족해 한 번 다시 수집합니다.',
                             {'attempt': 2, 'sources': sorted({i.source for i in core if i.error})})
-            second = collect(self.kube, self.cfg, self.settings, ns, workload, since=since)
+            second = collect(self.kube, self.cfg, self.settings, ns, workload, since=since, **options)
             # Preserve history separately, never mix stale errors into current features.
             self._collection_attempts.append(second)
             bundle = second
         if self._workflow_run_id is not None:
-            frozen = json.loads(json.dumps(redact_obj(asdict(bundle)), default=lambda v: v.isoformat()))
+            frozen = freeze_collection(bundle)
+            prior = [freeze_collection(attempt) for attempt in self._collection_attempts[:-1]]
             with db.session() as s:
                 row = s.scalar(select(WorkflowRun).where(WorkflowRun.id == self._workflow_run_id).with_for_update())
                 if row is None:
                     raise RuntimeError('수집 결과를 저장할 실행 원장 없음')
-                attempts = json.loads(json.dumps(redact_obj([asdict(b) for b in self._collection_attempts]), default=lambda v: v.isoformat()))
-                row.snapshot = {**(row.snapshot or {}), 'collection': (row.snapshot or {}).get('collection', frozen),
-                                'collection_attempts': attempts}
-                return restore(row.snapshot['collection'])
+                snapshot = row.snapshot or {}
+                if 'collection' in snapshot:
+                    return reuse(snapshot)
+                checkpoint = {**snapshot, 'collection': frozen}
+                if prior:
+                    checkpoint['prior_collections'] = prior
+                row.snapshot = checkpoint
+                return restore(frozen)
         return bundle
 
     def _process(self, iid: int, *, arm: dict | None = None) -> bool | None:
@@ -465,9 +594,12 @@ class Engine:
             # 실행 시작과 대기 중 중단은 같은 사건 행 잠금으로 직렬화한다.
             from .models import RunControl
             inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
+            if (inc is None or inc.namespace in self.cfg.historical_namespaces
+                    or NODE_STARTUP_BLOCKED in (inc.signal_reasons or [])):
+                return False
             resume = s.scalar(select(WorkflowRun).where(WorkflowRun.incident_id == iid,
                 WorkflowRun.status == 'resume_pending').order_by(WorkflowRun.id.desc()).limit(1).with_for_update())
-            if inc is None or (inc.status != "open" and not (inc.status == 'analyzing' and resume)):
+            if inc.status != "open" and not (inc.status == 'analyzing' and resume):
                 return False
             if resume:
                 self._workflow_run_id = resume.id
@@ -512,14 +644,34 @@ class Engine:
             return False
         broker.publish(iid, "updated", "analyzing")
 
+        for signal in (ADMISSION_WEBHOOK_FAILURE, RETIRED_INGRESS_API, CNI_VERSION_MISMATCH,
+                       HPA_METRICS_BLOCKED, DISK_PRESSURE_EVICTION, NODE_STARTUP_BLOCKED):
+            if signal in incident_view["signals"]:
+                self._handoff_observed_authority(iid, ns, signal)
+                return
+
         # evidence -----------------------------------------------------------
         runlog.gate(iid, "근거 수집")
-        bundle = self._collect_or_reuse(ns, workload, created - timedelta(seconds=60))
+        options = _recovery_metric_options(incident_view['signals'])
+        bundle = self._collect_or_reuse(ns, workload, created - timedelta(seconds=60), **options)
         with db.session() as s:
             for attempt in self._collection_attempts:
                 for it in attempt.items:
                     s.add(Evidence(incident_id=iid, source=it.source, target=it.target, payload=it.payload, error=it.error,
                                    collected_at=it.collected_at))
+            if PROXY_LDS_REJECTED in incident_view["signals"]:
+                observation = s.scalar(select(AuditLog).where(
+                    AuditLog.incident_id == iid, AuditLog.event == "signal_observed",
+                    AuditLog.detail["reason"].as_string() == PROXY_LDS_REJECTED,
+                ).order_by(AuditLog.id.desc()).limit(1))
+                if observation:
+                    detail = observation.detail["signal"]["detail"]
+                    target = f"{ns}/Pod/{detail['pod']}"
+                    payload = {**detail, "received_at": observation.ts.isoformat()}
+                    bundle.metrics["envoy_listener_rejection"] = payload
+                    bundle.add("alertmanager", target, payload, collected_at=observation.ts)
+                    s.add(Evidence(incident_id=iid, source="alertmanager", target=target,
+                                   payload=payload, collected_at=observation.ts))
         broker.publish(iid, "updated", "analyzing")
         runlog.emit(iid, "evidence_collected", f"근거 {len(bundle.items)}건 수집", {
             "sources": sorted({it.source for it in bundle.items}),
@@ -533,9 +685,25 @@ class Engine:
         with db.session() as s:
             current = s.get(Incident, iid)
             incident_view["signals"] = list(current.signal_reasons) if current else incident_view["signals"]
+        if strategy == "adaptive" and self._try_endpoint_selector_authority(iid, bundle, incident_view):
+            return
+        from .observed_recovery import ready_after_recent_oom
+        oom_followup = None
+        if strategy == 'adaptive' and ready_after_recent_oom(bundle, incident_view['signals']):
+            rule = R.decide(bundle, self.cfg.recent_rollout_minutes, cfg=self.cfg, signal_reasons=incident_view['signals'])
+            if rule.level in ('NORMAL', 'COMPLEX') and not (rule.policy or {}).get('handoff_only'):
+                reason = '최근 메모리 부족 종료 이후 Pod와 서비스 연결 상태를 두 차례 확인했습니다.'
+                observed_route = replace(rule, rationale=reason, decided_by='evidence_state',
+                                         policy={'version': self.cfg.router.version, 'selected_reason': reason,
+                                                 'analysis_skipped': 'observed_oom_recovery'})
+                recovered, oom_followup = self._observe_recovery(iid, bundle, incident_view, phase='pre_group',
+                                                                 routing_on_recovery=observed_route)
+                if recovered:
+                    return
         decision = R.decide(bundle, self.cfg.recent_rollout_minutes,
                             llm_classify=(lambda p: self._classify(iid, p)) if strategy == "adaptive" else None,
-                            cfg=self.cfg, signal_reasons=incident_view["signals"])
+                            cfg=self.cfg, signal_reasons=incident_view["signals"],
+                            allow_authority_shortcut=strategy == 'adaptive')
         if strategy == "fixed_group" and decision.decided_by != "router_failure":
             # Fixed Multi-Agent arm: the same COMPLEX group for every incident (no routing).
             decision = R.Decision(arm["level"], R.WORKFLOW[arm["level"]], decision.features,
@@ -544,6 +712,34 @@ class Engine:
         base_cfg = self.cfg
         self._record_decision(iid, decision)
 
+        if decision.decided_by == 'rules_authority_boundary':
+            from .handoff_classes import record, AUTHORITY_BOUNDARY
+            from .rollout_readiness import READINESS_PATH_AUTHORITY
+            from .workload_signals import CSI_REGISTRATION_AUTHORITY
+            runlog.gate(iid, '권한 경계 확인')
+            code = decision.features['reason_code']
+            if code == READINESS_PATH_AUTHORITY:
+                proof = decision.features['rollout_readiness_failure']
+                candidate = {'cause': f"리비전 {proof['current_revision']}의 readiness 경로 변경과 HTTP 404",
+                             'evidence_refs': ['E1', 'E5']}
+                next_step = (f"현재 {proof['current_replicaset']}의 readiness 경로를 이전 "
+                             f"{proof['previous_replicaset']}와 대조한 뒤 새 Pod와 업무 요청을 확인하세요.")
+            elif code == CSI_REGISTRATION_AUTHORITY:
+                proof = decision.features['csi_registration_failure']
+                candidate = {'cause': f"{proof['node']}의 CSI 드라이버 {proof['driver']} 등록 누락",
+                             'evidence_refs': ['E1', 'E5']}
+                next_step = (f"{proof['node']}의 CSI 등록과 드라이버 상태를 확인한 뒤 "
+                             f"같은 PVC {proof['claim']}의 마운트와 업무 요청을 검증하세요.")
+            else:
+                candidate = {'cause': '현재 배포에 필요한 서비스 계정 누락', 'evidence_refs': ['E1']}
+                next_step = '현재 배포의 서비스 계정 참조를 승인된 배포 설정과 대조하세요.'
+            classification = record(code, {code: AUTHORITY_BOUNDARY}, authorization={'level': decision.level})
+            self._set_status(iid, 'handed_off', summary=decision.rationale, status_reason=decision.rationale,
+                             handoff={'summary': decision.rationale, 'summary_ko': decision.rationale,
+                                      'root_cause_candidates': [candidate],
+                                      'handoff_classification': classification,
+                                      'recommended_steps': [next_step]})
+            return
         if decision.decided_by == "router_failure" or (decision.policy or {}).get('handoff_only'):
             from .handoff_classes import record, RECOVERY_EXHAUSTED
             classification = record(decision.features.get('reason_code'), {c: RECOVERY_EXHAUSTED for c in R.RECOLLECTABLE_CODES},
@@ -558,9 +754,12 @@ class Engine:
                                       "notes": ["router failure; no automatic action"]})
             return
         if strategy == 'adaptive' and decision.level in ('NORMAL', 'COMPLEX'):
-            recovered, bundle = self._observe_recovery(iid, bundle, incident_view, phase='pre_group')
-            if recovered:
-                return
+            if oom_followup is None:
+                recovered, bundle = self._observe_recovery(iid, bundle, incident_view, phase='pre_group')
+                if recovered:
+                    return
+            else:
+                bundle = oom_followup
             latest = R.decide(bundle, self.cfg.recent_rollout_minutes, cfg=self.cfg, signal_reasons=incident_view['signals'])
             if R.LEVEL_ORDER[latest.level] > R.LEVEL_ORDER[decision.level] or latest.decided_by == 'router_failure':
                 decision = latest
@@ -590,27 +789,123 @@ class Engine:
                          handoff={"summary": "Group 재지정이 3회를 넘었습니다.", "root_cause_candidates": [],
                                   "recommended_steps": ["분석 기록을 검토한 뒤 채팅으로 지시하세요."], "notes": ["reroute limit"]})
 
+    def _try_endpoint_selector_authority(self, iid: int, bundle: Bundle, incident_view: dict) -> bool:
+        from .evidence import _DeadlineReads
+        from .k8s import parse_ts
+        from .selector_exclusion import AUTHORITY, PROOF_KEY, SIGNALS, recheck
+
+        proof = (bundle.service or {}).get(PROOF_KEY)
+        signals = set(incident_view["signals"])
+        if (not proof or not signals or signals - SIGNALS or safety.high_risk_may_execute()
+                or proof.get("system") != incident_view.get("system")):
+            return False
+        observed = parse_ts(proof.get("observed_at"))
+        if not observed or not 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 120:
+            return False
+        try:
+            features = R.extract_features(bundle, self.cfg.recent_rollout_minutes)
+            if (features["protected_resource"] or features["waiting_reasons"] or features["recent_instability"]
+                    or features["latency_signal"] or features["oom_killed"]
+                    or set(features["evidence_errors"]) & R.CRITICAL_SOURCES):
+                return False
+            fresh = recheck(_DeadlineReads(self.kube, time.monotonic() + 10), bundle.namespace, bundle.workload, proof,
+                            managed=self.cfg.safe_actions.managed_label)
+        except Exception as exc:  # resume ordinary high-risk analysis if a proof read is unavailable
+            log.info("Service selector proof unavailable for %s: %s", iid, type(exc).__name__)
+            return False
+        if not fresh:
+            return False
+        runlog.gate(iid, "Service 선택자 재확인")
+        checked_at = parse_ts(fresh["observed_at"])
+        if not checked_at or not observed < checked_at or (datetime.now(timezone.utc) - observed).total_seconds() > 120:
+            return False
+        from .handoff_classes import AUTHORITY_BOUNDARY, record
+        from .models import CodeActionLink, OperatorCommand, OperatorMessage, RunControl
+        summary = (f"{bundle.workload} Service의 app={proof['selector_app']} 선택자가 "
+                   f"app={proof['pod_app']}인 준비 Pod {len(proof['ready_pods'])}개를 모두 제외합니다. "
+                   "두 조회에서 준비 연결 대상 0개를 확인했습니다.")
+        boundary = "서비스 연결을 변경하려면 승인된 배포 선언을 운영자가 확인해야 합니다."
+        decision = R.Decision("HIGH_RISK", R.WORKFLOW["HIGH_RISK"], {
+            **features, "reason_code": AUTHORITY, "signal_reasons": sorted(signals),
+            PROOF_KEY: {"initial": proof, "recheck": fresh}}, summary, None, "rules_authority_boundary",
+            policy={"handoff_only": True, "selected_reason": boundary, "verification_method": "kubernetes_reread",
+                    "classifier_skipped": "deterministic_high_risk"})
+        with db.session() as s:
+            inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
+            control = s.get(RunControl, iid)
+            if inc:
+                incident_view["signals"] = list(inc.signal_reasons)
+            if (not inc or inc.status != "analyzing" or inc.system != proof["system"]
+                    or not set(inc.signal_reasons) or set(inc.signal_reasons) - SIGNALS
+                    or (control and control.state != "running") or safety.high_risk_may_execute()
+                    or s.scalar(select(CodeActionLink.action_id).where(CodeActionLink.incident_id == iid)) is not None
+                    or s.scalar(select(Action.id).where(Action.incident_id == iid).limit(1)) is not None
+                    or s.scalar(select(OperatorCommand.id).where(OperatorCommand.incident_id == iid).limit(1)) is not None
+                    or s.scalar(select(OperatorMessage.id).where(OperatorMessage.incident_id == iid,
+                                                                 OperatorMessage.applied_at.is_(None)).limit(1)) is not None):
+                return False
+            decision.features["signal_reasons"] = sorted(set(inc.signal_reasons))
+            s.add(Evidence(incident_id=iid, source="service", target=f"{bundle.namespace}/Service/{bundle.workload}",
+                            payload=redact_obj({**bundle.service, "selector_recheck": fresh}),
+                            collected_at=checked_at))
+            self._persist_decision(s, inc, decision)
+            self._persist_status(s, inc, "handed_off", {
+                "summary": summary, "status_reason": boundary,
+                "handoff": {"summary": summary, "summary_ko": summary,
+                            "root_cause_candidates": [{"cause": summary, "evidence_refs": ["E2", "E3"]}],
+                            "handoff_classification": record(AUTHORITY, {AUTHORITY: AUTHORITY_BOUNDARY},
+                                authorization={"level": "HIGH_RISK"}, provenance={"source": "kubernetes_reread"}),
+                            "recommended_steps": ["승인된 Service 선택자를 현재 Pod 라벨과 대조하고, 변경 후 연결 대상과 업무 요청을 확인하세요."]}})
+        from . import policy
+        policy.record(iid, "high_risk_level", profile=safety.active_profile(), level=decision.level,
+                      workload=bundle.workload, proposed={"outcome": "handoff"}, rationale=summary,
+                      impact="traffic-routing / cross-service blast radius", outcome="held_for_operator")
+        runlog.emit(iid, "routing_decided", f"사건 수준 {decision.level} → {decision.workflow}",
+                    {"level": decision.level, "workflow": decision.workflow, "decided_by": decision.decided_by,
+                     "rationale": summary, "confidence": None})
+        runlog.emit(iid, "health_recheck", "동일 Service의 선택자와 준비 Pod를 다시 확인했습니다.",
+                    {"phase": "service_selector_recheck", "verified": True, "recovered": False})
+        self._publish_status(iid, "handed_off", boundary)
+        return True
+
     def _observe_recovery(self, iid: int, first: Bundle, incident_view: dict, *, phase: str,
-                          pending_action_id: int | None = None) -> tuple[bool, Bundle]:
+                          pending_action_id: int | None = None,
+                          routing_on_recovery: R.Decision | None = None) -> tuple[bool, Bundle]:
         from .observed_recovery import observed_at, recovery_proof
+        if PROXY_LDS_REJECTED in incident_view.get('signals', ()):
+            # A ready Pod or an unrelated successful request cannot verify the rejected listener.
+            return False, first
         runlog.gate(iid, '읽기 전용 건강 재확인')
         start = observed_at(first)
-        if phase == 'group_no_action' or start is None or (datetime.now(timezone.utc) - start).total_seconds() > 90:
+        options = _recovery_metric_options(incident_view.get('signals', ()))
+        check_routes = options.get('include_route_latency')
+        check_http = options.get('include_business_http')
+        if (phase == 'group_no_action' or start is None or (datetime.now(timezone.utc) - start).total_seconds() > 90
+                or (check_routes and ROUTE_LATENCY_METRIC not in first.metrics)
+                or (check_http and business_http.METRIC not in first.metrics)):
             # Recovery may have happened during the group: both confirmations must be post-group reads.
             first = collect(self.kube, self.cfg, self.settings, first.namespace, first.workload,
-                            since=datetime.now(timezone.utc) - timedelta(seconds=60))
+                            since=datetime.now(timezone.utc) - timedelta(seconds=60), **options)
             self._save_observation(iid, first, phase + '_baseline')
-        self._sleep(self.cfg.recovery.observation_interval_s)
+        interval = self.cfg.recovery.observation_interval_s
+        self._sleep(max(interval, RECORDING_INTERVAL_SECONDS) if check_routes else interval)
         runlog.gate(iid, '새 상태 수집')
         # Restrict log collection to this observation interval, not the original incident window.
         fresh = collect(self.kube, self.cfg, self.settings, first.namespace, first.workload,
-                        since=observed_at(first) or datetime.now(timezone.utc))
+                        since=observed_at(first) or datetime.now(timezone.utc), **options)
         self._save_observation(iid, fresh, phase)
         with db.session() as s:
             inc = s.get(Incident, iid)
             incident_view['signals'] = list(inc.signal_reasons)
+            check_routes = ROUTE_LATENCY_ALERT in incident_view['signals']
+            routes = observed_routes(s, iid) if check_routes else frozenset()
+            check_http_routes = business_http.ALERT in incident_view['signals']
+            http_routes = observed_routes(s, iid, business_http.ALERT) if check_http_routes else frozenset()
+        routing_unchanged = (routing_on_recovery is None or
+                             sorted(set(incident_view['signals'])) == routing_on_recovery.features['signal_reasons'])
         proof = recovery_proof(first, fresh, incident_view['signals'],
-                               min_interval=self.cfg.recovery.observation_interval_s)
+                               min_interval=self.cfg.recovery.observation_interval_s, required_routes=routes,
+                               required_http_routes=http_routes) if routing_unchanged else None
         runlog.emit(iid, 'health_recheck', '정상 상태 재확인' if proof else '추가 관측 후 진단 계속',
                     {'phase': phase, 'recovered': bool(proof), 'cause_confirmed': False, 'ai_remediation': False})
         if proof:
@@ -629,6 +924,8 @@ class Engine:
                     other_actions = other_actions.where(Action.id != pending_action_id)
                 expected_state = 'action_pending' if pending else 'analyzing'
                 if (inc.status != expected_state or list(inc.signal_reasons) != incident_view['signals']
+                        or (check_routes and observed_routes(s, iid) != routes)
+                        or (check_http_routes and observed_routes(s, iid, business_http.ALERT) != http_routes)
                         or s.scalar(other_actions.limit(1)) is not None
                         or s.scalar(select(OperatorCommand.id).where(OperatorCommand.incident_id == iid,
                             OperatorCommand.status.in_(('planning', 'awaiting_confirmation', 'awaiting_secret', 'executing', 'rolling_back'))).limit(1)) is not None
@@ -639,6 +936,8 @@ class Engine:
                 if pending:
                     pending.status, pending.reason = "cancelled", "두 관측에서 원래 증상의 해소를 확인해 적용하지 않았습니다."
                     audit(s, "liveprobe", "action_cancelled_after_recovery", iid, action_id=pending.id)
+                if routing_on_recovery is not None:
+                    self._persist_decision(s, inc, routing_on_recovery)
                 from .accountability import AWAITING, WAITING_LABEL, append, investigate
                 retained = {k: v for k, v in (inc.handoff or {}).items() if k != 'handoff_classification'}
                 inc.handoff = {**retained, 'observed_recovery': proof}
@@ -653,6 +952,11 @@ class Engine:
                 append(s, iid, report, 'liveprobe')
                 update_run(s, iid, 'succeeded', status, inc.status_reason)
                 audit(s, 'liveprobe', 'observed_recovery', iid, **proof)
+            if routing_on_recovery is not None:
+                runlog.emit(iid, 'routing_decided', f'사건 수준 {routing_on_recovery.level} → {routing_on_recovery.workflow}',
+                            {'level': routing_on_recovery.level, 'workflow': routing_on_recovery.workflow,
+                             'decided_by': routing_on_recovery.decided_by, 'rationale': routing_on_recovery.rationale,
+                             'confidence': routing_on_recovery.confidence})
             self._request_readings(iid)
             broker.publish(iid, 'updated', status)
             runlog.emit(iid, 'completed', inc.status_reason, {'outcome': status, **proof})
@@ -660,9 +964,7 @@ class Engine:
         return False, fresh
 
     def _save_observation(self, iid: int, bundle: Bundle, phase: str) -> None:
-        import json
-        from dataclasses import asdict
-        frozen = json.loads(json.dumps(redact_obj(asdict(bundle)), default=lambda v: v.isoformat()))
+        frozen = freeze_collection(bundle)
         with db.session() as s:
             for it in bundle.items:
                 s.add(Evidence(incident_id=iid, source=it.source, target=it.target, payload=it.payload,
@@ -683,7 +985,8 @@ class Engine:
                 inc = s.get(Incident, iid)
                 view = {'id': iid, 'signals': list(inc.signal_reasons)}
                 ns, workload = inc.namespace, inc.workload
-            first = runner._collect_or_reuse(ns, workload, datetime.now(timezone.utc) - timedelta(seconds=60))
+            first = runner._collect_or_reuse(ns, workload, datetime.now(timezone.utc) - timedelta(seconds=60),
+                                             **_recovery_metric_options(view['signals']))
             with db.session() as s:
                 for b in runner._collection_attempts:
                     for it in b.items:
@@ -722,19 +1025,22 @@ class Engine:
                                                 decision.level, decision.policy)
         self._current_level = decision.level
         with db.session() as s:
-            s.add(RoutingDecision(incident_id=iid, level=decision.level, workflow=decision.workflow,
-                                  features=redact_obj(decision.features), rationale=redact(decision.rationale),
-                                  policy=redact_obj(decision.policy),
-                                  confidence=decision.confidence, decided_by=decision.decided_by))
-            inc = s.get(Incident, iid)
-            inc.severity_level = decision.level
-            audit(s, "router", "routed", iid, level=decision.level, workflow=decision.workflow,
-                  decided_by=decision.decided_by)
+            self._persist_decision(s, s.get(Incident, iid), decision)
         broker.publish(iid, "updated", "analyzing")
         self._request_readings(iid)
         runlog.emit(iid, "routing_decided", f"사건 수준 {decision.level} → {decision.workflow}",
                     {"level": decision.level, "workflow": decision.workflow, "decided_by": decision.decided_by,
                      "rationale": redact(decision.rationale)[:400], "confidence": decision.confidence})
+
+    @staticmethod
+    def _persist_decision(s, inc: Incident, decision: R.Decision) -> None:
+        s.add(RoutingDecision(incident_id=inc.id, level=decision.level, workflow=decision.workflow,
+                              features=redact_obj(decision.features), rationale=redact(decision.rationale),
+                              policy=redact_obj(decision.policy),
+                              confidence=decision.confidence, decided_by=decision.decided_by))
+        inc.severity_level = decision.level
+        audit(s, "router", "routed", inc.id, level=decision.level, workflow=decision.workflow,
+              decided_by=decision.decided_by)
 
     def _run_decision(self, iid: int, decision: R.Decision, bundle: Bundle, incident_view: dict, strategy: str,
                       arm: dict) -> None:
@@ -830,12 +1136,22 @@ class Engine:
             return
 
         # safety -------------------------------------------------------------
+        if out.get("handoff"):
+            self._remember_analysis(iid, summary, out["handoff"])
         if self._guard_new_change(iid, bundle, incident_view, decision.level):
             return
         if self._propose_and_run(iid, decision.level, out["action"], summary):
             return
         self._set_status(iid, "handed_off", status_reason="action was not executable; operator handoff",
                          handoff={"summary": summary, "notes": ["action was not executable; see audit"]})
+
+    def _remember_analysis(self, iid: int, summary: str | None, detail: dict) -> None:
+        with db.session() as s:
+            inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
+            if inc is None or inc.status != 'analyzing':
+                return
+            inc.summary = summary
+            inc.handoff = {**(inc.handoff or {}), **redact_obj(detail)}
 
     def _save_remediation(self, iid: int, bundle: Bundle, output=None, *, verified=False):
         from .remediation import select_remediation
@@ -920,7 +1236,8 @@ class Engine:
             return False
         runlog.gate(iid, "조치 직전 서비스 상태 확인")
         fresh = collect(self.kube, self.cfg, self.settings, bundle.namespace, bundle.workload,
-                        since=datetime.now(timezone.utc) - timedelta(seconds=60))
+                        since=datetime.now(timezone.utc) - timedelta(seconds=60),
+                        **_recovery_metric_options(incident_view.get('signals', ())))
         self._save_observation(iid, fresh, "before_action")
         latest = R.decide(fresh, self.cfg.recent_rollout_minutes, cfg=self.cfg,
                           signal_reasons=incident_view.get("signals"))
@@ -984,7 +1301,8 @@ class Engine:
                        action.status in ('approved', 'pending_approval') and signals and set(signals) <= SUPPORTED)
             ns, workload = inc.namespace, inc.workload
         if pending:
-            snapshot = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc)-timedelta(seconds=60))
+            snapshot = collect(self.kube, self.cfg, self.settings, ns, workload,
+                               since=datetime.now(timezone.utc) - timedelta(seconds=60), **_recovery_metric_options(signals))
             self._save_observation(iid, snapshot, "approval_recheck")
             if snapshot.service and (snapshot.service.get("ready_endpoints") or 0) > 0 and snapshot.pods:
                 recovered, _ = self._observe_recovery(iid, snapshot, {"signals": signals},
@@ -1006,20 +1324,29 @@ class Engine:
                 inc, act = s.get(Incident, iid), s.get(Action, aid)
                 signals = list(inc.signal_reasons or [])
                 ns, workload = inc.namespace, inc.workload
-                direct_proof = action_explanation(inc, act)
+                check_routes = ROUTE_LATENCY_ALERT in signals
+                routes = observed_routes(s, iid) if check_routes else frozenset()
+                check_http_routes = business_http.ALERT in signals
+                http_routes = observed_routes(s, iid, business_http.ALERT) if check_http_routes else frozenset()
+                direct_proof = None if check_routes else action_explanation(inc, act)
             observed = None
             if not direct_proof and signals and set(signals) <= SUPPORTED:
                 # Release the database connection while collecting original-symptom observations.
-                baseline = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc))
+                options = _recovery_metric_options(signals)
+                baseline = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc), **options)
                 self._save_observation(iid, baseline, "post_action")
-                self._sleep(self.cfg.recovery.observation_interval_s)
-                final = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc))
+                interval = self.cfg.recovery.observation_interval_s
+                self._sleep(max(interval, RECORDING_INTERVAL_SECONDS) if check_routes else interval)
+                final = collect(self.kube, self.cfg, self.settings, ns, workload, since=datetime.now(timezone.utc), **options)
                 self._save_observation(iid, final, "post_action")
-                observed = recovery_proof(baseline, final, signals, min_interval=self.cfg.recovery.observation_interval_s)
+                observed = recovery_proof(baseline, final, signals, min_interval=self.cfg.recovery.observation_interval_s,
+                                          required_routes=routes, required_http_routes=http_routes)
             with db.session() as s:
                 inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
                 act = s.get(Action, aid)
-                if observed and list(inc.signal_reasons or []) == signals:
+                if (observed and list(inc.signal_reasons or []) == signals
+                        and (not check_routes or observed_routes(s, iid) == routes)
+                        and (not check_http_routes or observed_routes(s, iid, business_http.ALERT) == http_routes)):
                     inc.handoff = {**(inc.handoff or {}), "observed_recovery": {**observed, "ai_remediation": None, "applied_action_id": aid}}
                 report = investigate(s, inc)
                 append(s, iid, report, actor)
@@ -1115,8 +1442,7 @@ class Engine:
                    "investigations": inquiry.attempts, "signature": signature,
                    "retrieval": getattr(self, "_retrieval_key", None),
                    **({"precedent": match} if match else {}), **({"precedent_checks": checks} if checks else {})}
-        with db.session() as s:
-            s.get(Incident, iid).summary = res.get("summary")
+        self._remember_analysis(iid, res.get("summary"), handoff)
         proposal = res.get("action") or {}
         if proposal.get("propose") and incident_view.get("workload"):
             if self._guard_new_change(iid, bundle, incident_view, decision.level, handoff):

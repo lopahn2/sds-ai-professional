@@ -154,6 +154,16 @@ def test_logql_escapes_app_names():
     assert pattern == 'inventory|a\\.b\\|c'
 
 
+def test_loki_query_keeps_unlabelled_startup_flag_error():
+    import json
+    import re
+
+    query = loki_query(NS, ["ki10-coredns"])
+    pattern = json.loads(query.split(" |~ ", 1)[1])
+    assert re.search(pattern, "flag provided but not defined: -cpu")
+    assert not re.search(pattern, "CoreDNS-1.6.0")
+
+
 @pytest.mark.parametrize("apps", [["p14-net-sink"], ["inventory", "a.b|c"]])
 def test_logql_regex_is_encoded_as_valid_quoted_string(apps):
     import json

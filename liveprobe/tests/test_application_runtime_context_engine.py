@@ -105,7 +105,9 @@ class RealEngine(unittest.TestCase):
     def test_frozen_collection_is_reused_without_new_reads(self):
         from dataclasses import asdict
         bundle = Bundle('stg', 'svc', logs=['과거 정제 원문'])
-        workflow = NS(snapshot={'collection': asdict(bundle)})
+        previous = Bundle('stg', 'svc', logs=['이전 수집'])
+        workflow = NS(snapshot={'collection': asdict(bundle),
+                                'collection_attempts': [asdict(previous), asdict(bundle)]})
         class Session:
             def get(self, *args): return workflow
         @contextmanager
@@ -115,6 +117,9 @@ class RealEngine(unittest.TestCase):
         with patch.object(E.db, 'session', session), patch.object(E, 'collect') as collect:
             first = engine._collect_or_reuse('stg', 'svc', None)
         self.assertEqual(first.logs, ['과거 정제 원문'])
+        self.assertEqual([attempt.logs for attempt in engine._collection_attempts],
+                         [['이전 수집'], ['과거 정제 원문']])
+        self.assertEqual(workflow.snapshot['collection_attempts'], [asdict(previous), asdict(bundle)])
         collect.assert_not_called()
 
     def test_new_collection_is_json_persisted_then_reused_as_a_detached_bundle(self):
@@ -140,11 +145,38 @@ class RealEngine(unittest.TestCase):
             first.logs.append('호출자 변경은 봉인 자료를 바꾸지 않음')
             second = engine._collect_or_reuse('stg', 'svc', None)
         self.assertEqual(kube.list_pods.call_count, 2)  # missing workload: one bounded recollection, then cached reuse
-        self.assertEqual(len(workflow.snapshot['collection_attempts']), 2)
+        self.assertEqual(len(workflow.snapshot['prior_collections']), 1)
+        self.assertNotIn('collection_attempts', workflow.snapshot)
+        self.assertEqual(len(engine._collection_attempts), 2)
         self.assertEqual(second.logs, [])
         self.assertIsInstance(second.items[0], EvidenceItem)
         self.assertTrue(hasattr(second.items[0].collected_at, 'isoformat'))
         self.assertEqual(workflow.snapshot['unrelated'], {'keep': True})
+
+    def test_concurrent_seal_keeps_the_winning_read_and_history(self):
+        from app.evidence import freeze_collection
+
+        prior = freeze_collection(Bundle('stg', 'svc', logs=['먼저 확정한 실행의 이전 관측']))
+        winner = freeze_collection(Bundle('stg', 'svc', logs=['먼저 확정한 관측']))
+        snapshot = {'collection': winner, 'prior_collections': [prior], 'other': True}
+        workflow = NS(snapshot=snapshot)
+        class Session:
+            def get(self, *args):
+                return NS(snapshot={})
+            def scalar(self, statement):
+                return workflow
+        @contextmanager
+        def session():
+            yield Session()
+        engine = E.Engine(AppConfig(), Settings(background=False), None, None, None)
+        engine._workflow_run_id = 7
+        competing = Bundle('stg', 'svc', deployment={'ready': 1}, pods=[{'name': 'pod'}], logs=['늦은 관측'])
+        with patch.object(E.db, 'session', session), patch.object(E, 'collect', return_value=competing) as read:
+            selected = engine._collect_or_reuse('stg', 'svc', None)
+        read.assert_called_once()
+        self.assertIs(workflow.snapshot, snapshot)
+        self.assertEqual(selected.logs, winner['logs'])
+        self.assertEqual([attempt.logs for attempt in engine._collection_attempts], [prior['logs'], winner['logs']])
 
     def test_read_checkpoint_reuses_completed_call_without_provider(self):
         rows = []

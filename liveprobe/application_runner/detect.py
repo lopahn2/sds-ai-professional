@@ -1,6 +1,6 @@
 """등록 범위의 예외 감지와 최초 표본 보존. dry-run은 읽기도 하지 않는다."""
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import fcntl
 import json
 import os
@@ -63,6 +63,29 @@ def signature(sample):
 class Detector:
     def __init__(self,registry,kube,api,state_root):
         self.registry=registry;self.kube=kube;self.api=api;self.state_root=Path(state_root)
+
+    def watch_once(self, checkpoints: Path, services: list[str], first_since: str) -> None:
+        # Catalog environments reflect the control plane's current pause policy.
+        # A failed lookup never advances a checkpoint for a service we did not check.
+        active = self.api.active_environments()
+        for environment in self.registry.catalog['environments']:
+            if environment not in active:
+                continue
+            for service in services:
+                if environment != 'dev' and service in self.registry.catalog.get('dev_only_services', []):
+                    continue
+                path = checkpoints / f'{environment}-{service}.json'
+                since = json.loads(path.read_text())['since'] if path.exists() else first_since
+                start = datetime.now(timezone.utc)
+                try:
+                    result = self.run(environment, [service], since)
+                except (OSError, ValueError) as exc:
+                    print(json.dumps({'environment': environment, 'service': service,
+                                      'error': type(exc).__name__}), flush=True)
+                    continue
+                durable_write(path, {'since': (start - timedelta(seconds=3)).isoformat().replace('+00:00', 'Z'),
+                                     'checked_at': datetime.now(timezone.utc).isoformat(),
+                                     'reported': result['reported']})
 
     def run(self,environment,services,since,dry_run=False):
         services=sorted(set(services))

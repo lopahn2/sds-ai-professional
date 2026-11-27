@@ -156,7 +156,7 @@ def view(control, session, incident):
     doc = incident.document
     latest = _latest(session, incident, control.clock())
     env, service = doc['environment'], doc['service']
-    if env not in ('dev', 'prd'):
+    if env not in ('dev', 'prd') or control.environment_paused(env):
         code = 'inactive_environment'
     elif incident.state not in PRESERVED:
         code = 'busy'

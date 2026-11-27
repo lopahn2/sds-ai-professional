@@ -82,23 +82,17 @@ def main(argv=None):
             from datetime import datetime,timedelta,timezone
             from .detect import Detector
             if args.command == 'watch':
-                from .worker import durable_write
                 detector = Detector(registry, kube, API(args.api_url,args.machine_token_file), args.state_dir/'detect')
                 root = args.state_dir/'watch'
-                first = datetime.now(timezone.utc)
+                first_since = args.since or datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+                services = args.service or list(registry.profiles)
                 while True:
-                    for env in registry.catalog['environments']:
-                        for service in args.service or list(registry.profiles):
-                            path = root/(env+'-'+service+'.json')
-                            since = json.loads(path.read_text())['since'] if path.exists() else (args.since or first.isoformat().replace('+00:00','Z'))
-                            start = datetime.now(timezone.utc)
-                            try:
-                                result = detector.run(env, [service], since)
-                            except (OSError, ValueError) as exc:
-                                print(json.dumps({'environment':env,'service':service,'error':type(exc).__name__}),flush=True)
-                                continue
-                            durable_write(path, {'since':(start-timedelta(seconds=3)).isoformat().replace('+00:00','Z'),
-                                                 'checked_at': datetime.now(timezone.utc).isoformat(), 'reported':result['reported']})
+                    try:
+                        detector.watch_once(root, services, first_since)
+                    except OSError:
+                        print(json.dumps({'error': 'application_catalog_or_checkpoint_unavailable'}), flush=True)
+                        if args.once:
+                            return 1
                     if args.once:return 0
                     time.sleep(args.poll_seconds)
             since=args.since or (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat().replace('+00:00','Z')

@@ -4,7 +4,7 @@ from __future__ import annotations
 from .k8s import labels_match, ready_addresses
 
 
-def backend_observation(service: dict, endpoint: dict | None, deployments: list[dict]) -> dict:
+def backend_observation(service: dict, endpoint: dict | int | None, deployments: list[dict]) -> dict:
     spec = service.get("spec") or {}
     selector = spec.get("selector") or {}
     count = ready_addresses(endpoint) if endpoint is not None else None
@@ -40,12 +40,17 @@ def service_state(summary: dict | None) -> str:
     return "ready" if count > 0 else "missing"
 
 
-def read_backend(kube, ns: str, service: dict, deployments=None) -> dict:
+def read_backend(kube, ns: str, service: dict, deployments=None, *, endpoint_counts=None) -> dict:
     name = service["metadata"]["name"]
     spec = service.get("spec") or {}
     if spec.get("type") == "ExternalName":
         return backend_observation(service, None, [])
-    endpoint = kube.get_endpoints(ns, name)
+    if endpoint_counts is None:
+        read_snapshot = getattr(kube, "service_endpoint_counts", None)
+        endpoint = (read_snapshot([service], ns).get((ns, name)) if read_snapshot is not None
+                    else kube.get_endpoints(ns, name))
+    else:
+        endpoint = endpoint_counts.get((ns, name))
     if (deployments is None and spec.get("selector") and spec.get("type") != "ExternalName"
             and (endpoint is None or ready_addresses(endpoint) == 0)):
         deployments = kube.list_deployments(ns)

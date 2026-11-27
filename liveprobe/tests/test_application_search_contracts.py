@@ -18,13 +18,11 @@ def stored_hit(provenance=None, document=True):
     class StoredRows:
         """Only replace SQL transport; production ranking and row conversion run."""
         def __init__(self):
-            self.results = iter([[SimpleNamespace(id=7)], [SimpleNamespace(id=7)], [(ch, doc, 0.2)]])
             self.statements = []
 
-        def execute(self, statement):
+        def execute(self, statement, params):
             self.statements.append(statement)
-            rows = next(self.results)
-            return SimpleNamespace(all=lambda: rows)
+            return SimpleNamespace(all=lambda: [(ch, doc, 0.2, 1, 1)])
 
     class StoredVector:
         def embed(self, texts):
@@ -32,7 +30,7 @@ def stored_hit(provenance=None, document=True):
 
     session = StoredRows()
     hit = rag.search(session, StoredVector(), "결제 오류", k=1)[0]
-    assert len(session.statements) == 3
+    assert len(session.statements) == 1
     return hit
 
 
@@ -126,13 +124,12 @@ def test_rrf_tie_order_and_hit_cap_do_not_truncate_counter_evidence():
         ):
             chunks.append((SimpleNamespace(id=ident, doc=name, source="internal-runbook", chunk_ix=0,
                 content=content, provenance={}, section="관측", char_start=0, char_end=len(content),
-                line_start=1, line_end=2, locator=f"repo://{name}#L1-L2", document_id=None), None, distance))
-        results = iter([[SimpleNamespace(id=i) for i in (1, 2, 3)],
-                        [SimpleNamespace(id=i) for i in (2, 1, 3)], list(reversed(chunks)) if reverse_rows else chunks])
+                line_start=1, line_end=2, locator=f"repo://{name}#L1-L2", document_id=None),
+                None, distance, ident, {1: 2, 2: 1, 3: 3}[ident]))
 
         class Rows:
-            def execute(self, statement):
-                return SimpleNamespace(all=lambda: next(results))
+            def execute(self, statement, params):
+                return SimpleNamespace(all=lambda: list(reversed(chunks)) if reverse_rows else chunks)
 
         class Vector:
             def embed(self, texts):
@@ -162,9 +159,9 @@ def test_lexical_statement_binds_korean_terms_and_filters_without_database():
     assert ["runbook", "public_doc"] in compiled.params.values()
     assert 7 in compiled.params.values()
     assert rag.lexical_statement("그리고 the !!!") is None
-    # The runtime search uses this same pure builder, not a second SQL path.
-    import inspect
-    assert "lexical_statement(" in inspect.getsource(rag.search)
+    runtime_sql = str(rag._search_rows(True, True).compile(dialect=postgresql.dialect()))
+    assert "%(lq)s" in runtime_sql and "결제" not in runtime_sql
+    assert "rag_kinds" in runtime_sql and "rag_limit" in runtime_sql
 
 
 def test_lexical_query_keeps_hangul_english_digits_and_negation():

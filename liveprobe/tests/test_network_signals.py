@@ -16,19 +16,17 @@ DST = f"{NS}/pod/inventory-bbb-1"
 PEER = "ip/203.0.113.9"
 
 
-def setup_adapter(emit=None, *, merge=10, window=300):
+def setup_adapter(emit=None, *, merge=10, window=300, cfg=None):
     from app import network_signals
     now = [1000.0]
     store = FlowStore(window_s=window, clock=lambda: now[0])
     store.stream_state = "connected"
+    cfg = cfg or AppConfig(target_namespace=NS, merge_window_seconds=merge)
     kube = family1_kube()
     for pod in kube.pods:
-        pod["metadata"]["namespace"] = NS
+        pod["metadata"]["namespace"] = cfg.target_namespace
     sent = []
-    adapter = network_signals.NetworkSignalAdapter(
-        store, kube, AppConfig(target_namespace="liveprobe-target", merge_window_seconds=merge), emit or sent.append,
-        clock=lambda: now[0],
-    )
+    adapter = network_signals.NetworkSignalAdapter(store, kube, cfg, emit or sent.append, clock=lambda: now[0])
     return adapter, store, kube, sent, now
 
 
@@ -61,6 +59,41 @@ def test_real_hubble_proto_drop_and_error_emit_target_deployment():
     assert sig.detail["drop_reasons"] == {"POLICY_DENIED": 3}
     assert sig.detail["window_s"] == 300
     assert not kube.patches
+
+
+@pytest.mark.parametrize("src,dst,identity", [
+    ("prd/pod/paused", "dev/pod/inventory-bbb-1", {}),
+    ("dev/pod/inventory-bbb-1", "prd/service/paused", {}),
+    (PEER, "dev/pod/inventory-bbb-1", {"src_ns": "prd"}),
+    ("dev/pod/inventory-bbb-1", PEER, {"dst_ns": "prd"}),
+    ("dev/pod/inventory-bbb-1", PEER, {"dst_service": "prd/paused"}),
+])
+def test_historical_peer_cannot_open_a_dev_network_incident(src, dst, identity):
+    cfg = AppConfig(target_namespaces=["dev"], historical_namespaces=["stg", "prd"])
+    adapter, store, _, sent, _ = setup_adapter(cfg=cfg)
+    store.add([FlowRec(999.0 + i / 1000, src, dst, "DROPPED", "TCP", 8080, **identity) for i in range(5)])
+
+    assert adapter.poll_once() == 0
+    assert sent == []
+
+
+def test_active_dev_prd_and_external_paths_still_emit():
+    from conftest import mk_pod, mk_rs
+
+    cfg = AppConfig(target_namespaces=["dev", "prd"], historical_namespaces=["stg"])
+    adapter, store, kube, sent, _ = setup_adapter(cfg=cfg)
+    kube.replicasets.append(mk_rs("order-ccc", "order", 1, "order:ok"))
+    prd_pod = mk_pod("inventory-prd-1", "inventory", "inventory-aaa")
+    prd_pod["metadata"]["namespace"] = "prd"
+    kube.pods.append(prd_pod)
+    store.add(records(src="dev/pod/order-ccc-1", dst="dev/pod/inventory-bbb-1")
+              + records(src="dev/pod/order-ccc-1", dst="prd/pod/inventory-prd-1")
+              + records(src=PEER, dst="dev/pod/inventory-bbb-1"))
+
+    assert adapter.poll_once() == 3
+    assert {(signal.namespace, signal.detail["from"]) for signal in sent} == {
+        ("dev", "dev/Deployment/order"), ("prd", "dev/Deployment/order"), ("dev", PEER),
+    }
 
 
 def test_same_pair_once_per_merge_window_requires_five_new_bad_records():
@@ -330,7 +363,7 @@ def test_network_drop_rules_override_simple_and_llm_downgrade():
     assert decision.level == "HIGH_RISK"
     assert decision.workflow == "high_risk_group"
     assert decision.features["network_drop_signal"] is True
-    assert "NetworkDrop" in decision.rationale and "rules win" in decision.rationale
+    assert "NetworkDrop" in decision.rationale and decision.decided_by == "rules"
     assert effective_policy(decision.level, "auto") == "handoff"
 
 
@@ -351,9 +384,7 @@ def test_flow_signal_ingestion_routes_high_risk_and_hands_off_without_actions(db
     bundle.items = [EvidenceItem("deployment", "inventory", bundle.deployment),
                     EvidenceItem("pod_status", "inventory", bundle.pods)]
     monkeypatch.setattr(engine_module, "collect", lambda *args, **kwargs: bundle)
-    monkeypatch.setattr(engine, "_classify", lambda *args: {
-        "level": "SIMPLE", "rationale": "ignore network drops", "confidence": 1.0,
-    })
+    monkeypatch.setattr(engine, "_classify", lambda *args: pytest.fail("deterministic network risk reached the model"))
     roles = []
     def agent(role, prompt):
         roles.append(role)
@@ -379,7 +410,8 @@ def test_flow_signal_ingestion_routes_high_risk_and_hands_off_without_actions(db
         assert incident is not None and routing is not None
         assert incident.status == "handed_off"
         assert incident.severity_level == routing.level == "HIGH_RISK"
-        assert routing.decided_by == "rules+llm"
+        assert routing.decided_by == "rules" and routing.confidence is None
+        assert routing.policy["classifier_skipped"] == "deterministic_high_risk"
         assert routing.features["network_drop_signal"]
         assert session.scalar(select(Action).where(Action.incident_id == iid)) is None
     assert roles == ["evidence_curator", "safety_verifier"]

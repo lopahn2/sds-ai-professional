@@ -1,6 +1,8 @@
 """Evaluation entry point: analyse ONE already-injected fault for ONE arm and print a kan59-run-output/v1 record.
 
     python -m app.evalrun lock|unlock
+    python -m app.evalrun lock --namespace dev --workload inventory --owner trial --ttl 600
+    python -m app.evalrun lock-status|unlock --namespace dev --workload inventory --owner trial --token-stdin
     python -m app.evalrun run --case F1-01 --target inventory --signal image_pull --arm '<json>'
 
 Runs inside the liveprobe-api pod (same image, DB, kube client, Codex homes and RAG as production) so an arm is the
@@ -317,10 +319,22 @@ def resolve_eval(iid: int, cause: str, steps: list[str], verification: str) -> i
 
 
 def main(argv=None) -> int:
+    from . import evalguard
+
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("lock").add_argument("--ttl", type=int, default=1800)
-    sub.add_parser("unlock")
+    lock = sub.add_parser("lock", allow_abbrev=False)
+    lock.add_argument("--ttl", type=int)
+    unlock = sub.add_parser("unlock", allow_abbrev=False)
+    lock_status = sub.add_parser("lock-status", allow_abbrev=False)
+    renew = sub.add_parser("lock-renew", allow_abbrev=False)
+    renew.add_argument("--ttl", type=int, required=True)
+    for parser in (lock, unlock, lock_status, renew):
+        parser.add_argument("--namespace", choices=("dev",))
+        parser.add_argument("--workload")
+        parser.add_argument("--owner")
+        if parser is not lock:
+            parser.add_argument("--token-stdin", action="store_true")
     r = sub.add_parser("run")
     r.add_argument("--case", required=True)
     r.add_argument("--target", required=True)
@@ -335,15 +349,50 @@ def main(argv=None) -> int:
     rv.add_argument("--verification", default="")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
-    from . import evalguard
     from . import db
-    from .config import get_settings
-    settings = get_settings()
-    if a.cmd in ("lock", "unlock"):
-        db.init_db(settings.sqlalchemy_url())
-        evalguard.set_lock("evaluation", a.ttl) if a.cmd == "lock" else evalguard.clear_lock()
-        print(f"evaluation lock {a.cmd}ed")
-        return 0
+    from .config import get_app_config, get_settings
+    if a.cmd in ("lock", "unlock", "lock-status", "lock-renew"):
+        scope = (a.namespace, a.workload, a.owner)
+        scoped = a.cmd in ("lock-status", "lock-renew") or getattr(a, "token_stdin", False) or any(value is not None for value in scope)
+        if not scoped:
+            db.init_db(get_settings().sqlalchemy_url())
+            if a.cmd == "lock":
+                evalguard.set_lock("evaluation", 1800 if a.ttl is None else a.ttl)
+            else:
+                evalguard.clear_lock()
+            print(f"evaluation lock {a.cmd}ed")
+            return 0
+        if any(value is None for value in scope) or (a.cmd != "lock" and not a.token_stdin):
+            p.error("scoped commands require --namespace, --workload, --owner, and --token-stdin for status and release")
+        ttl = getattr(a, "ttl", None)
+        try:
+            evalguard.validate_workload_lease(*scope, ttl)
+        except ValueError as exc:
+            p.error(str(exc))
+        if a.cmd == "lock" and not get_app_config().is_active_environment(a.namespace):
+            p.error("the dev namespace is not an active monitoring target")
+        token = None if a.cmd == "lock" else sys.stdin.read(128).strip()
+        db.init_db(get_settings().sqlalchemy_url())
+        if a.cmd == "lock":
+            try:
+                receipt = evalguard.acquire_workload_lease(*scope, evalguard.WORKLOAD_LEASE_DEFAULT_TTL if ttl is None else ttl)
+            except evalguard.WorkloadLeaseConflict as exc:
+                print(json.dumps({"error": str(exc)}))
+                return 1
+            print(json.dumps(receipt))
+            return 0
+        if a.cmd == "lock-renew":
+            expires = evalguard.renew_workload_lease(*scope, token, ttl)
+            print(json.dumps({"expires_at": expires}))
+            return 0 if expires else 1
+        if a.cmd == "lock-status":
+            key = "active"
+            accepted = evalguard.workload_lease_owned(*scope, token)
+        else:
+            key = "released"
+            accepted = evalguard.release_workload_lease(*scope, token)
+        print(json.dumps({key: accepted}))
+        return 0 if accepted else 1
     if a.cmd == "resolve":
         return resolve_eval(a.incident, a.cause, a.step, a.verification)
     arm = json.loads(a.arm)

@@ -6,8 +6,62 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 from app.application import display_readings as readings
 from app.application.activity import activity
+from app.application.safety import text_sha
 from app.application.storage import DisplayReading
+from app.config import AppConfig
 from test_core_support import Harness, PREFIX, HUMAN
+
+
+def test_paused_prd_readings_stay_available_without_model_work(monkeypatch):
+    harness = Harness()
+    try:
+        control = harness.app.state.control
+        reason = "Production order lookup lost its upstream connection"
+        response = harness.client.post(PREFIX + "/incidents", headers=HUMAN,
+            json={"environment": "prd", "service": "order", "reason": reason})
+        assert response.status_code == 201
+        prd = response.json()["id"]
+        saved = "prd 주문 조회에서 연결 끊김을 확인했습니다."
+        pending = "Production request stopped before entering the handler"
+        retry = "Production handler connection did not answer"
+        previous = ((pending, "pending", 0, None), (retry, "running", 1, "old-lease"))
+        with control.store.transaction() as session:
+            row = session.get(DisplayReading, (prd, text_sha(reason)))
+            row.state, row.ko = "ready", saved
+            for passage, state, attempts, lease in previous:
+                session.add(DisplayReading(incident_id=prd, digest=text_sha(passage), passage=passage,
+                    state=state, attempts=attempts, lease=lease, created_at=harness.now, available_at=harness.now - 1))
+
+        harness.now += 1
+        dev_reason = "Development order lookup returned an error"
+        response = harness.client.post(PREFIX + "/incidents", headers=HUMAN,
+            json={"environment": "dev", "service": "order", "reason": dev_reason})
+        assert response.status_code == 201
+        active = AppConfig(target_namespaces=["dev"], historical_namespaces=["stg", "prd"])
+        monkeypatch.setattr("app.config.get_app_config", lambda: active)
+
+        calls = []
+        class Provider:
+            def complete(self, **args):
+                items = json.loads(args["prompt"].split("\n", 1)[1])
+                calls.append({item["text"] for item in items})
+                return SimpleNamespace(data={"items": [{"id": item["id"], "ko": saved} for item in items]})
+
+        assert readings.run_once(control, Provider)
+        assert not readings.run_once(control, Provider)
+        assert calls == [{dev_reason}]
+        view = control.operator_detail(prd)["data"]["display_readings"]
+        assert view["signal/reason"] == {"state": "ready", "ko": saved}
+        with control.store.read() as session:
+            for passage, state, attempts, lease in previous:
+                row = session.get(DisplayReading, (prd, text_sha(passage)))
+                assert (row.state, row.attempts, row.lease) == (state, attempts, lease)
+
+        active = AppConfig(target_namespaces=["dev", "prd"], historical_namespaces=["stg"])
+        assert readings.run_once(control, Provider)
+        assert calls[-1] == {pending, retry}
+    finally:
+        harness.close()
 
 
 class DisplayTests(unittest.TestCase):

@@ -6,6 +6,7 @@ import time
 from sqlalchemy import or_, select
 from .application.safety import fail, safe_source_path, scrub, sha, text_sha
 from .application.storage import Event, SourceInquiry
+from .environments import ACTIVE_ENVIRONMENTS
 from . import runlog
 
 JOB_PREFIX = 'probe_'
@@ -31,7 +32,7 @@ def read_source_evidence(iid, question_ko, code_refs, deadline, investigation_se
         return None
     with coordinator.sessions() as s:
         case=s.get(Incident,iid)
-        if not case or case.namespace not in ('dev','prd'):
+        if not case or case.namespace not in ACTIVE_ENVIRONMENTS or control.environment_paused(case.namespace):
             return None
         profile=control.catalog.profiles.get(case.workload)
         if not profile:
@@ -82,8 +83,10 @@ def read_source_evidence(iid, question_ko, code_refs, deadline, investigation_se
 def claim(control, actor):
     if (actor or {}).get('runner_role')!='source': return None
     now=control.clock()
+    paused = [env for env in ACTIVE_ENVIRONMENTS if control.environment_paused(env)]
     with control.store.transaction() as s:
         row=s.scalar(select(SourceInquiry).where(SourceInquiry.expires_at>now,
+            SourceInquiry.payload['environment'].as_string().not_in(paused),
             or_(SourceInquiry.state=='queued',(SourceInquiry.state=='leased') & (SourceInquiry.lease_until<=now)))
             .order_by(SourceInquiry.created_at).limit(1))
         if row is None: return None

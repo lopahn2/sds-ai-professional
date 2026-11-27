@@ -50,8 +50,9 @@ def test_named_rollback_and_denied_api_rights():
     assert binding["subjects"] == [{"kind": "ServiceAccount", "name": "rollback-controller",
                                      "namespace": "liveprobe-system"}]
     reader = find(items, "ClusterRole", "liveprobe-reader")
-    assert not any("pods/log" in rule["resources"] or any(v in rule["verbs"] for v in ("patch", "update"))
-                   or "secrets" in rule["resources"] for rule in reader["rules"])
+    # Pod logs are readable (get only, owner-approved 2026-11-26); nothing is writable and Secrets stay unreadable.
+    assert not any(any(v in rule["verbs"] for v in ("patch", "update")) or "secrets" in rule["resources"]
+                   or ("pods/log" in rule["resources"] and rule["verbs"] != ["get"]) for rule in reader["rules"])
     # P14 adds one namespace-scoped read-only binding, not a write identity.
     api_bindings = [o for o in items if o["kind"] == "RoleBinding"
                     and any(s.get("name") == "liveprobe" for s in o["subjects"])]
@@ -59,7 +60,11 @@ def test_named_rollback_and_denied_api_rights():
     assert api_bindings[0]["metadata"]["namespace"] == "liveprobe-target"
     assert api_bindings[0]["roleRef"]["kind"] == "Role"
     config_reader = find(items, "Role", api_bindings[0]["roleRef"]["name"], "liveprobe-target")
-    assert config_reader["rules"] == [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]}]
+    assert config_reader["rules"] == [
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]},
+        {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get"]},
+        {"apiGroups": ["autoscaling"], "resources": ["horizontalpodautoscalers"], "verbs": ["list"]},   # hpa_metrics
+    ]
     guard = find(items, "ValidatingAdmissionPolicy", "liveprobe-deny-target-writes")
     assert guard["spec"]["failurePolicy"] == "Fail"
     webhook = find(items, "ValidatingWebhookConfiguration", "rollback-controller-image-guard")["webhooks"][0]

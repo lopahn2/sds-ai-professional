@@ -122,14 +122,26 @@ def built(x):
     return x.service.get(c['id'])
 
 
-def test_fetch_patch_build_and_ordered_promotions(setup):
+def test_fetch_patch_build_and_promote_with_existing_stage_history(setup):
+    from app.change_models import ChangeRequest
+    from app.changes import ChangeError
+
     x = setup; c = built(x)
     assert c['status'] == 'built'
     assert c['source_files'][0] == {'path': 'app.py', 'size': 4, 'sha256': hashlib.sha256(b'bad\n').hexdigest()}
     assert x.planner.calls[0][0::2] == ('code_fixer', 'gpt-6.2-sol')
     assert 'ValueError' in x.planner.calls[0][1]
-    for stage in ('dev', 'stg', 'prd'):
+    for stage in ('dev', 'prd'):
         if stage == 'prd':
+            with pytest.raises(ChangeError, match='invalid_release_namespace'):
+                x.service.plan(c['id'], 'stg')
+            with pytest.raises(ChangeError, match='promotion_order_conflict'):
+                x.service.plan(c['id'], 'prd')
+            # Supply verification from a pre-retirement stage without executing any stg write.
+            with db.session() as s:
+                row = s.get(ChangeRequest, c['id'])
+                row.status = 'stg_verified'
+                row.stages = {**row.stages, 'stg': {'status': 'verified', 'new_image': c['build']['image']}}
             x.service.review(c['id'], {'repository': 'live-probe/payment', 'pr_number': 4,
                 'pr_url': 'https://github.com/live-probe/payment/pull/4', 'head_sha': 'b' * 40,
                 'state': 'MERGED', 'merge_sha': 'c' * 40, 'main_sha': 'c' * 40, 'review_completed': True,
@@ -142,7 +154,8 @@ def test_fetch_patch_build_and_ordered_promotions(setup):
         c = x.service.get(c['id'])
         assert c['status'] == stage + '_verified'
         assert c['stages'][stage]['verification']['exceptions']['count'] == 0
-    assert len(x.release.calls) == 3
+    assert [call[0] for call in x.release.calls] == ['dev', 'prd']
+    assert c['stages']['stg'] == {'status': 'verified', 'new_image': c['build']['image']}
     with db.session() as s:
         events = {a.event for a in s.scalars(select(AuditLog).where(AuditLog.incident_id == x.iid))}
         assert {'change_created', 'patch_generated', 'build_reported', 'promotion_confirmed', 'stage_verified'} <= events

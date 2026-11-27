@@ -38,10 +38,16 @@ class MemorySession:
         if isinstance(expr, BooleanClauseList):
             values = [self.match(c, row) for c in expr.clauses]
             return all(values) if expr.operator is operators.and_ else any(values)
+        if isinstance(row, (Action, WorkflowRun)) and expr.left.table is Incident.__table__:
+            row = self.get(Incident, row.incident_id)
+            if row is None:
+                return False
         left = getattr(row, expr.left.key)
         right = None if isinstance(expr.right, Null) else expr.right.value
         if expr.operator is operators.in_op: return left in right
+        if expr.operator is operators.not_in_op: return left not in right
         if expr.operator is operators.is_: return left is right
+        if expr.operator is operators.not_startswith_op: return isinstance(left, str) and not left.startswith(right)
         return expr.operator(left, right)
     def scalars(self, stmt):
         desc = stmt.column_descriptions[0]
@@ -69,7 +75,7 @@ def answer():
 
 
 def incident(status='open'):
-    return Incident(id=1, namespace='stg', workload='svc', status=status, title='합성 사건',
+    return Incident(id=1, namespace='dev', workload='svc', fingerprint='dev/svc', status=status, title='합성 사건',
                     signal_reasons=['ApplicationException'], created_at=datetime.now(timezone.utc), handoff={})
 
 
@@ -105,7 +111,7 @@ def test_rag_marker_alone_is_not_body_delivery_and_hidden_quote_is_not_cited():
 def test_restart_preserves_legacy_failed_status_and_marks_unknown_write_for_requery():
     inc = incident('acting')
     action = Action(id=8, incident_id=1, status='executing', type='rollout_undo',
-                    target='stg/Deployment/svc', params={}, after_state={'old': True})
+                    target='dev/Deployment/svc', params={}, after_state={'old': True})
     run = WorkflowRun(id=7, incident_id=1, status='running', snapshot={})
     memory = MemorySession(inc, action, run)
     engine = E.Engine(AppConfig(), Settings(background=False), None, None, None)
@@ -123,7 +129,7 @@ def test_restart_resumes_frozen_read_pipeline_without_recollecting_or_new_run():
     from app.runtime_resume import source_fingerprint
     inc = incident('analyzing')
     cfg = AppConfig()
-    frozen = json.loads(json.dumps(asdict(Bundle('stg', 'svc')), default=str))
+    frozen = json.loads(json.dumps(asdict(Bundle('dev', 'svc')), default=str))
     run = WorkflowRun(id=7, incident_id=1, status='running', phase='analysis', snapshot={
         'collection': frozen, 'execution': {'config': cfg.model_dump(mode='json'),
             'code_sha256': source_fingerprint(), 'model_snapshot': None}})
@@ -340,7 +346,7 @@ def test_resume_with_changed_code_fails_closed_before_any_transport():
     cfg = AppConfig()
     inc = incident('analyzing')
     run = WorkflowRun(id=7, incident_id=1, status='resume_pending', snapshot={
-        'collection': asdict(Bundle('stg', 'svc')), 'execution': {
+        'collection': asdict(Bundle('dev', 'svc')), 'execution': {
             'code_sha256': '0' * 64, 'config': cfg.model_dump(mode='json')}})
     memory = MemorySession(inc, run)
     kube, provider = Mock(), Mock()
@@ -403,7 +409,7 @@ def test_existing_interpret_assertions_with_budget_aware_session_transport(monke
 
 def test_restart_does_not_resume_read_checkpoint_when_any_action_was_already_proposed():
     inc = incident('analyzing')
-    run = WorkflowRun(id=7, incident_id=1, status='running', snapshot={'collection': asdict(Bundle('stg', 'svc'))})
+    run = WorkflowRun(id=7, incident_id=1, status='running', snapshot={'collection': asdict(Bundle('dev', 'svc'))})
     memory = MemorySession(inc, run, Action(id=8, incident_id=1, status='proposed'))
     engine = E.Engine(AppConfig(), Settings(background=False), None, None, None)
     with patch.object(E.db, 'session', memory.session):

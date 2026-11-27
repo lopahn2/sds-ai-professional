@@ -40,6 +40,20 @@ def totals(rows):
             'errors':sum(r['status']=='error' for r in rows),'executed_tests':rows}
 
 
+def java_surefire_report(directory, result, phase):
+    rows = []
+    for path in sorted(directory.glob('TEST-*.xml')):
+        if path.is_symlink():
+            raise ValueError('unsafe_test_report')
+        rows.extend(junit_rows(path.read_text(), 'java', phase))
+    if not rows and result.returncode == 1 and re.search(
+        r'^\[ERROR\] Failed to execute goal [\w.:-]*maven-compiler-plugin:[\w.-]+:testCompile\b',
+        result.stdout + '\n' + result.stderr, re.M,
+    ):
+        raise ValueError('java_test_compile_failed')
+    return {**totals(rows), 'exit_code': result.returncode, 'phase': phase}
+
+
 def test_file(identifier,language):
     if language=='java':
         m=re.fullmatch(r'([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)#([\w]+)',identifier)

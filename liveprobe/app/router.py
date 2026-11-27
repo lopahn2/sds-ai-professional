@@ -9,8 +9,10 @@ from typing import Any, Callable
 
 from .config import AppConfig
 from .evidence import Bundle
+from .incidents import PROXY_LDS_REJECTED
 from .k8s import parse_ts
 from .remediation import remediation_hint  # public deterministic fallback
+from .route_latency import METRIC as ROUTE_LATENCY_METRIC
 
 LEVEL_ORDER = {"SIMPLE": 0, "NORMAL": 1, "COMPLEX": 2, "HIGH_RISK": 3}
 WORKFLOW = {"SIMPLE": "simple_group", "NORMAL": "normal_group", "COMPLEX": "complex_group", "HIGH_RISK": "high_risk_group"}
@@ -49,6 +51,9 @@ def _metric_latency_signal(metrics: dict) -> bool:
     """Observed slowness or pool pressure. The keys are present for every incident, so key presence alone is not a signal."""
     m = metrics or {}
     if any((_num(v) or 0) > LATENCY_SIGNAL_MS for v in (m.get("mean_latency_ms_1m") or {}).values()):
+        return True
+    if any(isinstance(v, dict) and (_num(v.get("slow_requests")) or 0) >= 3
+           for v in (m.get(ROUTE_LATENCY_METRIC) or {}).values()):
         return True
     if any((_num(v) or 0) > 0 for k in ("db_pool_pending_threads", "db_pool_acquire_timeouts_5m")
            for v in (m.get(k) or {}).values()):
@@ -147,6 +152,9 @@ def extract_features(b: Bundle, recent_minutes: int = 15, now: datetime | None =
                  or any(c.get("last_terminated_reason") == "OOMKilled" or (c.get("restart_count") or 0) > 0
                         for p in b.pods for c in p["containers"]))),
         "ready_pods": len(ready_pods),
+        "replica_account_failure": dep.get("replica_account_failure"),
+        **({"rollout_readiness_failure": dep["rollout_readiness_failure"]} if dep.get("rollout_readiness_failure") else {}),
+        **({"csi_registration_failure": dep["csi_registration_failure"]} if dep.get("csi_registration_failure") else {}),
         "dependent_callers_failing": sorted(set(callers_failing) | set(caller_errors_in_logs)),
         "evidence_errors": sorted({i.source for i in b.items if i.error}),
         "evidence_sources": evidence_sources,
@@ -182,6 +190,8 @@ def rules_decide(f: dict[str, Any]) -> tuple[str, str]:
         if f["dependent_callers_failing"]:
             why.append(f"dependent callers failing: {', '.join(f['dependent_callers_failing'])}")
         return "HIGH_RISK", "; ".join(why) + " -> traffic-routing change with cross-service blast radius (non-overridable)."
+    if PROXY_LDS_REJECTED in f.get("signal_reasons", ()):
+        return "COMPLEX", "Envoy 리스너 설정 거부가 관측되어 프록시 버전과 변경 이력, 영향 경로를 조사합니다."
     if (f["image_pull_failing"] or f["crashloop"]) and f["recent_rollout"] and (
         f["affected_workload_count"] == 1 or (f["ready_pods"] > 0 and not f["service_has_no_endpoints"])
     ):
@@ -254,7 +264,8 @@ def _handoff(f: dict, reason: str, cfg: AppConfig) -> Decision:
 
 
 def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] | None = None,
-           cfg: AppConfig | None = None, signal_reasons: list[str] | None = None) -> Decision:
+           cfg: AppConfig | None = None, signal_reasons: list[str] | None = None, *,
+           allow_authority_shortcut: bool = True) -> Decision:
     cfg = cfg or AppConfig()
     try:
         f = extract_features(b, recent_minutes)
@@ -265,10 +276,14 @@ def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] |
         f["latency_signal"] |= any("latency" in s.lower() or "slow" in s.lower() or "pool" in s.lower()
                                    for s in f["signal_reasons"])
         level, why = rules_decide(f)
+        error_logs = any(any(word in line.lower() for word in ('error', 'exception', 'traceback', 'failed'))
+                         for line in b.logs)
         direct_failure = bool((f.get('http_5xx_rate_per_s') or 0) > 0 or f['waiting_reasons'] or observed_oom or observed_latency
+                              or f.get('replica_account_failure') or f.get('rollout_readiness_failure')
+                              or f.get('csi_registration_failure')
                               or f['service_has_no_endpoints'] or f['dependent_callers_failing']
-                              or any(any(word in line.lower() for word in ('error', 'exception', 'traceback', 'failed'))
-                                     for line in b.logs))
+                              or PROXY_LDS_REJECTED in f['signal_reasons']
+                              or error_logs)
         complete = bool(b.deployment and b.pods and b.service is not None
                         and f.get('service_backend_state') == 'ready'
                         and not (set(f['evidence_errors']) & CRITICAL_SOURCES))
@@ -285,13 +300,60 @@ def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] |
         return _handoff({**f, 'reason_code': 'workload_evidence_missing'}, "deployment/pod evidence missing; operator handoff", cfg)
     if level != 'HIGH_RISK' and not b.items and b.deployment is None and not b.pods and b.service is None:
         return _handoff({**f, 'reason_code': 'no_routing_evidence'}, "no routing evidence; operator handoff", cfg)
+    if (allow_authority_shortcut and level != 'HIGH_RISK' and f['signal_reasons'] == ['ReplicaCreationFailed']
+            and (f.get('replica_account_failure') or {}).get('reason') == 'service_account_missing'
+            and f['ready_pods'] >= (b.deployment or {}).get('replicas', 1)
+            and not (f['waiting_reasons'] or f['recent_instability'] or f['oom_killed'] or f['latency_signal']
+                     or f['dependent_callers_failing'] or (f.get('http_5xx_rate_per_s') or 0) > 0 or error_logs)
+            and (b.service is None or f['service_backend_state'] == 'ready')):
+        reason = ('현재 배포의 새 복제본은 참조한 서비스 계정이 없어 생성되지 않았습니다. '
+                  '기존 복제본은 준비 상태이며 서비스 계정 참조 변경은 운영자 조치가 필요합니다.')
+        return Decision('SIMPLE', WORKFLOW['SIMPLE'], {**f, 'reason_code': 'service_account_authority'},
+                        reason, None, 'rules_authority_boundary', policy={'handoff_only': True, 'selected_reason': reason})
+    if allow_authority_shortcut and level != 'HIGH_RISK' and f['signal_reasons'] == ['ProgressDeadlineExceeded']:
+        from .rollout_readiness import READINESS_PATH_AUTHORITY
+        proof = f.get('rollout_readiness_failure') or {}
+        observed = parse_ts(proof.get('observed_at'))
+        if (proof.get('reason') == READINESS_PATH_AUTHORITY and observed and observed.tzinfo
+                and 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 120
+                and not (f['waiting_reasons'] or set(f['recent_instability']) - {'event:Unhealthy'}
+                         or f['oom_killed'] or f['latency_signal'] or f['dependent_callers_failing']
+                         or (f.get('http_5xx_rate_per_s') or 0) > 0 or error_logs
+                         or 'k8s_event' in f['evidence_errors'])
+                and (b.service is None or f['service_backend_state'] == 'ready')):
+            reason = ('이미지가 같은 새 리비전에서 준비 상태 확인 경로만 달라졌고 새 Pod는 HTTP 404를 반환합니다. '
+                      '이전 리비전은 준비 상태이며 경로 수정에는 운영자 확인이 필요합니다.')
+            return Decision('SIMPLE', WORKFLOW['SIMPLE'], {**f, 'reason_code': READINESS_PATH_AUTHORITY},
+                            reason, None, 'rules_authority_boundary',
+                            policy={'handoff_only': True, 'selected_reason': reason})
+    if allow_authority_shortcut and level != 'HIGH_RISK' and f['signal_reasons'] == ['FailedMount']:
+        from .workload_signals import CSI_REGISTRATION_AUTHORITY
+
+        proof = f.get('csi_registration_failure') or {}
+        observed = parse_ts(proof.get('observed_at'))
+        if (proof.get('reason') == CSI_REGISTRATION_AUTHORITY and observed
+                and 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 120
+                and [p.get('uid') for p in b.pods] == [proof.get('pod_uid')] and f['ready_pods'] == 0
+                and not (set(f['recent_instability']) - {'event:FailedMount'} or f['oom_killed']
+                         or f['latency_signal'] or f['dependent_callers_failing'] or error_logs
+                         or (f.get('http_5xx_rate_per_s') or 0) > 0 or 'k8s_event' in f['evidence_errors'])
+                and (b.service is None or (f['service_has_no_endpoints']
+                     and b.service.get('matching_pods') == [proof.get('pod')]))):
+            reason = (f"{proof['node']} 노드의 kubelet이 CSI 드라이버 {proof['driver']}의 미등록을 기록했습니다. "
+                      f"볼륨 {proof['persistent_volume']}을 마운트할 수 없어 새 Pod가 시작되지 않습니다. "
+                      "노드의 스토리지 드라이버 등록은 운영자 조치가 필요합니다.")
+            return Decision('SIMPLE', WORKFLOW['SIMPLE'], {**f, 'reason_code': CSI_REGISTRATION_AUTHORITY},
+                            reason, None, 'rules_authority_boundary',
+                            policy={'handoff_only': True, 'selected_reason': reason})
     if level != 'HIGH_RISK' and f['evidence_state'] in ('currently_healthy', 'insufficient'):
         reason = ('현재 건강 상태와 최초 증상 해소를 새 관측으로 다시 확인합니다.'
                   if f['evidence_state'] == 'currently_healthy' else '직접 근거가 부족하여 새 관측 후 진단을 계속합니다.')
         return Decision(level, WORKFLOW[level], f, reason, None, 'evidence_state',
                         policy={**score_models(level, cfg), 'recheck_required': True, 'selected_reason': reason})
     out = None
-    if llm_classify is not None:
+    # The classifier cannot change a deterministic safety boundary. The high-risk
+    # workflow still prepares the operator briefing and verifies its evidence.
+    if llm_classify is not None and level != "HIGH_RISK":
         from .evidence import compact_summary
         prompt = ROUTER_PROMPT.format(features=json.dumps(f, default=str),
                                       evidence=json.dumps(compact_summary(b), default=str)[:6000],
@@ -322,10 +384,7 @@ def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] |
             level = max((level, 'NORMAL'), key=lambda value: LEVEL_ORDER[value])
             return Decision(level, WORKFLOW[level], f, why + ' Classifier recovery exhausted; rules floor retained.',
                             None, 'rules_fallback', policy={**score_models(level, cfg), 'classifier_attempts': classifier_attempts})
-        if level == "HIGH_RISK":
-            why += (f" LLM agrees: {out['rationale'][:300]}" if out["level"] == level else
-                    f" LLM suggested {out['level']}; rules win for HIGH_RISK.")
-        elif out["level"] == "HIGH_RISK":
+        if out["level"] == "HIGH_RISK":
             # Policy C: only the deterministic rules may declare HIGH_RISK (protected resources, routing faults). The LLM may
             # still raise up to COMPLEX for deeper analysis, but it cannot take away automatic handling by itself.
             if level != "COMPLEX":
@@ -344,6 +403,9 @@ def decide(b: Bundle, recent_minutes: int, llm_classify: Callable[[str], dict] |
         policy = score_models(level, cfg)
     except (ValueError, KeyError, TypeError) as e:
         return _handoff(f, f"model policy unavailable ({type(e).__name__}); operator handoff", cfg)
+    if level == "HIGH_RISK":
+        return Decision(level, WORKFLOW[level], f, why, None, "rules",
+                        policy={**policy, "classifier_skipped": "deterministic_high_risk"})
     return Decision(level, WORKFLOW[level], f, why, out["confidence"] if out else 1.0,
                     "rules+llm" if out else "rules", llm=out, policy=policy)
 

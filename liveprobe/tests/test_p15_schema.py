@@ -1,4 +1,5 @@
 """P15 shared schema: interpretation cache, operator commands, steering intent (migration 0008)."""
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect, text
@@ -7,10 +8,11 @@ from conftest import ROOT, needs_db
 
 
 @needs_db
+@pytest.mark.parametrize("db_url", ["0008"], indirect=True)
 def test_0008_adds_p15_tables_and_is_reversible(db_url):
     from app import db
     with db.engine().connect() as c:
-        assert c.execute(text("select version_num from alembic_version")).scalar_one() == __import__("alembic.script", fromlist=["ScriptDirectory"]).ScriptDirectory(str(ROOT / "alembic")).get_current_head()
+        assert c.execute(text("select version_num from alembic_version")).scalar_one() == "0008"
     insp = inspect(db.engine())
     assert {"interpretations", "operator_commands"} <= set(insp.get_table_names())
     cols = {c["name"] for c in insp.get_columns("operator_commands")}
@@ -28,9 +30,9 @@ def test_0008_adds_p15_tables_and_is_reversible(db_url):
     insp = inspect(db.engine())
     assert "operator_commands" not in insp.get_table_names()
     assert "intent" not in {c["name"] for c in insp.get_columns("operator_messages")}
-    db.run_migrations(db_url)
+    command.upgrade(cfg, "0008")
     with db.engine().connect() as c:
-        assert c.execute(text("select version_num from alembic_version")).scalar_one() == __import__("alembic.script", fromlist=["ScriptDirectory"]).ScriptDirectory(str(ROOT / "alembic")).get_current_head()
+        assert c.execute(text("select version_num from alembic_version")).scalar_one() == "0008"
 
 
 @needs_db

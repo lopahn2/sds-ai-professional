@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from app import db
-from app.actions import (TYPED, Denied, SafeActionKube, TargetConflict, data_hash, execute_typed, propose_typed,
+from app.actions import (TYPED, Denied, SafeActionKube, TargetConflict, apply, data_hash, execute_typed, propose_typed,
                          stricter, typed_policy, validate)
 from app.config import AppConfig, ApprovedConfigVersion
 from app.models import Action, AuditLog, Incident, Setting
@@ -100,6 +100,8 @@ class ExecKube(FakeKube):
         self.lock = threading.Lock()
         for n in ("inventory", "order"):
             self.deployments[n] = ready_dep(n)
+            self.deployments[n]["spec"]["template"]["spec"]["containers"][0]["envFrom"] = [
+                {"configMapRef": {"name": f"{n}-config"}}]
         self.replicasets = [{"metadata": {"name": "inventory-aaa", "ownerReferences": [
             {"kind": "Deployment", "name": "inventory", "controller": True}]}}]
         p = mk_pod("inventory-aaa-1", "inventory", "inventory-aaa")
@@ -343,6 +345,105 @@ def approve(aid):
 def run(k, aid, c=None):
     return execute_typed(db.session, c or cfg(), k, aid, "test", sleep=lambda _: None, verify_timeout_s=0,
                          now=lambda: "2026-09-29T12:00:00Z")
+
+
+def test_configmap_restore_detects_consumer_replacement_before_first_write():
+    kube = ExecKube()
+    restore = validate(cfg(), kube, "configmap_restore", NS, "ConfigMap", "inventory-config", {"version": V1})
+    kube.deployments["inventory"]["metadata"]["uid"] = "replacement"
+    with pytest.raises(TargetConflict, match="consumer identity changed"):
+        apply(kube, restore)
+    assert not kube.writes
+
+
+def test_configmap_restore_rejects_a_deployment_that_does_not_consume_it():
+    kube = ExecKube()
+    del kube.deployments["inventory"]["spec"]["template"]["spec"]["containers"][0]["envFrom"]
+    with pytest.raises(Denied, match="does not consume"):
+        validate(cfg(), kube, "configmap_restore", NS, "ConfigMap", "inventory-config", {"version": V1})
+    assert not kube.writes
+
+
+@needs_db
+def test_configmap_restore_does_not_restart_replacement_after_config_write(db_url):
+    kube = ExecKube()
+    original_patch = kube.patch_configmap_json
+
+    def replace_consumer(ns, name, ops):
+        result = original_patch(ns, name, ops)
+        kube.deployments["inventory"]["metadata"]["uid"] = "replacement"
+        return result
+
+    with db.session() as session:
+        inc = mk_incident(session)
+        action_id = propose_typed(session, cfg(), kube, inc, "SIMPLE", "configmap_restore", "ConfigMap",
+                                  "inventory-config", {"version": V1}).id
+    kube.patch_configmap_json = replace_consumer
+    result = run(kube, action_id)
+    assert result.status == "indeterminate"
+    assert [write[1] for write in kube.writes] == ["ConfigMap", "ConfigMap"]
+    assert kube.configmaps["inventory-config"]["data"] == LIVE_BAD
+
+
+@needs_db
+def test_configmap_restore_can_execute_preexisting_proposal_bound_by_its_snapshot(db_url):
+    kube = ExecKube()
+    with db.session() as session:
+        inc = mk_incident(session)
+        action = propose_typed(session, cfg(), kube, inc, "SIMPLE", "configmap_restore", "ConfigMap",
+                               "inventory-config", {"version": V1})
+        old_fingerprint = {k: v for k, v in action.params["proposal_fingerprint"].items() if not k.startswith("consumer_")}
+        action.params = {**action.params, "proposal_fingerprint": old_fingerprint}
+        action_id = action.id
+    assert run(kube, action_id).status == "succeeded"
+
+
+@needs_db
+def test_configmap_restore_recovers_real_catalog_requests_in_isolated_executor_lab(db_url, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT))
+    from evaluation.live_repair import CatalogTrial, SETTING, prepare_trial
+
+    trial = CatalogTrial()
+    settings = cfg()
+    version = "catalog-config-v1"
+    approved = {SETTING: "ko"}
+    settings.safe_actions.configmap_versions["catalog-config"] = [ApprovedConfigVersion(name=version, sha256=data_hash(approved))]
+
+    class CatalogKube(ExecKube):
+        def _reconcile(self, name):
+            trial.setting = self.configmaps["catalog-config"]["data"].get(SETTING)
+            trial.restart(fault=True)
+            self.healthy = trial.probe()["contract_ok"]
+            super()._reconcile(name)
+
+    try:
+        initial = prepare_trial(trial)
+        assert initial["fault_before"]["transport"] == "service_not_listening"
+        kube = CatalogKube()
+        kube.configmaps["catalog-config"] = {"metadata": {"name": "catalog-config", "uid": "catalog-cm",
+                                                          "resourceVersion": "80", "labels": {"app": "catalog", **OWN}}, "data": {}}
+        kube.configmaps[version] = {"metadata": {"name": version, "uid": "catalog-cmv", "labels": OWN},
+                                    "immutable": True, "data": approved}
+        kube.deployments["catalog"] = ready_dep("catalog")
+        kube.deployments["catalog"]["spec"]["template"]["spec"]["containers"][0]["envFrom"] = [
+            {"configMapRef": {"name": "catalog-config"}}]
+        with db.session() as session:
+            inc = mk_incident(session, workload="catalog")
+            action_id = propose_typed(session, settings, kube, inc, "SIMPLE", "configmap_restore", "ConfigMap",
+                                      "catalog-config", {"version": version}).id
+        result = run(kube, action_id, settings)
+        assert result.status == "succeeded", result.reason
+        assert trial.fault_enabled and trial.recovery_checks() == [
+            {"ready": 200, "business": 200, "contract_ok": True},
+            {"ready": 200, "business": 200, "contract_ok": True},
+        ]
+        assert [write[1] for write in kube.writes] == ["ConfigMap", "Deployment"]
+        with db.session() as session:
+            action = session.get(Action, action_id)
+            assert all(action.after_state["checks"].values())
+            assert events(session, action_id)[-3:] == ["action_executing", "action_applied", "action_verified"]
+    finally:
+        trial.close()
 
 
 @pytest.mark.parametrize("action_type,kind,name,params", POSITIVE)
@@ -718,7 +819,7 @@ def test_executor_rbac_is_least_privilege_and_not_in_base():
     assert vap["spec"]["failurePolicy"] == "Fail"
     base = _render(ROOT / "deploy/base")
     assert not any(o["metadata"].get("name", "").startswith("safe-action") for o in base)
-    # P14 permits exactly one ConfigMap read binding; all writes remain forbidden.
+    # The API uses one namespace-scoped binding for ConfigMap, PVC and HPA reads.
     bindings = [o for o in base if o["kind"] == "RoleBinding"
                 and any(sj.get("name") == "liveprobe" for sj in o.get("subjects", []))]
     assert [b["metadata"]["name"] for b in bindings] == ["liveprobe-config-reader"]
@@ -726,4 +827,8 @@ def test_executor_rbac_is_least_privilege_and_not_in_base():
     assert binding["metadata"]["namespace"] == NS and binding["roleRef"]["kind"] == "Role"
     reader = next(o for o in base if o["kind"] == "Role" and o["metadata"]["namespace"] == NS
                   and o["metadata"]["name"] == binding["roleRef"]["name"])
-    assert reader["rules"] == [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]}]
+    assert reader["rules"] == [
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]},
+        {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get"]},
+        {"apiGroups": ["autoscaling"], "resources": ["horizontalpodautoscalers"], "verbs": ["list"]},
+    ]

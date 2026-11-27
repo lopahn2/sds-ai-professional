@@ -111,13 +111,26 @@ def _repair_prompt(prompt: str, errors: list[str]) -> str:
             "to pass validation. This is the only format-repair retry for this role.")
 
 
+def _image_pull_observation_rule(state: WFState) -> str:
+    if not (state.get("features") or {}).get("image_pull_failing"):
+        return ""
+    return (
+        "Keep the leading candidate to the narrowest evidenced cause of this rollout failure. "
+        "If the Pod cannot pull the configured image, state that operational failure and cite it. "
+        "An ambiguous registry response that permits either a missing repository or missing access "
+        "does not establish which occurred. Keep that registry-level cause open unless direct evidence "
+        "distinguishes it. Review the candidate as written and copy its exact cause in supporting quotes.\n"
+    )
+
+
 def build_simple_graph(run_agent: RunAgent):
     def analyst(state: WFState) -> WFState:
         prompt = (
             "Role: signal_analyst. Analyse this Kubernetes incident from the logs and evidence, find the cause and "
             "decide whether ONE Kubernetes action fixes it (rollback, restart, pod delete, scale, memory limit, config "
             "restore). Use next_action='handoff' if unsure, if the action would not fix the cause, or if the cause is in "
-            "application code or data rather than Kubernetes.\n" + OUTPUT_RULES + "\n\n" + _ctx(state))
+            "application code or data rather than Kubernetes.\n" + _image_pull_observation_rule(state)
+            + OUTPUT_RULES + "\n\n" + _ctx(state))
         r = run_agent("signal_analyst", prompt)
         errors = _citation_errors(state, r.output) if r.ok else []
         if errors:
@@ -136,7 +149,8 @@ def build_simple_graph(run_agent: RunAgent):
             "Role: result_verifier. Independently verify the analyst's conclusion against the evidence. "
             "Look for counter-evidence (e.g. is the previous revision healthy? would the proposed action fix the "
             "cause? are other services affected?). Repeat the SAME next_action and `action` only if you agree it is "
-            "correct and safe; otherwise 'handoff'.\n" + OUTPUT_RULES + "\n\nAnalyst output:\n"
+            "correct and safe; otherwise 'handoff'.\n" + _image_pull_observation_rule(state)
+            + OUTPUT_RULES + "\n\nAnalyst output:\n"
             + json.dumps(state.get("analyst"), default=str)
             + "\nCandidate indexes to review (0-based; preserve these exact mappings):\n"
             + json.dumps(indexed, ensure_ascii=False) + "\n\n" + _ctx(state))
@@ -174,7 +188,12 @@ def build_simple_graph(run_agent: RunAgent):
         conf = min(a.get("confidence", 0), v.get("confidence", 0))
         pre = precheck(pa, _features(state), workload, state.get("allowlist") or ["rollout_undo"]) if agree else None
         if agree and conf >= thr and pre and pre["propose"]:
+            diagnosis = {**_handoff(v), 'workflow_status': 'verified', 'confidence': conf,
+                         'root_cause_candidates': [a['root_cause_candidates'][i] for i in acceptance['candidate_indexes']],
+                         'counter_evidence': acceptance['counter_evidence'],
+                         'verification': {'verdict': v.get('verdict'), 'candidate_verdicts': v.get('candidate_verdicts')}}
             return {"outcome": "propose_action", "action": pa,
+                    "handoff": diagnosis,
                     "reason": f"analyst and verifier agree on {pa['type']} (min confidence {conf:.2f} >= {thr})"}
         # A supported code diagnosis is a verified handoff from the K8s domain,
         # not a failed Kubernetes action. The unified coordinator may continue it.

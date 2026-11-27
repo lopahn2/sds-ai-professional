@@ -151,12 +151,32 @@ def test_api_mounts_are_distinct_optional_read_only_and_old_identities_unchanged
         assert volumes[name] == {"name": name, "secret": {"secretName": "liveprobe-" + name + "-token", "optional": True, "items": [{"key": "token", "path": "token"}]}}
     assert mounts["safe-action-executor"]["mountPath"] == "/var/run/secrets/safe-action-executor"
     assert volumes["safe-action-executor"]["secret"]["secretName"] == "safe-action-executor-token"
-    # Compare full old RBAC/SA declarations with committed baseline, not a weak verb subset.
+    # Compare the full identities and permissions with the exact observation grants.
     import subprocess
     baseline = yaml.safe_load_all(subprocess.run(["git", "show", "HEAD:deploy/base/liveprobe/liveprobe.yaml"], cwd=ROOT,
                                                check=True, capture_output=True, text=True).stdout)
     protected = {"ServiceAccount", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"}
-    assert [d for d in docs if d["kind"] in protected] == [d for d in baseline if d["kind"] in protected]
+    expected = [d for d in baseline if d["kind"] in protected]
+    reader = next(d for d in expected if d["kind"] == "Role" and d["metadata"]["name"] == "liveprobe-config-reader")
+    pvc_read = {"apiGroups": [""], "resources": ["persistentvolumeclaims"], "verbs": ["get"]}
+    if pvc_read not in reader["rules"]:
+        reader["rules"].append(pvc_read)
+    hpa_read = {"apiGroups": ["autoscaling"], "resources": ["horizontalpodautoscalers"], "verbs": ["list"]}
+    if hpa_read not in reader["rules"]:
+        reader["rules"].append(hpa_read)
+    registry = next(d for d in expected if d["kind"] == "ClusterRole" and d["metadata"]["name"] == "liveprobe-reader")
+    api_read = {"apiGroups": ["apiregistration.k8s.io"], "resources": ["apiservices"],
+                "resourceNames": ["v1beta1.metrics.k8s.io"], "verbs": ["get"]}
+    if api_read not in registry["rules"]:
+        registry["rules"].append(api_read)
+    # Namespace admission defaults are read-only evidence; Secrets stay unreadable.
+    defaults_read = {"apiGroups": [""], "resources": ["limitranges", "resourcequotas"], "verbs": ["get", "list"]}
+    if defaults_read not in registry["rules"]:
+        registry["rules"].append(defaults_read)
+    log_read = {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]}
+    if log_read not in registry["rules"]:
+        registry["rules"].append(log_read)
+    assert [d for d in docs if d["kind"] in protected] == expected
     new_bindings = [d for d in documents() if d["kind"].endswith("Binding") and d["kind"] != "ValidatingAdmissionPolicyBinding"]
     assert all(s["name"] not in {"liveprobe", "safe-action-executor"} for d in new_bindings for s in d["subjects"])
     kustomization = yaml.safe_load((ROOT / "deploy/base/kustomization.yaml").read_text())

@@ -19,6 +19,8 @@ class RoleModel(BaseModel):
 
 LLM_PROVIDERS = ("codex_cli", "claude_cli", "openai_api", "anthropic_api")
 
+MIN_ENDPOINT_MISSING_SECONDS = 600
+
 
 # OpenAI tier lineup (2026-11-18): low = gpt-6-luna, mid = gpt-6.2-sol, high = gpt-6.2-astra.
 # 2026-10-18..11-17 the mid/high tiers were gpt-6.1-sol / gpt-6-astra; before 2026-10-18 gpt-5.6-terra / gpt-6-sol
@@ -247,6 +249,7 @@ class SafeActionPolicy(BaseModel):
     memory_limit_max_mi: int = Field(default=768, ge=16)
     # live ConfigMap name -> approved immutable versions. Empty => configmap_restore always denied.
     configmap_versions: dict[str, list[ApprovedConfigVersion]] = Field(default_factory=dict)
+    kw03_ready_pv: str | None = None
 
     @model_validator(mode="after")
     def _bounds(self) -> "SafeActionPolicy":
@@ -433,7 +436,9 @@ class AppConfig(BaseModel):
     merge_window_seconds: int = 600
     close_cooldown_seconds: int = 90
     endpoint_poll_interval_seconds: int = 15
-    endpoint_grace_seconds: int = 30
+    endpoint_grace_seconds: int = MIN_ENDPOINT_MISSING_SECONDS
+    workload_state_signals_enabled: bool = False
+    workload_state_signal_workloads: set[str] | None = None
     recent_rollout_minutes: int = 15
     rollout_verify_timeout_seconds: int = 120
     min_confidence: float = 0.6
@@ -471,6 +476,9 @@ class Settings(BaseSettings):
     secret_writer_token_file: str = "/var/run/secrets/secret-writer/token"
     prometheus_url: str = "http://prometheus.liveprobe-observability.svc:9090"
     loki_url: str = "http://loki.liveprobe-observability.svc:3100"
+    admission_audit_log_file: str | None = None
+    node_startup_log_file: str | None = None
+    node_startup_targets: dict[str, str] = Field(default_factory=dict)
 
     # Named deployment-approved alternative origins for the existing read-only adapters.
     observation_locations: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -501,6 +509,7 @@ class Settings(BaseSettings):
 
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_cache_dir: str = "/opt/models"
+    embedding_idle_seconds: int = Field(default=300, ge=0)
     runbooks_dir: str = str(Path(__file__).resolve().parent.parent / "runbooks")
 
     def sqlalchemy_url(self) -> str:

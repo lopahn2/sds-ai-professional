@@ -8,7 +8,7 @@ from ..environments import ACTIVE_RELEASE_PROTOCOLS, QA_RELEASE_PROTOCOL, RELEAS
 from .contracts import Target
 from .safety import fail, sha, test_file
 from .storage import Job
-from .result_evidence import error_code, tests_evidence, target_rows, verification_rows, OUTCOMES
+from .result_evidence import error_code, post_patch_failures, report_test_file, tests_evidence, target_rows, verification_rows, OUTCOMES
 from .qa_release import QAReleaseControl
 
 HEX = re.compile(r'^[a-f0-9]{64}$')
@@ -81,7 +81,7 @@ class ReleaseControl(QAReleaseControl):
                 return None
             test_id, file = row.get('id'), row.get('file')
             status, phase = row.get('status'), row.get('phase')
-            if (not isinstance(test_id, str) or not isinstance(file, str) or test_file(test_id) != file or
+            if (not isinstance(test_id, str) or not isinstance(file, str) or report_test_file(test_id) != file or
                 status not in ('passed', 'failed', 'skipped', 'error') or phase not in ('before', 'after')):
                 return None
             if (test_id, phase) in observed:
@@ -106,11 +106,16 @@ class ReleaseControl(QAReleaseControl):
                   'accepted': False, 'rejection_code': 'test_build_evidence_invalid',
                   'error_code': error_code(result.get('error')), 'tests': tests_evidence(tests)}
         self.data(incident, 'test_build', record)
+        revisions = incident.document['data'].get('patch_revisions', [])
+        failure_code = record['error_code']
+        failed_tests = []
+        if failure_code == 'after_not_passed' and artifact is None and not revisions:
+            failed_tests = post_patch_failures(record['tests'], patch['tests_added'])
         # Revisions concern a local patch only. No deployment or unknown external write is replayed.
         repairable = {'regression_not_failed', 'regression_not_passed', 'before_not_reproduced',
                       'after_tests_failed', 'patch_context_mismatch', 'hunk_count_mismatch',
                       'added_test_method_required', 'added_regression_required', 'hunk_offset',
-                      'missing_hunk', 'invalid_hunk', 'source_test_report_missing'}
+                      'missing_hunk', 'invalid_hunk', 'source_test_report_missing', 'java_test_compile_failed'}
         if (result.get('ok') is False and result.get('write_outcome') == 'not_written'
             and record['error_code'] in ('lease_lost', 'runner_execution_failed') and
             not incident.document['data'].get('isolated_build_retry')):
@@ -118,22 +123,25 @@ class ReleaseControl(QAReleaseControl):
             self.enqueue(session, incident, 'test_build', copy.deepcopy(job.payload))
             self.transition(session, incident, 'test_build_queued', {'reason':'isolated_build_retry'})
             return
-        if result.get('ok') is False and result.get('write_outcome') == 'not_written' and record['error_code'] in repairable:
-            revisions = list(incident.document['data'].get('patch_revisions', []))
-            if len(revisions) < 1:
-                revisions.append({'job_id': job.id, 'reason': record['error_code'], 'diff_sha256': patch['diff_sha256']})
-                self.data(incident, 'patch_revisions', revisions)
-                self.transition(session, incident, 'analysis_queued', {'reason': 'patch_revision_requested'})
-                return
+        if (result.get('ok') is False and result.get('write_outcome') == 'not_written' and not revisions
+                and (failure_code in repairable or failed_tests)):
+            revision = {'job_id': job.id, 'reason': failure_code, 'diff_sha256': patch['diff_sha256']}
+            if failed_tests:
+                revision['failed_tests'] = failed_tests
+            self.data(incident, 'patch_revisions', [revision])
+            self.transition(session, incident, 'analysis_queued', {'reason': 'patch_revision_requested'})
+            return
         if not isinstance(tests, dict) or not isinstance(artifact, dict):
             return self.stop(session, incident, 'test_build_evidence_invalid')
         required = ('image', 'source_snapshot_id', 'diff_sha256', 'source_tree_sha256', 'build_receipt_sha256')
         executed = self.test_rows(tests.get('executed_tests'), patch['tests_added'])
+        required_after = {row['id'] for row in revisions[-1].get('failed_tests', [])} if revisions else set()
+        passed_after = {row['id'] for row in executed if row['phase'] == 'after' and row['status'] == 'passed'} if required_after and executed else set()
         if (result.get('ok') is not True or tests.get('before_failed') is not True or
             tests.get('after_passed') is not True or tests.get('regression_executed') is not True or
             type(tests.get('total')) is not int or tests['total'] < 1 or
             type(tests.get('failed')) is not int or tests['failed'] != 0 or
-            executed is None or
+            executed is None or not required_after.issubset(passed_after) or
             not HEX.fullmatch(str(tests.get('report_sha256', ''))) or
             any(not artifact.get(k) for k in required) or not IMAGE.fullmatch(str(artifact.get('image', ''))) or
             artifact.get('source_snapshot_id') != source['id'] or artifact.get('diff_sha256') != patch['diff_sha256'] or
@@ -162,6 +170,11 @@ class ReleaseControl(QAReleaseControl):
 
     def collect_release_targets(self, session, incident, stage):
         release = incident.document['data']['release']
+        if stage == 'prd' and incident.document['service'] in self.catalog.dev_only:
+            if (release['stage_results'].get('dev') or {}).get('verified') is not True:
+                return self.stop(session, incident, 'dev_release_unverified')
+            self.transition(session, incident, 'completed', {'environment': 'dev', 'reason': 'dev_only_service'})
+            return
         self.transition(session, incident, stage + '_targets_collecting')
         for service in release['affected_services']:
             self.enqueue(session, incident, 'collect', {'environment': stage, 'service': service,
@@ -170,7 +183,6 @@ class ReleaseControl(QAReleaseControl):
                 'purpose': 'release_target', 'release_id': release['release_id']})
 
     def collect_release_result(self, session, incident, job, result):
-        from .control import SERVICE_SYSTEMS
         release = copy.deepcopy(incident.document['data']['release'])
         stage, service = job.payload['environment'], job.payload['service']
         if not release['valid'] or job.payload['release_id'] != release['release_id']:
@@ -180,7 +192,7 @@ class ReleaseControl(QAReleaseControl):
         except Exception:
             return self.stop(session, incident, 'release_target_invalid')
         if (result.get('ok') is not True or observed['environment'] != stage or observed['service'] != service or
-            observed['system'] != SERVICE_SYSTEMS[service]):
+            observed['system'] != self.catalog.services[service]):
             return self.stop(session, incident, 'release_target_mismatch')
         targets = release['targets'].setdefault(stage, [])
         new = dict(observed)

@@ -9,13 +9,73 @@ import pytest
 from sqlalchemy import func, select, text
 
 from conftest import needs_db
-from app import db
+from app import db, rag
 from app.models import AgentRun, Citation, Incident, RagChunk, RagDocument
 from app.rag import chunk_markdown, lexical_query, search
 from app.rag_ingest import (Document, _safe_summary, closed_incident_documents, index_documents,
                             load_public_documents, load_runbook_documents)
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_idle_fastembed_session_is_reused_then_reopened(monkeypatch):
+    import fastembed
+
+    now = 100.0
+    opened = []
+
+    class Vector:
+        def tolist(self):
+            return [1.0]
+
+    class Model:
+        def embed(self, texts):
+            return (Vector() for _ in texts)
+
+    def open_model(**options):
+        opened.append(options)
+        return Model()
+
+    monkeypatch.setattr(rag, "monotonic", lambda: now)
+    monkeypatch.setattr(fastembed, "TextEmbedding", open_model)
+    embedder = rag.FastEmbedder("local", "cache", lazy_load=True)
+    now += 500
+    embedder.release_if_idle(300)
+    assert embedder.embed([]) == [] and not opened
+    assert embedder.embed(["first"]) == [[1.0]]
+    now += 299
+    embedder.release_if_idle(300)
+    assert embedder.embed(["second"]) == [[1.0]]
+    assert len(opened) == 1
+
+    now += 300
+    embedder.release_if_idle(300)
+    embedder.release_if_idle(300)
+    assert embedder.embed(["third", "fourth"]) == [[1.0], [1.0]]
+    assert opened == [
+        {"model_name": "local", "cache_dir": "cache", "threads": 2},
+        {"model_name": "local", "cache_dir": "cache", "threads": 2},
+    ]
+
+
+def test_lazy_embedder_retries_initialization_and_eager_call_remains_eager(monkeypatch):
+    from unittest.mock import Mock
+    import fastembed
+
+    model = Mock()
+    vector = Mock()
+    vector.tolist.return_value = [1.0, 0.0]
+    model.embed.return_value = [vector]
+    constructor = Mock(side_effect=[OSError("cache temporarily unavailable"), model, model])
+    monkeypatch.setattr(fastembed, "TextEmbedding", constructor)
+    lazy = rag.FastEmbedder("model", lazy_load=True)
+    constructor.assert_not_called()
+    with pytest.raises(OSError):
+        lazy.embed(["first"])
+    assert lazy.embed(["retry"]) == [[1.0, 0.0]]
+    assert constructor.call_count == 2
+    rag.FastEmbedder("model")
+    assert constructor.call_count == 3
 
 
 class Keywords:
@@ -97,6 +157,7 @@ def test_strict_closed_summary_screen():
 
 
 @needs_db
+@pytest.mark.parametrize("db_url", ["0002"], indirect=True)
 def test_migration_upgrade_downgrade_preserves_legacy_citation(db_url):
     from alembic import command
     from alembic.config import Config
@@ -104,17 +165,19 @@ def test_migration_upgrade_downgrade_preserves_legacy_citation(db_url):
     cfg.set_main_option("script_location", str(ROOT / "alembic"))
     cfg.attributes["sqlalchemy_url"] = db_url
     with db.session() as s:
-        assert s.execute(text("select version_num from alembic_version")).scalar_one() == __import__("alembic.script", fromlist=["ScriptDirectory"]).ScriptDirectory(str(ROOT / "alembic")).get_current_head()
-        inc = Incident(fingerprint="x", namespace="liveprobe-target", workload="inventory", status="resolved",
-                       title="x", closed_at=datetime.now(timezone.utc))
-        s.add(inc); s.flush()
-        run = AgentRun(incident_id=inc.id, role="analyst", provider="test", model="test", status="succeeded")
-        s.add(run); s.flush()
+        assert s.execute(text("select version_num from alembic_version")).scalar_one() == "0002"
+        incident_id = s.scalar(text("""INSERT INTO incidents
+            (fingerprint, namespace, workload, status, title, created_at, updated_at, closed_at)
+            VALUES ('x','liveprobe-target','inventory','resolved','x',now(),now(),now()) RETURNING id"""))
+        run_id = s.scalar(text("""INSERT INTO agent_runs
+            (incident_id, role, provider, model, status, created_at)
+            VALUES (:incident_id,'analyst','test','test','succeeded',now()) RETURNING id"""),
+            {"incident_id": incident_id})
         s.execute(text("""INSERT INTO rag_chunks (doc,source,chunk_ix,content,content_hash,embedding)
                           VALUES ('legacy.md','internal-runbook',0,'legacy example','legacy-hash',:vec)"""),
                   {"vec": "[" + ",".join(["1"] + ["0"] * 383) + "]"})
         rid = s.scalar(select(RagChunk.id).where(RagChunk.doc == "legacy.md"))
-        s.add(Citation(agent_run_id=run.id, chunk_id=rid, score=0.5))
+        s.add(Citation(agent_run_id=run_id, chunk_id=rid, score=0.5))
     command.downgrade(cfg, "0001")
     with db.engine().connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == "0001"
@@ -162,6 +225,33 @@ def test_refresh_is_idempotent_and_keeps_citations(db_url):
 
 
 @needs_db
+def test_reused_query_vector_searches_current_document_version(db_url):
+    class CountingEmbedder(Keywords):
+        calls = 0
+
+        def embed(self, texts):
+            self.calls += 1
+            return super().embed(texts)
+
+    embedder = CountingEmbedder()
+    service = rag.RAG(embedder)
+    before = internal("refresh.md", "OOMKilled original memory guidance")
+    after = internal("refresh.md", "OOMKilled updated memory guidance")
+    with db.session() as s:
+        index_documents(s, Keywords(), [before])
+    with db.session() as s:
+        first, = service.search(s, "OOMKilled memory guidance", k=1)
+    with db.session() as s:
+        index_documents(s, Keywords(), [after])
+    with db.session() as s:
+        second, = service.search(s, "OOMKilled memory guidance", k=1)
+        assert second == service.search(s, "OOMKilled memory guidance", k=1)[0]
+    assert embedder.calls == 1
+    assert first.chunk_id != second.chunk_id
+    assert first.version_hash == before.version_hash and second.version_hash == after.version_hash
+
+
+@needs_db
 def test_atomic_rollback_on_embed_failure(db_url):
     class Fail:
         def embed(self, texts):
@@ -185,6 +275,9 @@ def test_hybrid_keyword_only_vector_only_and_kind_filter(db_url):
     with db.session() as s:
         assert search(s, emb, "ImagePullBackOff", k=1)[0].lexical_rank is not None
         assert search(s, emb, "nonsense zzzzz", k=1)[0].vector_rank == 1
+        vector_only = search(s, emb, "?!", k=1)[0]
+        assert vector_only.vector_rank == 1 and vector_only.lexical_rank is None
+        assert search(s, emb, "OOMKilled", candidates=0) == []
         assert all(h.kind == "public_doc" for h in search(s, emb, "OOMKilled", k=3, kinds=["public_doc"]))
         assert all(h.locator and h.source_uri and h.license for h in search(s, emb, "selector mismatch", k=3))
         first = [h.chunk_id for h in search(s, emb, "selector mismatch", k=3)]

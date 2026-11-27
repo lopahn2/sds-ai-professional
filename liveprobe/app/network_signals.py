@@ -212,6 +212,7 @@ class NetworkSignalAdapter:
             return emitted
         bad = []
         seen = set()
+        historical = set(self.cfg.historical_namespaces)
         for flow in flows:
             if not now - self.store.window_s <= flow.ts <= now:
                 continue  # enforce event-time bounds even for out-of-order stream replay
@@ -220,6 +221,10 @@ class NetworkSignalAdapter:
                 continue  # Hubble's reconnect lookback can replay the same observation
             seen.add(identity)
             if flow.verdict not in ("DROPPED", "ERROR"):
+                continue
+            # Apply the map's historical boundary before folding raw endpoints to active workloads.
+            if historical.intersection((flow.src_ns, flow.dst_ns, flow.src.partition('/')[0],
+                                        flow.dst.partition('/')[0], (flow.dst_service or '').partition('/')[0])):
                 continue
             src, dst = targets.get(flow.src, flow.src), targets.get(flow.dst, flow.dst)
             if flow.src not in targets and flow.dst not in targets:

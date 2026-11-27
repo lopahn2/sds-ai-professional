@@ -10,12 +10,14 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
-from sqlalchemy import select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import String, any_, bindparam, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Session, defer
 
 from .models import RagChunk, RagDocument
 from .rag import Chunk, Embedder, chunk_markdown, front_matter
@@ -43,7 +45,7 @@ class Document:
     meta: dict[str, Any] = field(default_factory=dict)
     expected_hash: str | None = None
 
-    @property
+    @cached_property
     def version_hash(self) -> str:
         return hashlib.sha256(self.text.encode()).hexdigest()
 
@@ -186,7 +188,9 @@ def index_documents(s: Session, embedder: Embedder, documents: Iterable[Document
         if not chunks:
             raise ValueError(f"document has no chunks: {d.key}")
         # Legacy chunks were indexed before provenance existed. Match per document and retire if modified.
-        current = list(s.scalars(select(RagChunk).where(RagChunk.doc == d.key, RagChunk.retired_at.is_(None))
+        # Refresh compares text and provenance. Leave the vector and search index value in Postgres.
+        current = list(s.scalars(select(RagChunk).options(defer(RagChunk.embedding), defer(RagChunk.tsv))
+                                 .where(RagChunk.doc == d.key, RagChunk.retired_at.is_(None))
                                  .order_by(RagChunk.chunk_ix)))
         old_by_ix = {c.chunk_ix: c for c in current}
         same = (stored and stored.version_hash == d.version_hash and stored.source_uri == d.source_uri
@@ -237,10 +241,17 @@ def index_documents(s: Session, embedder: Embedder, documents: Iterable[Document
             result.retired_chunks += 1
         # content_hash is globally unique, even for retired chunks; a refresh may produce an identical
         # earlier version. Restore it instead of inserting a duplicate, retaining historical citations.
+        retired_by_hash: dict[str, RagChunk] = {}
+        if todo:
+            hashes = bindparam("chunk_hashes", [h for _, h in todo], type_=ARRAY(String(64)))
+            retired = s.scalars(select(RagChunk).options(defer(RagChunk.embedding), defer(RagChunk.tsv))
+                                .where(RagChunk.doc == d.key, RagChunk.retired_at.is_not(None),
+                                       RagChunk.content_hash == any_(hashes)))
+            retired_by_hash = {row.content_hash: row for row in retired}
         remaining: list[tuple[Chunk, str]] = []
         for c, h in todo:
-            row = s.scalar(select(RagChunk).where(RagChunk.content_hash == h))
-            if row and row.doc == d.key and row.retired_at is not None:
+            row = retired_by_hash.get(h)
+            if row is not None:
                 row.retired_at = None
                 row.document_id = stored.id
                 row.section, row.char_start, row.char_end = c.section, c.char_start, c.char_end
@@ -304,8 +315,9 @@ def closed_incident_documents(s: Session) -> list[Document]:
     """
     from .models import Incident
     out = []
-    for inc in s.scalars(select(Incident).where(Incident.status == "resolved", Incident.closed_at.is_not(None),
-                                                ~Incident.fingerprint.like("eval/%"))):
+    incidents = select(Incident.id, Incident.summary, Incident.closed_at).where(
+        Incident.status == "resolved", Incident.closed_at.is_not(None), ~Incident.fingerprint.like("eval/%"))
+    for inc in s.execute(incidents):
         summary = _safe_summary(inc.summary)
         if summary is None:
             continue

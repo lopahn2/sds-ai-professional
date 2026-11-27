@@ -188,6 +188,34 @@ class CoreRuntimeTests(unittest.TestCase):
 
 
 class CoreNativeReceiptTests(CoreReleaseTests):
+    def test_surefire_signatures_and_parameter_indices_survive_receipt_validation(self):
+        from app.application.safety import test_file
+
+        incident, job, result = self.built()
+        method = 'io.liveprobe.target.order.OrderUiControllerTest#preservesLookup'
+        file = test_file(method)
+        rows = [{'id': method + suffix, 'file': file, 'status': 'passed', 'phase': phase}
+                for phase in ('before', 'after')
+                for suffix in ('(CapturedOutput)', '(String, boolean)[1]', '(String, boolean)[2]')]
+        self.assertIsNone(test_file(rows[0]['id']))
+        result['tests']['executed_tests'].extend(rows)
+        result['tests']['total'] += 3
+        self.assertEqual(self.h.report(job, result).status_code, 200)
+        self.assertEqual(self.h.detail(incident)['state'], 'dev_targets_collecting')
+        release_rows = self.release(incident)['tests']['executed_tests']
+        self.assertEqual(release_rows[-len(rows):], rows)
+
+    def test_failed_parameterized_java_regression_blocks_promotion(self):
+        incident, job, result = self.built()
+        result['tests']['executed_tests'].append({
+            'id': 'io.liveprobe.target.order.OrderUiControllerTest#preservesLookup(String)[2]',
+            'file': 'src/test/java/io/liveprobe/target/order/OrderUiControllerTest.java',
+            'status': 'failed', 'phase': 'after',
+        })
+        self.assertEqual(self.h.report(job, result).status_code, 200)
+        self.assertEqual(self.h.detail(incident)['state'], 'handoff')
+        self.assertIsNone(self.h.claim(['collect', 'deploy']))
+
     def test_native_executed_test_rows_are_validated_not_crash(self):
         incident, job, result = self.built()
         result['tests']['executed_tests'] = [

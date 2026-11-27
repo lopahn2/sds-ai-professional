@@ -144,7 +144,8 @@ def test_group_both_marker_survives_actual_engine_early_return_after_mitigation(
         {'namespace':'dev','workload':'order','signals':['AppError']})
     with db.session() as s:
         inc=s.get(Incident,1)
-        assert inc.status=='resolved' and 'workflow_status' not in inc.handoff
+        assert inc.status == 'resolved'
+        assert inc.handoff['workflow_status'] == 'verified'
         assert inc.handoff['code_cause_verification']['verified']
         assert inc.handoff['code_cause_verification']['verifier_run_id']==review_id
     auto_continue(1)

@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from .flowgraph import ACTION_KO, build_flow, signal_ko
 from .config import get_app_config
+from .hpa_metrics import RECOVERY_LABEL, RECOVERY_SCOPE
 from .remediation import remediation_label
 from .interpret import DISPLAY_ONLY_KINDS, incident_items, readings
 from .models import INCIDENT_CLOSED_STATES, Action, AgentRun, Incident, OperatorCommand, RoutingDecision, RunEvent
@@ -18,7 +19,7 @@ STAGE_KO = {"recovery_review": "서비스 복구 관측 · 운영자 소명 확�
             "closed": "운영자 종료", "collecting": "근거 수집 중"}
 
 
-def stage_of(inc: Incident, routing: list, runs: list, events: list) -> dict:
+def stage_of(inc: Incident, routing: list | bool, runs: list, events: list) -> dict:
     st = inc.status
     if st in INCIDENT_CLOSED_STATES:
         key = st
@@ -33,6 +34,8 @@ def stage_of(inc: Incident, routing: list, runs: list, events: list) -> dict:
                              and isinstance(e.detail, dict)), None)
         key = "verifying" if last_started in ("result_verifier", "group_verifier", "safety_verifier") else "analyzing"
     label = STAGE_KO[key]
+    if key == 'recovery_review' and ((inc.handoff or {}).get('observed_recovery') or {}).get('scope') == RECOVERY_SCOPE:
+        label = RECOVERY_LABEL
     if key == 'resolved' and (inc.handoff or {}).get('observed_recovery'):
         label = inc.status_reason if (inc.status_reason or '').startswith('정상 ·') else '정상 상태 확인 · 원인 미확정'
     if key in ("analyzing", "verifying"):

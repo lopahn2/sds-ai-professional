@@ -8,11 +8,15 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import k8s as K
-from .config import AppConfig
+from .cni_signals import CniSignals, SANDBOX_FAILURE
+from .config import AppConfig, MIN_ENDPOINT_MISSING_SECONDS
+from .disk_pressure import DiskPressureSignals, EVICTED
 from .incidents import Signal
 from .flows import FlowStore
+from .hpa_metrics import HpaMetricsSignals
 from .service_health import read_backend
 from .network_signals import NetworkSignalAdapter
+from .workload_signals import WorkloadSignals
 
 log = logging.getLogger(__name__)
 
@@ -23,15 +27,26 @@ Emit = Callable[[Signal], None]
 
 
 class Watchers:
-    def __init__(self, kube: K.Kube, cfg: AppConfig, emit: Emit, *, flow_store: FlowStore | None = None):
+    def __init__(self, kube: K.Kube, cfg: AppConfig, emit: Emit, *, flow_store: FlowStore | None = None,
+                 hpa_recovery=None):
         self.kube, self.cfg, self.emit = kube, cfg, emit
         self.ns = cfg.target_namespaces[0]
         self._stop = threading.Event()
-        self._empty_since: dict[str, float] = {}
+        self._empty_since: dict[str, tuple[str | None, float, float]] = {}
         self.status: dict[str, dict] = {}
+        self.cni = CniSignals(kube, emit)
+        self.disk_pressure = DiskPressureSignals(kube, emit)
+        self.hpa_metrics = HpaMetricsSignals(kube, cfg.target_namespaces, emit,
+                                            max_gap=max(60, 3 * cfg.endpoint_poll_interval_seconds), recovery=hpa_recovery)
         self.network = NetworkSignalAdapter(flow_store, kube, cfg, emit) if flow_store is not None else None
+        self.workload_signals = (WorkloadSignals(self.ns, kube, emit,
+                                                max_gap=max(30, 3 * cfg.endpoint_poll_interval_seconds),
+                                                workloads=cfg.workload_state_signal_workloads)
+                                 if cfg.workload_state_signals_enabled else None)
 
     def start(self) -> None:
+        threading.Thread(target=self._guard, args=("hpa_metrics_poller", self._hpa_metrics_loop),
+                         name="hpa_metrics_poller", daemon=True).start()
         if len(self.cfg.target_namespaces) > 1:
             for ns in self.cfg.target_namespaces:
                 child = Watchers(self.kube, self.cfg.model_copy(update={"target_namespaces": [ns]}), self.emit)
@@ -117,6 +132,12 @@ class Watchers:
             return
         msg = (e.get("message") or "")
         reason = e.get("reason")
+        if reason == EVICTED:
+            self.disk_pressure.observe(e, ns)
+            return
+        if reason == SANDBOX_FAILURE:
+            self.cni.observe(e, ns)
+            return
         sig = None
         if reason in ("Failed", "BackOff") and ("pull" in msg.lower() or "image" in msg.lower()):
             sig = "ImagePullBackOff" if reason == "BackOff" else "ErrImagePull"
@@ -141,7 +162,11 @@ class Watchers:
         from kubernetes import watch
         from kubernetes.client import ApiException
         lst = self.kube.core.list_namespaced_event(self.ns)
-        rv = lst.metadata.resource_version  # start from now: do not replay history
+        rv = lst.metadata.resource_version
+        for event in lst.items:
+            if event.reason in {SANDBOX_FAILURE, EVICTED}:
+                # Both detectors revalidate recent warnings against live objects after relisting.
+                self.handle_event(self.kube.to_dict(event))
         w = watch.Watch()
         while not self._stop.is_set():
             try:
@@ -176,43 +201,86 @@ class Watchers:
             self.poll_network_once()
             self._stop.wait(self.cfg.endpoint_poll_interval_seconds)
 
+    def _hpa_metrics_loop(self) -> None:
+        while not self._stop.is_set():
+            self.status["hpa_metrics_poller"] = self.hpa_metrics.poll_once()
+            self._stop.wait(self.cfg.endpoint_poll_interval_seconds)
+
     # --- endpoints -----------------------------------------------------------
     def poll_endpoints_once(self, now: float | None = None) -> None:
-        now = now if now is not None else time.monotonic()
         try:
             pods = self.kube.list_pods(self.ns)
+        except Exception:
+            self._empty_since.clear()
+            if self.workload_signals is not None:
+                self.workload_signals.reset()
+                self.status[f"workload_poller/{self.ns}"] = {"state": "degraded", "error": "pod_list_failed"}
+            raise
+        pressure_status = f"disk_pressure_poller/{self.ns}"
+        try:
+            if self.disk_pressure.poll_once(pods):
+                self.status[pressure_status] = {"state": "running"}
+        except Exception as exc:  # unrelated endpoint detection can continue with the same Pod inventory
+            self.status[pressure_status] = {"state": "degraded", "error": type(exc).__name__}
+        deployments = None
+        if self.workload_signals is not None:
+            name = f"workload_poller/{self.ns}"
+            try:
+                deployments = self.kube.list_deployments(self.ns)
+                self.workload_signals.observe(pods, deployments, now=now if now is not None else time.monotonic())
+                self.status[name] = {"state": "running", "since": datetime.now(timezone.utc).isoformat()}
+            except Exception as exc:
+                self.workload_signals.reset()
+                self.status[name] = {"state": "degraded", "error": type(exc).__name__}
+                log.warning("%s error: %s", name, type(exc).__name__)
+        try:
             services = self.kube.list_services(self.ns)
+            read_snapshot = getattr(self.kube, "service_endpoint_counts", None)
+            monitored = [service for service in services
+                         if K.is_selector_service(service) and not service["metadata"].get("deletionTimestamp")]
+            endpoint_counts = read_snapshot(monitored, self.ns) if read_snapshot is not None else None
+            if endpoint_counts is not None and deployments is None and any(
+                endpoint_counts.get((self.ns, s["metadata"]["name"]), 0) == 0 for s in monitored
+            ):
+                deployments = self.kube.list_deployments(self.ns)
         except Exception:
             self._empty_since.clear()
             raise
-        live_services = {s["metadata"]["name"] for s in services}
-        self._empty_since = {n: ts for n, ts in self._empty_since.items() if n in live_services}
-        for svc in services:
-            name = svc["metadata"]["name"]
-            selector = (svc.get("spec") or {}).get("selector") or {}
-            if not selector or (svc.get("spec") or {}).get("type") == "ExternalName":
-                self._empty_since.pop(name, None)
-                continue
+        live_services = {s["metadata"]["name"] for s in monitored}
+        self._empty_since = {name: interval for name, interval in self._empty_since.items() if name in live_services}
+        grace = max(MIN_ENDPOINT_MISSING_SECONDS, self.cfg.endpoint_grace_seconds)
+        # A few missed polls are enough to lose continuity. Allow time for a slow API read.
+        max_observation_gap = max(60, 3 * self.cfg.endpoint_poll_interval_seconds)
+        read_error = None
+        for svc in monitored:
+            metadata = svc["metadata"]
+            name, uid = metadata["name"], metadata.get("uid")
+            spec = svc.get("spec") or {}
+            selector = spec.get("selector") or {}
             try:
-                backend = read_backend(self.kube, self.ns, svc)
-            except Exception:
+                backend = read_backend(self.kube, self.ns, svc, deployments, endpoint_counts=endpoint_counts)
+            except Exception as exc:
                 self._empty_since.pop(name, None)
-                raise
+                if read_error is None:
+                    read_error = exc
+                continue
             if backend["backend_state"] != "missing":
                 self._empty_since.pop(name, None)
                 continue
-            first = self._empty_since.setdefault(name, now)
-            if now - first < self.cfg.endpoint_grace_seconds:
+            observed_at = now if now is not None else time.monotonic()
+            last_uid, first, last = self._empty_since.get(name, (uid, observed_at, observed_at))
+            if last_uid != uid or observed_at - last > max_observation_gap:
+                first = observed_at
+            self._empty_since[name] = (uid, first, observed_at)
+            empty_for = observed_at - first
+            if empty_for < grace:
                 continue
             matching = [p for p in pods if K.labels_match(selector, p["metadata"].get("labels") or {})]
-            young = [p for p in matching
-                     if (K.parse_ts(p["metadata"].get("creationTimestamp")) or datetime.now(timezone.utc))
-                     > datetime.now(timezone.utc).replace(microsecond=0) - _td(180)]
-            if matching and young:
-                continue  # pods still starting up; not an endpoint-loss incident yet
             self.emit(Signal(self.ns, "Service", name, "NoEndpoints", "endpoint_poller",
                              {"selector": selector, "matching_pods": len(matching),
-                              "empty_for_s": int(now - first)}))
+                              "empty_for_s": int(empty_for)}))
+        if read_error is not None:
+            raise read_error
 
     def _endpoint_loop(self) -> None:
         while not self._stop.is_set():
@@ -223,8 +291,3 @@ class Watchers:
 def _bookmark_rv(obj) -> str | None:
     md = (obj.get("metadata") if isinstance(obj, dict) else None) or {}
     return md.get("resourceVersion")
-
-
-def _td(seconds: int):
-    from datetime import timedelta
-    return timedelta(seconds=seconds)

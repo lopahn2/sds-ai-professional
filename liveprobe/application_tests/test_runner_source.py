@@ -64,5 +64,19 @@ class SourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_patch(diff.replace('app.py','../app.py'),root,'tests')
 
+    def test_displaced_hunk_requires_one_exact_source_anchor(self):
+        from liveprobe.application_runner.source import parse_patch
+
+        diff = '--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n def calculate():\n-    return 1\n+    return 2\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            original = 'prefix = 0\ndef calculate():\n    return 1\n'
+            (root/'app.py').write_text(original)
+            self.assertEqual(parse_patch(diff, root, 'tests'), {'app.py': original.replace('return 1', 'return 2')})
+            for text in (original.replace('return 1', 'return 3'), original + original):
+                with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'patch_context_mismatch'):
+                    (root/'app.py').write_text(text)
+                    parse_patch(diff, root, 'tests')
+
 if __name__ == '__main__':
     unittest.main()

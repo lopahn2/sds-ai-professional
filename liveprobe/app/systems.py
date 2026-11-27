@@ -21,20 +21,23 @@ def system_ko(system: str | None) -> str:
     return SYSTEM_NAMES.get(system or "", system or "")
 
 
-def current_inventory(inventory: dict) -> tuple[dict, set[str]]:
-    """명시적 은퇴와 그 Pod만 제외한다. 0 replica·Pod 부재로 은퇴를 추정하지 않는다."""
+def current_inventory(inventory: dict, historical_namespaces=()) -> tuple[dict, set[str]]:
+    """활성 관제에서 이력 전용 환경과 명시적으로 은퇴한 리소스를 제외한다."""
     retired: set[str] = set()
+    historical = set(historical_namespaces)
     deployments = {(d.get("metadata", {}).get("namespace"), d.get("metadata", {}).get("name"))
                    for d in inventory.get("deployments", [])
                    if (d.get("metadata", {}).get("labels") or {}).get(LIFECYCLE_LABEL) == "retired"}
     result = dict(inventory)
+    result["namespaces"] = [ns for ns in inventory.get("namespaces", [])
+                            if (ns.get("metadata") or {}).get("name") not in historical]
     kinds = {"deployments": "Deployment", "pods": "pod", "services": "Service", "endpoints": "Endpoints", "ingresses": "Ingress"}
     for key, kind in kinds.items():
         kept = []
         for obj in inventory.get(key, []):
             md = obj.get("metadata") or {}
             ns, name = md.get("namespace"), md.get("name")
-            excluded = (md.get("labels") or {}).get(LIFECYCLE_LABEL) == "retired"
+            excluded = ns in historical or (md.get("labels") or {}).get(LIFECYCLE_LABEL) == "retired"
             if key == "pods":
                 for owner in md.get("ownerReferences") or []:
                     if owner.get("kind") == "ReplicaSet":

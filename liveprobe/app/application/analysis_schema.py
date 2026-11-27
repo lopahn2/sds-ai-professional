@@ -15,9 +15,15 @@ ANALYSIS = schema({'summary_ko': {'type': 'string'}, 'confidence': {'type': 'num
     'fixable': {'type': 'boolean'}, 'unresolved': {'type': 'array', 'items': {'type': 'string'}}, 'citations': CITATIONS})
 REVIEW = schema({'summary_ko': {'type': 'string'}, 'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
     'accepted': {'type': 'boolean'}, 'unresolved': {'type': 'array', 'items': {'type': 'string'}}, 'citations': CITATIONS})
+CAUSE_CANDIDATE = schema({
+    'cause_ko': {'type': 'string', 'minLength': 1, 'maxLength': 300},
+    'evidence_refs': {'type': 'array', 'items': {'type': 'string', 'minLength': 1},
+                      'minItems': 1, 'maxItems': 8},
+})
 # Optional observations have no effect on acceptance. Only unresolved blockers stop execution.
 for role_schema in (ANALYSIS, REVIEW):
     role_schema['properties']['follow_up'] = {'type': 'array', 'items': {'type': 'string'}}
+    role_schema['properties']['cause_candidates'] = {'type': 'array', 'maxItems': 3, 'items': CAUSE_CANDIDATE}
 
 PATCH = schema({'source_snapshot_id': {'type': 'string'}, 'diff': {'type': 'string', 'maxLength': 100000},
     'summary_ko': {'type': 'string'}, 'risk_ko': {'type': 'string'},

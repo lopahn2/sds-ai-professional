@@ -153,6 +153,8 @@ def advance(service, application_id, release_id, engine):
         inc = s.get(Incident, iid)
         if not inc or link.state != 'linked':
             return result('waiting', release_id, 'mixed_root_unobserved')
+        if service.control.environment_paused(inc.namespace):
+            return result('waiting', release_id, 'environment_paused')
         target_lock(s, 'dev', inc.workload)
         inc = s.scalar(select(Incident).where(Incident.id == iid).with_for_update())
         origin = {'installation_id': service.instance, 'incident_id': iid, 'action_id': link.action_id,

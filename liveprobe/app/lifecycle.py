@@ -15,7 +15,7 @@ TRANSITIONS = {
     "recovery_review": {"resolved"},
     "acting": {"recovery_review", "resolved", "handed_off", "failed"},
     "resolved": set(),
-    # The AI stopped and a person owns it; only that person's explicit close ends it.
+    # The AI stopped and a person owns the final decision.
     "handed_off": {"closed"},
     "failed": set(),
     "closed": set(),
@@ -24,7 +24,15 @@ TRANSITIONS = {
 
 def transition(inc: Incident, status: str) -> None:
     if status not in TRANSITIONS.get(inc.status, set()):
-        raise ValueError(f"invalid incident transition {inc.status} -> {status}")
+        from .hpa_metrics import RECOVERY_SCOPE
+        from .incidents import HPA_METRICS_BLOCKED
+
+        proof = (inc.handoff or {}).get("observed_recovery") or {}
+        if (inc.status != "handed_off" or status != "recovery_review"
+                or inc.signal_reasons != [HPA_METRICS_BLOCKED]
+                or proof.get("scope") != RECOVERY_SCOPE or len(proof.get("observations", ())) != 2):
+            raise ValueError(f"invalid incident transition {inc.status} -> {status}")
+        inc.closed_at = None
     inc.status = status
     if status in INCIDENT_CLOSED_STATES and status != "recovery_review":
         inc.closed_at = datetime.now(timezone.utc)

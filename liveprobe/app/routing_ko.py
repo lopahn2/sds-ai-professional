@@ -14,7 +14,11 @@ from .roles_ko import LEVEL_KO
 DECIDED_BY_KO = {"rules": "규칙", "rules+llm": "규칙 + AI 분류", "operator": "운영자", "router_failure": "규칙(분류 실패 인계)"}
 SOURCE_KO = {"deployment": "Deployment", "pod_status": "Pod 상태", "service": "Service", "endpoints": "엔드포인트",
              "k8s_event": "Kubernetes 이벤트", "prometheus": "지표(Prometheus)", "loki": "로그(Loki)", "node": "노드",
-             "configmap": "ConfigMap", "code_refs": "코드 참조", "investigation": "추가 근거 탐색"}
+             "configmap": "ConfigMap", "code_refs": "코드 참조", "investigation": "추가 근거 탐색",
+             "k8s_admission_audit": "Kubernetes API 감사", "k8s_cni_event": "kubelet CNI 경고",
+             "k8s_disk_pressure": "노드 디스크 압박과 Pod 퇴출",
+             "k8s_node_startup": "등록 전 노드 시작 관측",
+             "k8s_hpa_metrics": "자원 지표 API와 HPA 상태"}
 SOURCE_REF = {"deployment": "E1_deployment", "pod_status": "E2_pods", "service": "E3_service", "endpoints": "E3_service",
               "k8s_event": "E5_recent_events", "prometheus": "E6_metrics", "loki": "E7_error_logs", "node": "E8_node",
               "configmap": "E9_config", "code_refs": None}
@@ -29,13 +33,17 @@ def _lv(level: str | None) -> str:
     return LEVEL_KO.get(level or "", level or "미정")
 
 
+def classifier_was_skipped(rd: Any) -> bool:
+    return (getattr(rd, "policy", None) or {}).get("classifier_skipped") == "deterministic_high_risk"
+
+
 def pair_router_runs(routing: list[Any], runs: list[Any]) -> dict[int, dict]:
     """RoutingDecision.id -> router AgentRun.output of the classification that fed it (operator reroutes have none)."""
     routers = [r for r in runs if r.role == "router" and r.status == "succeeded" and r.output]
     used: set[int] = set()
     out: dict[int, dict] = {}
     for rd in routing:
-        if rd.decided_by == "operator":
+        if rd.decided_by == "operator" or classifier_was_skipped(rd):
             continue
         cand = [r for r in routers if r.id not in used and (rd.created_at is None or r.created_at is None
                                                             or r.created_at <= rd.created_at)]
@@ -224,7 +232,8 @@ def routing_card(rd, router_output: dict | None, llm_ko: str | None) -> dict:
     final = final_step_ko(rd.rationale, rd.decided_by, rd.level)
     mp = model_policy_ko(rd.policy)
     llm = None
-    out = router_output or {}
+    skipped = classifier_was_skipped(rd)
+    out = {} if skipped else (router_output or {})
     from .readings_ko import is_korean
     hint = out.get("rationale_ko")
     if not llm_ko and isinstance(hint, str) and is_korean(hint):
@@ -239,13 +248,16 @@ def routing_card(rd, router_output: dict | None, llm_ko: str | None) -> dict:
             f" — {llm_ko}" if llm_ko else " — 한글 해석 준비 중")
     elif rd.decided_by == "operator":
         llm_detail = "운영자 재지정이라 AI 분류를 다시 하지 않음"
+    elif skipped:
+        llm_detail = "고위험 규칙으로 수준을 확정했습니다."
     else:
         llm_detail = "AI 분류 의견 미기록"
     steps = [
         {"key": "features", "title_ko": "관측 특징 확인", "detail_ko": f"관측 특징 {len(feats)}개" if feats else "관측 특징 미기록",
          "items_ko": feats, "source": "rules"},
         {"key": "rule", "title_ko": "규칙 판정", "detail_ko": rule, "items_ko": [], "source": "rules"},
-        {"key": "llm", "title_ko": "AI 분류 의견", "detail_ko": llm_detail, "items_ko": [], "source": "llm"},
+        {"key": "llm", "title_ko": "AI 분류 의견", "detail_ko": llm_detail, "items_ko": [],
+         "source": "rules" if skipped else "llm"},
         {"key": "final", "title_ko": "최종 결정", "detail_ko": final, "items_ko": [], "source": "rules"},
         {"key": "model", "title_ko": "분석 모델 선택", "detail_ko": mp["reason_ko"] if mp else "모델 선택 기록 없음",
          "items_ko": [f"{c['model']}: {c['reason_ko']}" for c in (mp or {}).get("candidates", [])], "source": "policy"},

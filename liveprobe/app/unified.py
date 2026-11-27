@@ -45,6 +45,7 @@ STATE_KO = {
 BLOCK_KO = {
     'feature_disabled': '통합 코드 조치가 아직 구성되지 않았습니다.',
     'historical_environment': '과거 환경은 기록만 조회할 수 있습니다.',
+    'environment_paused': '일시 중지한 환경은 기록만 조회할 수 있습니다.',
     'incident_active': '현재 K8s 분석이 끝난 뒤 코드 조치를 연결할 수 있습니다.',
     'high_risk': '권한·데이터 안전 경계를 운영자가 확인해야 합니다.',
     'unverified_code_cause': '코드 원인에 대한 독립 검증과 실제 코드 위치가 필요합니다.',
@@ -344,6 +345,8 @@ class UnifiedService:
     def eligibility(self, session, inc):
         if inc.namespace not in ('dev', 'prd'):
             return 'historical_environment'
+        if self.control.environment_paused(inc.namespace):
+            return 'environment_paused'
         if inc.severity_level not in ('SIMPLE', 'NORMAL', 'COMPLEX'):
             return 'high_risk'
         classification = ((inc.handoff or {}).get('handoff_classification') or {})

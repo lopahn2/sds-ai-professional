@@ -24,7 +24,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN pip install --no-cache-dir uv==0.8.22 && uv sync --frozen --no-dev
 ENV HF_HUB_OFFLINE=0
-RUN /app/.venv/bin/python -c "from fastembed import TextEmbedding; m=TextEmbedding(model_name='sentence-transformers/all-MiniLM-L6-v2',cache_dir='/opt/models'); assert len(next(iter(m.embed(['ready'])))) == 384"
+COPY prepare_embedding.py /tmp/prepare_embedding.py
+RUN pip install --no-cache-dir --no-deps --only-binary=:all: --target /tmp/minilm-build onnx==1.20.1 ml_dtypes==0.5.4 \
+ && HF_HUB_DISABLE_XET=1 PYTHONPATH=/tmp/minilm-build /app/.venv/bin/python /tmp/prepare_embedding.py /opt/models \
+ && rm -rf /tmp/minilm-build /tmp/prepare_embedding.py
 ENV HF_HUB_OFFLINE=1
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
@@ -32,5 +35,6 @@ COPY app/ ./app/
 COPY runbooks/ ./runbooks/
 COPY reference/ ./reference/
 COPY corpus/ ./corpus/
+RUN /app/.venv/bin/python -c "from app.minilm import MiniLM; from app.rag_model import open_embedding; m=open_embedding('sentence-transformers/all-MiniLM-L6-v2','/opt/models'); assert isinstance(m, MiniLM) and len(next(m.embed(['ready']))) == 384"
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

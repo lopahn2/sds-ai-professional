@@ -140,6 +140,10 @@ def _selector_repair(session, incident, observations):
 
 def investigate(session, incident):
     """Use incident-time records. A currently healthy resource proves no historical cause."""
+    from .hpa_metrics import RECOVERY_SCOPE
+    proof = (incident.handoff or {}).get("observed_recovery") or {}
+    if proof.get("scope") == RECOVERY_SCOPE and (last_report := _last_report(session, incident.id)):
+        return {**last_report.detail, "revision": last_report.id}
     result = _initial(incident)
     signal = session.scalar(select(AuditLog).where(AuditLog.incident_id == incident.id,
         AuditLog.event.in_(("signal_observed", "incident_created"))).order_by(AuditLog.id).limit(1))
@@ -155,7 +159,6 @@ def investigate(session, incident):
         result["evidence_refs"].append(f"검증된 조치 #{action.id}")
         return result
 
-    proof = (incident.handoff or {}).get("observed_recovery") or {}
     observations = proof.get("observations") or []
     result.update(status="pending_operator", recovery_ko="정상 상태는 관측했지만 정상화의 원인은 입증되지 않았습니다."
                   if observations else "저장된 자료에서 정상화 시점과 원인을 입증하지 못했습니다.",
@@ -284,6 +287,7 @@ def accountability_router():
             if incident.status == AWAITING and report["status"] in ("confirmed", "explained"):
                 transition(incident, "resolved")
                 incident.status_reason = "정상 · 복구 소명 확인"
+                report["awaiting_closure"] = False
                 update_run(s, iid, "succeeded", "resolved", incident.status_reason)
             result = append(s, iid, report, user)
         broker.publish(iid, "updated")

@@ -23,6 +23,7 @@ def test_transition_guards():
 
 
 @needs_db
+@pytest.mark.parametrize("db_url", ["0010"], indirect=True)
 def test_migration_reversible_and_keeps_incidents(db_url):
     from app import db
     from app.models import Incident
@@ -38,10 +39,33 @@ def test_migration_reversible_and_keeps_incidents(db_url):
     with db.engine().connect() as c:
         assert c.execute(text("select count(*) from incidents where id=:id"), {"id": iid}).scalar_one() == 1
         assert c.execute(text("select version_num from alembic_version")).scalar_one() == "0002"
-    db.run_migrations(db_url)
+    command.upgrade(cfg, "0010")
     with db.engine().connect() as c:
-        assert c.execute(text("select version_num from alembic_version")).scalar_one() == __import__("alembic.script", fromlist=["ScriptDirectory"]).ScriptDirectory(str(ROOT / "alembic")).get_current_head()
+        assert c.execute(text("select version_num from alembic_version")).scalar_one() == "0010"
         assert c.execute(text("select count(*) from incidents where id=:id"), {"id": iid}).scalar_one() == 1
+
+
+@needs_db
+def test_code_action_history_refuses_destructive_downgrade(db_url):
+    from app import db
+    from app.models import CodeActionLink, Incident
+
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "alembic"))
+    cfg.attributes["sqlalchemy_url"] = db_url
+    with db.session() as s:
+        incident = Incident(fingerprint="dev/order", namespace="dev", workload="order", title="test")
+        s.add(incident)
+        s.flush()
+        s.add(CodeActionLink(action_id="test-action", application_id="test-application", incident_id=incident.id,
+                             request_sha256="a" * 64, request={}, created_by="test"))
+        iid = incident.id
+    with pytest.raises(RuntimeError, match="destructive downgrade is disabled"):
+        command.downgrade(cfg, "0010")
+    with db.session() as s:
+        assert s.execute(text("select version_num from alembic_version")).scalar_one() == "0011"
+        assert s.get(CodeActionLink, "test-action").incident_id == iid
+        assert s.get(Incident, iid) is not None
 
 
 @needs_db

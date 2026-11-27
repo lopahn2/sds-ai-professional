@@ -10,6 +10,21 @@ CODE = re.compile(r'^[a-z][a-z0-9_]{1,100}$')
 SYMBOL = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
 IMAGE = re.compile(r'^\S+@sha256:[a-f0-9]{64}$')
 OUTCOMES = ('written', 'not_written', 'unknown')
+_JAVA_PARAMETER_TYPE = r'[A-Za-z_][A-Za-z0-9_$.]*(?:\[\])*'
+_JAVA_NATIVE_ID = re.compile(
+    rf'(?P<method>[A-Za-z0-9_.]+#[A-Za-z_]\w*)'
+    rf'\((?:{_JAVA_PARAMETER_TYPE}(?:, {_JAVA_PARAMETER_TYPE})*)?\)(?:\[[0-9]+\])?'
+)
+
+
+def report_test_file(identifier):
+    file = test_file(identifier)
+    if file or not isinstance(identifier, str) or len(identifier) > 1000:
+        return file
+    # Surefire includes JVM parameter types and parameterized case indices in native IDs.
+    # Preserve every observed ID. Generated patch regression IDs still use test_file().
+    native = _JAVA_NATIVE_ID.fullmatch(identifier)
+    return test_file(native['method']) if native else None
 
 
 def error_code(value):
@@ -35,8 +50,8 @@ def tests_evidence(value):
     if not isinstance(rows, list):
         return safe
     for row in rows:
-        if (not isinstance(row, dict) or not isinstance(row.get('id'), str) or test_file(row['id']) is None or
-            test_file(row['id']) != row.get('file') or row.get('status') not in ('passed', 'failed', 'skipped', 'error') or
+        file = report_test_file(row.get('id')) if isinstance(row, dict) else None
+        if (file is None or file != row.get('file') or row.get('status') not in ('passed', 'failed', 'skipped', 'error') or
             row.get('phase') not in ('before', 'after')):
             safe['rows_rejected'] += 1
             continue
@@ -45,6 +60,26 @@ def tests_evidence(value):
             saved['error_code'] = error_code(row['error_code'])
         safe['executed_tests'].append(saved)
     return safe
+
+
+def post_patch_failures(tests, added):
+    """Identify reported regressions after the declared reproductions passed."""
+    if (tests['before_failed'] is not True or tests['after_passed'] is not False or
+            tests['regression_executed'] is not True or not tests['report_sha256'] or
+            not tests['total'] or not tests['failed'] or tests['rows_rejected']):
+        return []
+    rows = tests['executed_tests']
+    observed = {(row['id'], row['phase'], row['status']) for row in rows}
+    if not added or any(
+        not (observed & {(test_id, 'before', 'failed'), (test_id, 'before', 'error')})
+        or (observed & {(test_id, 'before', 'passed'), (test_id, 'before', 'skipped'), (test_id, 'after', 'skipped')})
+        or (test_id, 'after', 'passed') not in observed for test_id in added
+    ):
+        return []
+    failures = [row for row in rows if row['phase'] == 'after' and row['status'] in ('failed', 'error')]
+    if any(row['id'] in added for row in failures):
+        return []
+    return failures
 
 
 def target_rows(value):

@@ -7,20 +7,12 @@ import uuid
 from sqlalchemy import select
 from pydantic import ValidationError
 from .contracts import Target
-from ..environments import ACTIVE_RELEASE_PROTOCOLS
+from ..environments import ACTIVE_ENVIRONMENTS, ACTIVE_RELEASE_PROTOCOLS
 from .safety import fail, scrub, sha, text_sha, safe_source_path
 from .storage import Incident, Event, Job, RunnerObservation
 from .releases import ReleaseControl
-from .catalog import Catalog
+from .catalog import Catalog, SERVICE_SYSTEMS
 from . import evidence_inquiry
-
-SERVICE_SYSTEMS = {
-    'order': 'samsung-trade', 'inventory': 'samsung-trade', 'catalog': 'samsung-trade',
-    'payment': 'samsung-trade', 'trade-member': 'samsung-trade',
-    'delivery': 'samsung-delivery', 'notification': 'samsung-delivery',
-    'delivery-member': 'samsung-delivery', 'business-api': 'samsung-business',
-}
-
 
 def uid():
     return uuid.uuid4().hex
@@ -38,6 +30,19 @@ class ControlPlane(ReleaseControl):
     def require_store(self):
         if not self.store.ready():
             fail(503, 'database_unconfigured', '독립 저장소 초기화가 필요합니다.')
+
+    def environment_paused(self, environment):
+        from ..config import get_app_config
+        return environment in ACTIVE_ENVIRONMENTS and environment in get_app_config().historical_namespaces
+
+    def require_active_environment(self, environment):
+        if self.environment_paused(environment):
+            fail(409, 'environment_paused', '일시 중지한 환경은 기록만 조회할 수 있습니다.')
+
+    def public_catalog(self):
+        catalog = self.catalog.public()
+        catalog['environments'] = [env for env in catalog['environments'] if not self.environment_paused(env)]
+        return catalog
 
     def event(self, session, incident, kind, data=None):
         if kind not in ("role_progress", "runner_progress", "job_queued", "job_claimed", "job_cancelled"):
@@ -59,6 +64,7 @@ class ControlPlane(ReleaseControl):
         incident.document = document
 
     def stop(self, session, incident, code, state='handoff'):
+        evidence_inquiry.close_review(self, session, incident, state, code)
         document = copy.deepcopy(incident.document)
         if state == 'handoff':
             from ..handoff_classes import record, RECOVERY_EXHAUSTED
@@ -69,7 +75,8 @@ class ControlPlane(ReleaseControl):
                             for r in (data.get('analysis') or {}).get('roles', []))
             exhausted = {'analysis_unresolved_or_low_confidence', 'analysis_call_budget_exhausted', evidence_inquiry.EXHAUSTED, 'citation_not_grounded',
                          'citations_missing', 'model_output_invalid', 'patch_paths_invalid',
-                         'patch_tests_missing', 'patch_code_reference_invalid', 'test_build_evidence_invalid'}
+                         'patch_tests_missing', 'patch_node_test_not_declared', 'patch_code_reference_invalid',
+                         'test_build_evidence_invalid', 'patch_revision_invalid'}
             # Missing proof, identity, and any uncertain write default to the authority boundary.
             classes = {k: RECOVERY_EXHAUSTED for k in exhausted} if attempts else {}
             decision = record(code, classes, attempts=attempts, unknown_write='unknown' in code)
@@ -89,8 +96,11 @@ class ControlPlane(ReleaseControl):
         return job
 
     def validate_intake(self, request):
-        if request.service not in SERVICE_SYSTEMS:
+        self.require_active_environment(request.environment)
+        if request.service not in self.catalog.services:
             fail(422, 'service_unknown', '등록된 서비스가 아닙니다.')
+        if request.service in self.catalog.dev_only and request.environment != 'dev':
+            fail(422, 'service_dev_only', '이 시험 서비스는 dev에서만 사용할 수 있습니다.')
         if not self.catalog.configured:
             fail(503, 'profiles_unconfigured', '등록 카탈로그·실행 프로필이 필요합니다.')
         if request.reproduction is not None:
@@ -119,7 +129,7 @@ class ControlPlane(ReleaseControl):
                     return self.serialize(existing)
             incident = Incident(id=uid(), created_at=now, state='detected', document={
                 'environment': request.environment, 'service': request.service,
-                'system': SERVICE_SYSTEMS[request.service], 'reason': reason,
+                'system': self.catalog.services[request.service], 'reason': reason,
                 'stages': [], 'error': None, 'data': {'catalog_sha256': self.catalog.sha256}})
             if signal is not None:
                 self.data(incident, 'signal', signal)
@@ -167,7 +177,7 @@ class ControlPlane(ReleaseControl):
             now = self.clock()
             incident = Incident(id=expected_id, created_at=now, state='detected', document={
                 'environment': request.environment, 'service': request.service,
-                'system': SERVICE_SYSTEMS[request.service], 'reason': scrub(request.reason),
+                'system': self.catalog.services[request.service], 'reason': scrub(request.reason),
                 'stages': [], 'error': None, 'data': {'catalog_sha256': self.catalog.sha256,
                     'unified_origin': copy.deepcopy(origin), 'unified_request_fingerprint': request_fingerprint,
                     **({'mixed_required': True} if mixed_required is True else {})}})
@@ -225,8 +235,29 @@ class ControlPlane(ReleaseControl):
         'closed': ('completed', 'failed'),
     }
 
+    def list_live_incidents(self, *, limit, offset, as_of):
+        """Page the two operational groups under one anchor and one read session."""
+        from sqlalchemy import func
+        from .summary_storage import read_summary_page
+
+        self.require_store()
+        states = self.LIST_STATE_GROUPS['automatic'] + self.LIST_STATE_GROUPS['waiting_people']
+        with self.store.read() as session:
+            newest = session.scalar(select(func.max(Incident.created_at)))
+            anchor = newest if as_of is None or newest is None else min(as_of, newest)
+            scope = [Incident.state.in_(states)]
+            if anchor is not None:
+                scope.append(Incident.created_at <= anchor)
+            total = session.scalar(select(func.count()).select_from(Incident).where(*scope)) or 0
+            query = (select(Incident).where(*scope).order_by(Incident.created_at.desc(), Incident.id.desc())
+                     .offset(offset).limit(limit))
+            rows = read_summary_page(session, query) if total and session.bind.dialect.name == 'postgresql' else None
+            if rows is None:
+                rows = [self.serialize(row) for row in session.scalars(query)] if total else []
+        return {'incidents': rows, 'total': total, 'as_of': anchor, 'live': True}
+
     def list_incidents(self, *, environment=None, service=None, system=None, state=None, group=None, work=None, search=None,
-                       limit=200, offset=0, as_of=None, lower=None, upper=None):
+                       limit=200, offset=0, as_of=None, lower=None, upper=None, summary_only=False):
         """정돈-04: 필터를 DB에서 먼저 적용한 뒤 총건수·페이지를 같은 조건으로 계산한다(최신 200건 고정 아님).
 
         as_of(첫 페이지의 최신 created_at)를 넘기면 이후 페이지가 새 사건 유입에 밀리지 않는다. 조회 전용 세션."""
@@ -257,9 +288,14 @@ class ControlPlane(ReleaseControl):
             anchor = newest if as_of is None or newest is None else min(float(as_of), newest)
             pinned = [Incident.created_at <= anchor] if anchor is not None else []
             total = session.scalar(select(func.count()).select_from(Incident).where(*scope, *status, *pinned)) or 0
-            rows = session.scalars(select(Incident).where(*scope, *status, *pinned)
-                                   .order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit))
-            items = [self.serialize(row) for row in rows]
+            query = (select(Incident).where(*scope, *status, *pinned)
+                     .order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit))
+            items = None
+            if summary_only and session.bind.dialect.name == 'postgresql':
+                from .summary_storage import read_summary_page
+                items = read_summary_page(session, query)
+            if items is None:
+                items = [self.serialize(row) for row in session.scalars(query)]
             # 상태 분포는 상태·묶음 선택만 빼고 같은 범위로 센다(선택지별 결과 수 안내용).
             by_state = dict(session.execute(select(Incident.state, func.count()).where(*scope, *pinned)
                                             .group_by(Incident.state)).all())
@@ -492,6 +528,9 @@ class ControlPlane(ReleaseControl):
                 if type(not_before) in (int, float) and not_before > self.clock():
                     continue
                 owner = self.get(session, candidate.incident_id)
+                if candidate.kind != 'reconcile' and any(self.environment_paused(env) for env in (
+                        owner.document.get('environment'), candidate.payload.get('environment'), candidate.payload.get('stage'))):
+                    continue
                 if self.requires_runner_roles(owner.document, candidate.kind) and not (actor or {}).get('runner_role'):
                     continue
                 if not self.job_phase_valid(owner, candidate):
@@ -687,7 +726,7 @@ class ControlPlane(ReleaseControl):
                 if not safe_source_path(path) or not isinstance(body, str) or text_sha(body) != hashes.get(path):
                     return self.stop(session, incident, 'source_integrity_invalid')
             services = source.get('affected_services', [])
-            if not services or any(service not in SERVICE_SYSTEMS for service in services) or incident.document['service'] not in services:
+            if not services or any(service not in self.catalog.services for service in services) or incident.document['service'] not in services:
                 return self.stop(session, incident, 'source_affected_services_invalid')
             profile = self.catalog.profiles[incident.document['service']]
             if set(services) != set(profile['affected_services']):

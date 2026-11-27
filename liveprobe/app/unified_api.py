@@ -99,6 +99,7 @@ def unified_router(state):
     def approve(iid: int, body: Approval, *, request: Request, authorization: str | None = Header(default=None)):
         def apply():
             service, actor = human(request, authorization, 'prd-approver')
+            service.control.require_active_environment('prd')
             return service.control.approve(child(service, iid), body, actor)
         if authorization:
             return apply()
@@ -122,7 +123,7 @@ def unified_router(state):
         if service is None:
             return {'enabled': False, 'services': [], 'systems': [], 'environments': ['dev', 'prd'],
                     'historical_environments': ['dev', 'stg', 'prd'], 'profiles_configured': False}
-        return {'enabled': True, **service.control.catalog.public()}
+        return {'enabled': True, **service.control.public_catalog()}
 
     @router.get('/api/unified/summaries')
     @router.get('/api/unified/history')
@@ -144,7 +145,8 @@ def unified_router(state):
                 raise H.http_error(exc) from None
         else:
             human(request, authorization, 'incident:read')
-        if group is not None and group not in coordinator.control.LIST_STATE_GROUPS:
+        live = projected and group == 'live'
+        if group is not None and group not in coordinator.control.LIST_STATE_GROUPS and not live:
             reject('list_group_invalid', 422)
         if any(v is not None and len(v) > 120 for v in (environment, service, system, state_filter, search)):
             reject('list_filter_invalid', 422)
@@ -153,21 +155,36 @@ def unified_router(state):
             lower, upper = bounds(start, end)
         except ValueError:
             reject('list_dates_invalid', 422)
-        result = coordinator.control.list_incidents(environment=environment, service=service, system=system,
-            state=state_filter, group=group, work=work, search=search, lower=lower, upper=upper,
-            limit=limit, offset=offset, as_of=as_of)
+        if live:
+            if any(value is not None for value in (environment, service, system, state_filter, work, search, lower, upper)):
+                reject('list_filter_invalid', 422)
+            result = coordinator.control.list_live_incidents(limit=limit, offset=offset, as_of=as_of)
+        else:
+            result = coordinator.control.list_incidents(environment=environment, service=service, system=system,
+                state=state_filter, group=group, work=work, search=search, lower=lower, upper=upper,
+                limit=limit, offset=offset, as_of=as_of, summary_only=projected)
         from sqlalchemy import select
         from .models import CodeActionLink
         ids = [i['id'] for i in result['incidents']]
-        with coordinator.sessions() as session:
-            documents = {item['id']: item for item in result['incidents']}
-            roots = {link.application_id: link.incident_id for link in session.scalars(
-                select(CodeActionLink).where(CodeActionLink.application_id.in_(ids), CodeActionLink.state == 'linked'))
-                if coordinator.matches_origin(link, documents[link.application_id])}
+        roots = {}
+        if ids:
+            with coordinator.sessions() as session:
+                documents = {item['id']: item for item in result['incidents']}
+                roots = {link.application_id: link.incident_id for link in session.scalars(
+                    select(CodeActionLink).where(CodeActionLink.application_id.in_(ids), CodeActionLink.state == 'linked'))
+                    if coordinator.matches_origin(link, documents[link.application_id])}
         for item in result['incidents']:
             item['root_incident_id'] = roots.get(item['id'])
             item['source'] = 'unified' if item['root_incident_id'] else 'native'
-        if projected:
+        if live:
+            from .application.safety import scrub
+
+            waiting = coordinator.control.LIST_STATE_GROUPS['waiting_people']
+            result['incidents'] = [{**{k: item.get(k) for k in ('id', 'state', 'environment', 'service', 'system', 'root_incident_id')},
+                                    'reason': str(scrub(item.get('reason', '')))[:240],
+                                    'live_group': 'waiting_people' if item['state'] in waiting else 'automatic'}
+                                   for item in result['incidents']]
+        elif projected:
             result['incidents'] = [{**project_summary(item), 'root_incident_id': item['root_incident_id'], 'source': item['source']}
                                    for item in result['incidents']]
         else:

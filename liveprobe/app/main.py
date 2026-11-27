@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel
@@ -17,16 +17,17 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import OperationalError, InterfaceError
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
-from .observation_sources import adapter_url, bind_source_settings
-from . import db
+from .observation_sources import bind_source_settings
+from . import business_http, db
 from .auth import require_user, require_webhook
 from .config import get_app_config, get_settings
-from .incidents import Signal
-from .models import (INCIDENT_CLOSED_STATES, Action, AgentRun, AuditLog, Citation, CodeActionLink, Evidence, Incident, IncidentEvent,
+from .incidents import PROXY_LDS_REJECTED, Signal
+from .models import (INCIDENT_CLOSED_STATES, INCIDENT_OPEN_STATES, Action, AgentRun, AuditLog, Citation, CodeActionLink, Evidence, Incident, IncidentEvent,
                      RagChunk, RoutingDecision, Setting)
 from .model_settings import ModelSettingsIn, RevisionConflict, read_settings, save_settings
 from .lifecycle import transition, update_run
 from .redact import redact_obj
+from .route_latency import ALERT as ROUTE_LATENCY_ALERT, route_key
 from . import safety
 from .safety import POLICY_MODES
 from .unified import effective_status_expr, projection_rows, apply_projection, project_items, append_code_flow
@@ -40,18 +41,19 @@ rag_ingest_stop = threading.Event()
 
 
 def _start_background() -> None:
-    """Heavy init (embedding model, kube client) + threads, off the request path."""
+    """Initialize RAG, the Kubernetes client and background workers off the request path."""
     settings, cfg = get_settings(), get_app_config()
     from .engine import Engine
     from .k8s import Kube
     from .llm import make_provider
-    from .rag import RAG, FastEmbedder, index_runbooks
+    from .rag import RAG, index_runbooks
+    from .rag_model import IsolatedEmbedder
     from .rag_ingest import index_documents, load_public_documents, closed_incident_documents
     from .watcher import Watchers
 
     rag = None
+    emb = IsolatedEmbedder(settings.embedding_model, settings.embedding_cache_dir)
     try:
-        emb = FastEmbedder(settings.embedding_model, settings.embedding_cache_dir)
         with db.session() as s:
             new = index_runbooks(s, emb, settings.runbooks_dir)
             STATE["rag_chunks"] = s.scalar(select(func.count()).select_from(RagChunk)
@@ -68,21 +70,27 @@ def _start_background() -> None:
         except Exception as e:  # noqa: BLE001
             log.error("RAG public corpus rejected; internal runbooks remain available: %s", type(e).__name__)
 
+        emb.release_if_idle(settings.embedding_idle_seconds)
+
         def ingest_closed() -> None:
-            while True:
-                try:
-                    with db.session() as s:
-                        from .resolution_memory import observed_resolution_documents, resolution_documents
-                        result = index_documents(s, emb, [*closed_incident_documents(s), *resolution_documents(s),
-                                                          *observed_resolution_documents(s)])
-                        STATE["rag_chunks"] = s.scalar(select(func.count()).select_from(RagChunk)
-                                                        .where(RagChunk.retired_at.is_(None)))
-                    if result.documents:
-                        log.info("RAG sanitized resolved incidents indexed: %s documents", result.documents)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("RAG closed incident ingestion skipped: %s", type(e).__name__)
-                if rag_ingest_stop.wait(60):
-                    break
+            try:
+                while not rag_ingest_stop.is_set():
+                    try:
+                        with db.session() as s:
+                            from .resolution_memory import observed_resolution_documents, resolution_documents
+                            result = index_documents(s, emb, [*closed_incident_documents(s), *resolution_documents(s),
+                                                              *observed_resolution_documents(s)])
+                            STATE["rag_chunks"] = s.scalar(select(func.count()).select_from(RagChunk)
+                                                            .where(RagChunk.retired_at.is_(None)))
+                        if result.documents:
+                            log.info("RAG sanitized resolved incidents indexed: %s documents", result.documents)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("RAG closed incident ingestion skipped: %s", type(e).__name__)
+                    emb.release_if_idle(settings.embedding_idle_seconds)
+                    if rag_ingest_stop.wait(60):
+                        break
+            finally:
+                emb.close()
 
         threading.Thread(target=ingest_closed, name="rag-closed-ingest", daemon=True).start()
         # AutoRAG: evaluate retrieval configurations on production incidents, apply a clear winner (app/rag_tuning.py).
@@ -90,6 +98,8 @@ def _start_background() -> None:
         threading.Thread(target=autotune_loop, args=(rag_ingest_stop, emb, production_kinds(cfg)),
                          name="rag-autotune", daemon=True).start()
     except Exception as e:  # noqa: BLE001
+        emb.close()
+        rag = None
         log.error("RAG init failed: %s: %s", type(e).__name__, e)
 
     kube = Kube(in_cluster=settings.kube_in_cluster)
@@ -131,12 +141,20 @@ def _start_background() -> None:
         collector = HubbleCollector(store, settings.hubble_relay)
         collector.start()
         STATE.update(flows=store, collector=collector)
-    watchers = Watchers(kube, cfg, engine.on_signal, flow_store=store)
+    from .hpa_recovery import HpaRecovery
+    watchers = Watchers(kube, cfg, engine.on_signal, flow_store=store, hpa_recovery=HpaRecovery(cfg))
     watchers.start()
     from .app_errors import AppErrorWatcher
     app_errors = AppErrorWatcher(cfg, settings, engine.on_signal)
     app_errors.start()
     STATE["app_errors"] = app_errors
+    if settings.admission_audit_log_file:
+        from pathlib import Path
+        from .admission_audit import AdmissionAuditWatcher
+        audit_watcher = AdmissionAuditWatcher(Path(settings.admission_audit_log_file), cfg, engine.on_signal,
+                                              kube.served_api_versions)
+        audit_watcher.start()
+        STATE["admission_audit"] = audit_watcher
     STATE.update(engine=engine, watchers=watchers, kube=kube, ready=True)
     log.info("LiveProbe background services started (provider=%s, target=%s)", cfg.llm.provider,
              cfg.target_namespaces)
@@ -175,6 +193,8 @@ async def lifespan(app: FastAPI):
         STATE["watchers"].stop()
     if STATE.get("app_errors"):
         STATE["app_errors"].stop()
+    if source := STATE.pop("admission_audit", None):
+        source.stop()
     if STATE.get("engine"):
         STATE["engine"].stop()
     if STATE.get("interpret") and hasattr(STATE["interpret"], "stop"):
@@ -420,16 +440,17 @@ def control(iid: int, body: ControlIn, user: str = Depends(require_user)):
 
 # ------------------------------------------------------------------ topology (P3)
 _TOPO_CACHE: dict[str, Any] = {"at": 0.0, "inventory": None}
+_TOPO_LOCK = threading.Lock()
 
 
 def _inventory(kube) -> dict:
     """Cluster inventory, cached 5s so many dashboards do not each hit the Kubernetes API."""
     import time as _t
-    now = _t.monotonic()
-    if _TOPO_CACHE.get("inventory") is None or now - _TOPO_CACHE.get("at", 0.0) > 5:
-        observed = kube.cluster_inventory()
-        _TOPO_CACHE.update(inventory=observed, at=now, observed_at=datetime.now(timezone.utc).isoformat())
-    return _TOPO_CACHE["inventory"]
+    with _TOPO_LOCK:
+        if _TOPO_CACHE.get("inventory") is None or _t.monotonic() - _TOPO_CACHE.get("at", 0.0) > 5:
+            observed = kube.cluster_inventory()
+            _TOPO_CACHE.update(inventory=observed, at=_t.monotonic(), observed_at=datetime.now(timezone.utc).isoformat())
+        return _TOPO_CACHE["inventory"]
 
 
 @app.get("/api/topology")
@@ -441,39 +462,36 @@ def topology(user: str = Depends(require_user)):
     if kube is None:
         raise HTTPException(503, "cluster client not ready")
     store = store or FlowStore()  # collection disabled: every flow field stays empty and freshness says never_connected
+    cfg = get_app_config()
     with db.session() as s:
-        incidents = [{"id": i.id, "namespace": i.namespace, "workload": i.workload, "system": i.system, "environment": get_app_config().environment(i.namespace), "status": i.status,
+        incidents = [{"id": i.id, "namespace": i.namespace, "workload": i.workload, "system": i.system, "environment": cfg.environment(i.namespace), "status": i.status,
                       "severity_level": i.severity_level, "title": i.title,
                       "claimed": bool((i.handoff or {}).get("claimed_by")),
                       "updated_ts": i.updated_at.timestamp() if i.updated_at else 0}
-                     for i in s.scalars(select(Incident).where(effective_status_expr().not_in(("resolved", "failed", "closed"))))]
+                     for i in s.scalars(select(Incident).where(Incident.namespace.not_in(cfg.historical_namespaces),
+                                        effective_status_expr().not_in(("resolved", "failed", "closed"))))]
         incidents = project_items(s, incidents)
-    return build_topology(_inventory(kube), store.snapshot(), store.freshness(), incidents, cfg=get_app_config())
+    return build_topology(_inventory(kube), store.snapshot(), store.freshness(), incidents, cfg=cfg)
 
 
 # ------------------------------------------------------------------ operations overview (P15)
-_OV_METRICS: dict[str, Any] = {"at": 0.0, "url": None, "values": {}, "errors": {}}
+_OV_METRICS: dict[str, Any] = {}
 _OV_LOCK = threading.Lock()
 
 
 @app.get("/api/overview")
-def operations_overview(user: str = Depends(require_user)):
+def operations_overview(user: str = Depends(require_user), response: Response = None,
+                        view: Literal['atlas'] | None = Header(default=None, alias='X-LiveProbe-Overview-View')):
     from datetime import timedelta
-    from time import monotonic
     from zoneinfo import ZoneInfo
     from . import overview as ov
-    from .models import RunEvent
-    from .narrative import stage_of
     kube = STATE.get("kube")
     if kube is None:
         raise HTTPException(503, "cluster client not ready")
-    settings = get_settings()
+    settings, cfg = get_settings(), get_app_config()
     # Only source queries are cached: incident pins and AI stages must change on every request.
     with _OV_LOCK:
-        if _OV_METRICS["url"] != adapter_url(settings, 'prometheus') or monotonic() - _OV_METRICS["at"] > 10:
-            values, errors = ov.fetch_metrics(settings)
-            _OV_METRICS.update(at=monotonic(), url=adapter_url(settings, 'prometheus'), values=values, errors=errors)
-        values, errors = _OV_METRICS["values"], dict(_OV_METRICS["errors"])
+        values, errors = ov.fetch_metrics(settings, atlas=view == 'atlas', cache=_OV_METRICS)
     try:
         inv = _inventory(kube)
         inventory_observed_at = _TOPO_CACHE.get("observed_at") if _TOPO_CACHE.get("inventory") is inv else None
@@ -482,41 +500,52 @@ def operations_overview(user: str = Depends(require_user)):
         inventory_observed_at = None
         errors["inventory"] = type(e).__name__
     try:
-        events = kube.cluster_warning_events()
+        if view == 'atlas':
+            # The map displays collection availability. Warning rows belong to diagnostics.
+            kube.cluster_warning_events(limit=1)
+            events = []
+        else:
+            events = kube.cluster_warning_events()
     except Exception as e:  # noqa: BLE001
         events = []
         errors["events"] = type(e).__name__
     with db.session() as s:
         now = datetime.now(timezone.utc)
         recent = now - timedelta(hours=1)
-        rows = list(s.scalars(select(Incident).where(or_(
+        handoff = func.jsonb_build_object("claimed_by", Incident.handoff["claimed_by"], "observed_recovery",
+                   case((Incident.status.in_(("resolved", "recovery_review")), Incident.handoff["observed_recovery"])))
+        status_reason = case((Incident.status == "resolved", Incident.status_reason)).label("status_reason")
+        columns = (Incident.id, Incident.namespace, Incident.workload, Incident.system, Incident.status,
+                   Incident.severity_level, Incident.title, Incident.created_at, Incident.updated_at,
+                   status_reason, handoff.label("handoff"))
+        rows = s.execute(select(*columns).where(Incident.namespace.not_in(cfg.historical_namespaces), or_(
             effective_status_expr().in_(("open", "analyzing", "action_pending", "acting")),
-            (effective_status_expr() == "handed_off") & (Incident.updated_at >= recent))).order_by(Incident.id.desc()).limit(200)))
-        ids = [i.id for i in rows]
-        routes = list(s.scalars(select(RoutingDecision).where(RoutingDecision.incident_id.in_(ids)).order_by(RoutingDecision.id))) if ids else []
-        runs = list(s.scalars(select(AgentRun).where(AgentRun.incident_id.in_(ids)).order_by(AgentRun.id))) if ids else []
-        evs = list(s.scalars(select(RunEvent).where(RunEvent.incident_id.in_(ids)).order_by(RunEvent.seq))) if ids else []
-        incidents = [{"id": i.id, "namespace": i.namespace, "workload": i.workload, "system": i.system, "environment": get_app_config().environment(i.namespace), "status": i.status,
+            (effective_status_expr() == "handed_off") & (Incident.updated_at >= recent))).order_by(Incident.id.desc()).limit(200)).all()
+        stages = ov.incident_stages(s, rows)
+        incidents = [{"id": i.id, "namespace": i.namespace, "workload": i.workload, "system": i.system, "environment": cfg.environment(i.namespace), "status": i.status,
                       "severity_level": i.severity_level, "title": i.title, "created_at": iso(i.created_at),
                       "updated_ts": i.updated_at.timestamp() if i.updated_at else 0,
                       "claimed": bool((i.handoff or {}).get("claimed_by")),
-                      "stage": stage_of(i, [r for r in routes if r.incident_id == i.id],
-                                        [r for r in runs if r.incident_id == i.id], [e for e in evs if e.incident_id == i.id])}
+                      "stage": stages[i.id]}
                      for i in rows]
-        day_start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(hour=0, minute=0, second=0, microsecond=0)
         incidents = project_items(s, incidents)
-        counts = dict(s.execute(select(effective_status_expr(), func.count()).where(Incident.created_at >= day_start)
-                                .group_by(effective_status_expr())).all())
-        today = {"total": sum(counts.values()), **{k: counts.get(k, 0) for k in ("resolved", "handed_off", "failed", "closed")}}
+        today = None
+        if view != 'atlas':
+            day_start = now.astimezone(ZoneInfo("Asia/Seoul")).replace(hour=0, minute=0, second=0, microsecond=0)
+            counts = dict(s.execute(select(effective_status_expr(), func.count()).where(Incident.created_at >= day_start)
+                                    .group_by(effective_status_expr())).all())
+            today = {"total": sum(counts.values()), **{k: counts.get(k, 0) for k in ("resolved", "handed_off", "failed", "closed")}}
         from .incident_counts import incident_counts
-        shared = incident_counts(s, get_app_config().target_namespaces)
+        shared = incident_counts(s, cfg.target_namespaces)
     out = ov.assemble(inv, values, events=events, incidents=incidents, today=today,
-                      errors=errors, store=STATE.get("flows"), cfg=get_app_config())
+                      errors=errors, store=STATE.get("flows"), cfg=cfg, atlas=view == 'atlas')
     # 정돈-05: header, overview and environment chips read the same buckets; `open` keeps feeding the map pins only.
     out["inventory_observed_at"] = inventory_observed_at
     out["incidents"]["counts"] = shared
-    for env in out["cluster"].get("environments") or []:
+    for env in (out.get("cluster") or {}).get("environments") or []:
         env["open_incidents"] = (shared["by_environment"].get(env["name"]) or {}).get("in_progress", env.get("open_incidents"))
+    if response is not None:
+        response.headers.append("Vary", "X-LiveProbe-Overview-View")
     return redact_obj(out)
 
 
@@ -556,12 +585,29 @@ def _summary(i: Incident, agg: dict[int, dict]) -> dict:
 INCIDENT_ORIGINS = ("evaluation", "unconfirmed")
 
 
+def _alert_incident_rows(session, joined, conditions, *, offset, limit):
+    columns = (Incident.id, Incident.title, Incident.namespace, Incident.workload, Incident.severity_level,
+               func.coalesce(CodeActionLink.projected_status, Incident.status).label('status'),
+               CodeActionLink.application_state)
+    query = (select(*columns).select_from(joined).where(*conditions)
+             .order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit))
+    items = []
+    for snapshot in session.execute(query).mappings():
+        item = dict(snapshot)
+        state = item.pop('application_state')
+        if state is not None:
+            item['code_action'] = {'state': state}
+        items.append(item)
+    return items
+
+
 @app.get("/api/incidents")
 def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, search: str | None = None,
                    environment: str | None = None, origin: str | None = None, system: str | None = None,
                    start: date | None = None, end: date | None = None, service: str | None = None,
                    as_of: int | None = None, work: Literal['approval', 'qa_fix', 'recovery'] | None = None,
-                   user: str = Depends(require_user)):
+                   user: str = Depends(require_user), view: Literal['alerts', 'active', 'live'] | None = None,
+                   compact: bool = False):
     """정돈-04: every filter runs in the database before counting and paging, so `total` and every page describe the
     same set over the whole history. `as_of` (the max id of the first page) keeps later pages stable while new
     incidents arrive. Origin uses only the explicit `eval/` marker; everything else stays 'unconfirmed'."""
@@ -580,7 +626,8 @@ def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, 
         lower, upper = bounds(start, end)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    envs = get_app_config().history_namespaces
+    cfg = get_app_config()
+    envs = cfg.history_namespaces
     from .application.qa_release import WORK_STATES
     work_group = case(
         *((CodeActionLink.application_state.in_(states), key) for key, states in WORK_STATES.items()),
@@ -612,6 +659,45 @@ def list_incidents(status: str | None = None, limit: int = 50, offset: int = 0, 
         anchor = min(as_of, newest) if as_of is not None else newest
         conds.append(Incident.id <= anchor)
         joined = Incident.__table__.outerjoin(CodeActionLink, CodeActionLink.incident_id == Incident.id)
+        if view == 'live' and not offset:
+            alert_scope = [*conds, work_group == work] if work else conds
+            alerts = _alert_incident_rows(s, joined, alert_scope, offset=0, limit=200)
+        else:
+            alerts = None
+        if view in ('active', 'live'):
+            conds.append(effective_status_expr().in_((*INCIDENT_OPEN_STATES, 'recovery_review')))
+        if view == 'live' or (view == 'active' and compact):
+            from .readings_ko import title_ko
+            if work:
+                conds.append(work_group == work)
+            columns = (Incident.id, Incident.title, Incident.signal_reasons, Incident.namespace,
+                       Incident.workload, Incident.system, Incident.severity_level, Incident.created_at,
+                       func.coalesce(CodeActionLink.projected_status, Incident.status).label('status'),
+                       CodeActionLink.application_state, func.count().over().label('total'))
+            query = select(*columns).select_from(joined).where(*conds)
+            rows = s.execute(query.order_by(Incident.created_at.desc(), Incident.id.desc()).offset(offset).limit(limit)).mappings()
+            items = []
+            total = 0
+            for row in rows:
+                item = dict(row)
+                total = item.pop('total')
+                state = item.pop('application_state')
+                if state is not None:
+                    item['code_action'] = {'state': state}
+                item['created_at'] = iso(item['created_at'])
+                item['title_ko'] = title_ko(item['title'], item.pop('signal_reasons'))
+                item['environment'] = cfg.environment(item['namespace'])
+                items.append(item)
+            if not items and offset:
+                total = s.scalar(select(func.count()).select_from(joined).where(*conds)) or 0
+            result = {'items': items, 'total': total, 'as_of': anchor}
+            if alerts is not None:
+                result['alerts'] = alerts
+            return result
+        if view == 'alerts':
+            if work:
+                conds.append(work_group == work)
+            return {'items': _alert_incident_rows(s, joined, conds, offset=offset, limit=limit)}
         distribution = dict(s.execute(select(work_group, func.count()).select_from(joined)
                                       .where(*conds).group_by(work_group)).all())
         by_work = {key: distribution.get(key, 0) for key in WORK_STATES}
@@ -947,6 +1033,8 @@ def approve(aid: int, user: str = Depends(require_user)):
         if act.status != "pending_approval":
             raise HTTPException(409, f"action is {act.status}, not pending_approval")
         inc = s.get(Incident, act.incident_id)
+        if inc.namespace in get_app_config().historical_namespaces:
+            raise HTTPException(409, "일시 중지한 환경은 기록만 조회할 수 있습니다.")
         iid, level = inc.id, inc.severity_level
         if level == "HIGH_RISK" and not safety.high_risk_may_execute():
             act.status, act.reason = "denied", "HIGH_RISK incidents never execute actions"
@@ -1047,10 +1135,14 @@ def put_model_settings(body: ModelSettingsIn, user: str = Depends(require_user))
 def status(user: str = Depends(require_user)):
     cfg = get_app_config()
     w = STATE.get("watchers")
-    return {"ready": STATE["ready"], "rag_chunks": STATE["rag_chunks"], "watchers": w.status if w else {},
+    sources = dict(w.status) if w else {}
+    if source := STATE.get("admission_audit"):
+        sources["admission_audit"] = source.status
+    return {"ready": STATE["ready"], "rag_chunks": STATE["rag_chunks"], "watchers": sources,
             "llm": {"provider": cfg.llm.provider,
                     "roles": {k: v.model_dump() for k, v in cfg.llm.roles.items()}},
-            "target_namespace": cfg.target_namespace, "target_namespaces": cfg.target_namespaces, "allowlist": cfg.allowlist}
+            "target_namespace": cfg.target_namespace, "target_namespaces": cfg.target_namespaces,
+            "historical_namespaces": cfg.historical_namespaces, "allowlist": cfg.allowlist}
 
 
 # ------------------------------------------------------------------ webhook
@@ -1061,9 +1153,11 @@ ALERT_KIND = {
     "TargetServiceNoEndpoints": "endpoint",
     "OrderHigh5xxRate": "app",
     "InventoryHigh5xxRate": "app",
-    "TargetHigh5xxRate": "app",
+    business_http.ALERT: "app",
     "High5xx": "app",
     "TargetHighLatency": "app",
+    ROUTE_LATENCY_ALERT: "app",
+    PROXY_LDS_REJECTED: "pod",
     "TargetConnectionPoolExhausted": "app",
 }
 
@@ -1083,14 +1177,30 @@ def alert_signal(alert: dict, cfg, kube) -> Signal | None:
             return None
         return Signal(ns, "Service", labels["endpoint"], name, "alertmanager", {"labels": labels})
     if kind == "app" and labels.get("app"):
+        if name == ROUTE_LATENCY_ALERT and route_key(labels.get("method"), labels.get("uri")) is None:
+            return None
+        if name == business_http.ALERT and ("method" in labels or "uri" in labels):
+            if route_key(labels.get("method"), labels.get("uri")) is None:
+                return None
         return Signal(ns, "App", labels["app"], name, "alertmanager", {"labels": labels})
     if kind == "pod" and labels.get("pod") and kube is not None:
         from .k8s import deployment_for_pod
         pod = kube.get_pod(ns, labels["pod"])
         if not pod or (pod.get("metadata") or {}).get("deletionTimestamp"):
             return None
+        if name == PROXY_LDS_REJECTED and (
+            not labels.get("pod_uid") or labels["pod_uid"] != (pod.get("metadata") or {}).get("uid")
+            or (pod.get("status") or {}).get("phase") != "Running"
+        ):
+            return None
         dep = deployment_for_pod(kube, ns, pod)
         if dep:
+            if name == PROXY_LDS_REJECTED:
+                return Signal(ns, "Deployment", dep, name, "alertmanager", {
+                    "pod": labels["pod"], "pod_uid": labels["pod_uid"],
+                    "metric": "envoy_listener_manager_lds_update_rejected",
+                    "listener_rejection_observed": True, "route_impact_observed": None,
+                })
             return Signal(ns, "Deployment", dep, name, "alertmanager", {"labels": labels})
     return None
 

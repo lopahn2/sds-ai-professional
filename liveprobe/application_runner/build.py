@@ -1,22 +1,36 @@
 """추가 시험을 먼저 실행한 후 소스 변경·재시험·한 번의 최종 빌드."""
 import json
 import ast
+from hashlib import sha256
+import os
 import re
 import shutil
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 import uuid
 from .profiles import digest, manifest_image
-from .source import safe_path, source_files, parse_patch, apply_changes
+from .source import safe_path, parse_patch, apply_changes
+
+if __package__.startswith("liveprobe."):
+    from ..app.application.regression_names import node_test_definitions
+else:
+    from app.application.regression_names import node_test_definitions
 
 
-def test_command(profile, paths):
+def test_command(profile, paths, *, node_names=()):
     language = profile['language']
     if language == 'node':
         if not paths or any(not p.startswith('test/') or not p.endswith('.js') for p in paths):
             raise ValueError('node_test_path_required')
-        return ['node','--test','--test-reporter=tap',*sorted(paths)]
+        patterns = ['--test-name-pattern=^' + re.sub(r'([\\^$.*+?()\[\]{}|])', r'\\\1', name) + '$'
+                    for name in node_names]
+        return ['node','--test','--test-reporter=tap',*patterns,*sorted(paths)]
     if language == 'java':
-        return ['mvn','-o','-B','-Dstyle.color=never','test']
+        command = ['mvn', '-o', '-B', '-Dstyle.color=never']
+        if paths:
+            classes = [path.removeprefix('src/test/java/') for path in paths]
+            command.append('-Dtest=' + ','.join(classes))
+        return command + ['test']
     if language=='domain':return ['python','-B','/runner/unittest_harness.py']
     return ['python','-B','-m','pytest','-q','-p','no:cacheprovider','-o','junit_family=xunit1','--junitxml=/reports/pytest.xml','tests']
 
@@ -26,6 +40,12 @@ def final_manifest(inspection, repository):
     if len(set(candidates)) != 1:
         raise ValueError('manifest_digest_not_observed')
     return manifest_image(candidates[0], repository)
+
+
+class TestBuildFailure(ValueError):
+    def __init__(self, code, tests):
+        super().__init__(code)
+        self.tests = tests
 
 
 def changed_test_ids(old,new,language):
@@ -42,7 +62,7 @@ def changed_test_ids(old,new,language):
                             result[cls.name+'::'+node.name]=ast.dump(node,include_attributes=False)
             return result
         if language=='node':
-            return {m[1]:m[0] for m in re.finditer(r"\b(?:test|it)\(\s*['\"]([^'\"]+)['\"][\s\S]*?(?=\b(?:test|it)\(|\Z)",text)}
+            return node_test_definitions(text)
         return {m[1]:m[0] for m in re.finditer(r'@Test\b[\s\S]*?void\s+(\w+)\s*\([^)]*\)[\s\S]*?(?=@Test\b|\Z)',text)}
     previous=ids(old);current=ids(new)
     return sorted(name for name,body in current.items() if previous.get(name)!=body)
@@ -65,6 +85,10 @@ def cleanup_workspace(workspace,cleanup_root,proof_file=None):
     durable_write(Path(cleanup_root)/(workspace.name+'.json'),{'workspace':status})
 
 
+def _raise_scan_error(error):
+    raise error
+
+
 class Builder:
     def __init__(self, workspace_root, transport, provenance_root=None):
         self.workspace_root=Path(workspace_root)
@@ -83,31 +107,52 @@ class Builder:
         finally:cleanup_workspace(workspace,self.workspace_root/'cleanup',retained['proof'])
 
     @staticmethod
-    def assert_tree(workspace,expected):
-        # source_files의 제외 규칙으로 새 숨김 파일/산출물을 빌드 문맥에 숨기지 않는다.
-        observed={}
+    def assert_tree(workspace, expected_hashes):
+        # Match every file in the build context, including names excluded by snapshot discovery.
+        observed = 0
+        owner_hash = digest(workspace.name.encode())
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        buffer = bytearray(8 * 1024)
+        content = memoryview(buffer)
         try:
-            for path in workspace.rglob('*'):
-                if path.is_symlink():raise ValueError('source_tree_changed')
-                if path.is_dir():continue
-                name=path.relative_to(workspace).as_posix()
-                if name=='.application-owner':
-                    if path.read_text()!=workspace.name:raise ValueError('source_tree_changed')
-                    continue
-                safe_path(workspace,name)
-                observed[name]=digest(path.read_bytes())
-        except (ValueError,OSError):raise ValueError('source_tree_changed') from None
-        if observed!={p:digest(t.encode()) for p,t in expected.items()}:raise ValueError('source_tree_changed')
+            for directory, subdirs, files, fd in os.fwalk(workspace, follow_symlinks=False,
+                                                           onerror=_raise_scan_error):
+                if any(not S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode) for name in subdirs):
+                    raise ValueError('source_tree_changed')
+                relative = os.path.relpath(directory, workspace)
+                prefix = '' if relative == '.' else relative + '/'
+                for name in files:
+                    path = prefix + name
+                    marker = path == '.application-owner'
+                    expected = owner_hash if marker else expected_hashes.get(path)
+                    if expected is None:
+                        raise ValueError('source_tree_changed')
+                    with os.fdopen(os.open(name, flags, dir_fd=fd), 'rb', buffering=0) as file:
+                        if not S_ISREG(os.fstat(file.fileno()).st_mode):
+                            raise ValueError('source_tree_changed')
+                        checksum = sha256()
+                        while length := file.readinto(buffer):
+                            checksum.update(content[:length])
+                    if checksum.hexdigest() != expected:
+                        raise ValueError('source_tree_changed')
+                    observed += not marker
+        except (ValueError, OSError):
+            raise ValueError('source_tree_changed') from None
+        if observed != len(expected_hashes):
+            raise ValueError('source_tree_changed')
 
     def _run(self, source, patch, profile, workspace, retained):
         if not source.get('provenance_verified') or source['profile_id'] != profile['id']:
             raise ValueError('source_unverified')
         if patch['source_snapshot_id'] != source['id'] or patch['diff_sha256'] != digest(patch['diff'].encode()):
             raise ValueError('patch_snapshot_mismatch')
+        source_hashes = {}
         for name,text in source['files'].items():
             path=safe_path(workspace,name)
-            if digest(text.encode()) != source['file_sha256'][name]:
+            source_hash = digest(text.encode())
+            if source_hash != source['file_sha256'][name]:
                 raise ValueError('source_mismatch')
+            source_hashes[name] = source_hash
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text(text)
         changes=parse_patch(patch['diff'],workspace,profile['test_root'])
@@ -126,7 +171,9 @@ class Builder:
                 raise ValueError('added_test_method_required')
         modes=['trade','delivery','business'] if profile['language']=='domain' else [None]
         apply_changes(workspace,changes,True,profile['test_root'])
-        expected_before={**source['files'],**{p:t for p,t in changes.items() if p.startswith(profile['test_root']+'/')}}
+        changes_hashes = {path: digest(text.encode()) for path, text in changes.items()}
+        expected_before = {**source_hashes, **{path: sha for path, sha in changes_hashes.items()
+                                               if path.startswith(profile['test_root'] + '/')}}
         self.assert_tree(workspace,expected_before)
         self.observe('reproduce')
         before=[]
@@ -142,7 +189,7 @@ class Builder:
         if not all(r['exit_code']==1 and r['failed']+r.get('errors',0)>0 for r in before):
             raise ValueError('before_not_reproduced')
         apply_changes(workspace,changes,False,profile['test_root'],on_write=lambda path:self.observe('edit_file',path))
-        expected_after={**source['files'],**changes}
+        expected_after = {**source_hashes, **changes_hashes}
         self.assert_tree(workspace,expected_after)
         self.observe('regression')
         after=[]
@@ -153,33 +200,40 @@ class Builder:
             after.append(report)
         for report in after:
             self.validate_report(report,added,phase='after',regression_ids=None)
-        if not all(r['exit_code']==0 and r['failed']==0 and not r.get('errors',0) for r in after):
-            raise ValueError('after_not_passed')
+        after_passed = all(r['exit_code']==0 and r['failed']==0 and not r.get('errors',0) for r in after)
+        reports={'before':before,'after':after,'modes':modes}
+        tests={'before_failed':True,'after_passed':after_passed,'regression_executed':True,
+               'total':sum(r['total'] for r in after),'failed':sum(r['failed']+r.get('errors',0) for r in after),
+               'executed_tests':[t for r in before+after for t in r['executed_tests']],
+               'report_sha256':digest(reports)}
+        if not after_passed:
+            raise TestBuildFailure('after_not_passed',tests)
         self.assert_tree(workspace,expected_after)
-        files=expected_after
-        tree=digest({p:digest(t.encode()) for p,t in files.items()})
-        self.observe('build')
-        receipt=self.transport.build(workspace,profile,tree)
-        self.assert_tree(workspace,expected_after)
-        manifest_image(receipt['image'],profile['image_repository'])
-        if not receipt.get('manifest_observed') or receipt['source_tree_sha256'] != tree:
-            raise ValueError('build_receipt_mismatch')
+        tree=digest(expected_after)
+        try:
+            self.observe('build')
+            receipt=self.transport.build(workspace,profile,tree)
+            self.assert_tree(workspace,expected_after)
+            manifest_image(receipt['image'],profile['image_repository'])
+            if not receipt.get('manifest_observed') or receipt['source_tree_sha256'] != tree:
+                raise ValueError('build_receipt_mismatch')
+        except Exception as exc:
+            # Keep test proof distinct from a successful artifact receipt.
+            code = str(exc) if isinstance(exc,ValueError) and re.fullmatch(r'[a-z][a-z0-9_]{1,100}', str(exc)) else 'runner_execution_failed'
+            raise TestBuildFailure(code,tests) from None
         from .worker import durable_write
         proof={'image':receipt['image'],'profile_id':profile['id'],'base_commit':None,
-               'file_sha256':{p:digest(t.encode()) for p,t in files.items()},
+               'file_sha256':expected_after,
                'source_root':str(workspace.resolve()),'provenance_kind':'local_build_receipt'}
         proofpath=self.provenance_root/(profile['service']+'-'+receipt['image'].rsplit(':',1)[1]+'.json')
         retained['proof']=str(proofpath.resolve())
         durable_write(proofpath,proof)
-        reports={'before':before,'after':after,'modes':modes}
         integrity={'status':'fixed_source_plus_exact_patch',
-                   'before_file_sha256':{p:digest(t.encode()) for p,t in expected_before.items()},
+                   'before_file_sha256':expected_before,
                    'after_file_sha256':proof['file_sha256']}
         (workspace/'.application-receipt.json').write_text(json.dumps({'tests':reports,'build':receipt,
             'source_integrity':integrity,'semantic_adequacy':'not_assessed'},ensure_ascii=False))
-        return {'ok':True,'tests':{'before_failed':True,'after_passed':True,'regression_executed':True,
-                'total':sum(r['total'] for r in after),'failed':0,'executed_tests':[t for r in before+after for t in r['executed_tests']],
-                'report_sha256':digest(reports)},
+        return {'ok':True,'tests':tests,
                 'artifact':{'image':receipt['image'],'source_snapshot_id':source['id'],'diff_sha256':patch['diff_sha256'],
                 'source_tree_sha256':tree,'build_receipt_sha256':digest(receipt)},'error':None}
 

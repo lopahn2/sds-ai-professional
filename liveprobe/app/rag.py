@@ -15,7 +15,7 @@ Ranking policy (hybrid, see tests/test_rag.py):
 
 `mode` (hybrid | vector | lexical), `rrf_k`, `candidates`, `k` and the per-kind caps are parameters: the active
 values come from the retrieval configuration that `rag_tuning` evaluates and selects. The defaults are the
-ranking above. `pool` / `fuse` / `diversify` are shared by live search and offline evaluation.
+ranking above. `fuse` / `diversify` are shared by live search and offline evaluation (`pool` feeds the latter).
 """
 from __future__ import annotations
 
@@ -25,12 +25,15 @@ import re
 import threading
 import unicodedata
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Protocol
+from time import monotonic
+from typing import Any, Callable, Protocol
 
 import yaml
-from sqlalchemy import bindparam, func, literal_column, select, text
-from sqlalchemy.orm import Session
+from pgvector import Vector
+from sqlalchemy import Integer, String, bindparam, func, literal, literal_column, select, text
+from sqlalchemy.orm import Session, defer
 
 from .models import RagChunk, RagDocument
 
@@ -39,8 +42,7 @@ log = logging.getLogger(__name__)
 CANDIDATES = 30
 RRF_K = 60
 MODES = ("hybrid", "vector", "lexical")
-# Verified-resolution memory of evaluation runs gets the same cap as production memory.
-MAX_PER_KIND = {"past_incident": 1, "eval_memory": 1}
+MAX_PER_KIND = {"past_incident": 1}
 _WORD = re.compile(r"[a-z0-9\u1100-\u11ff\u3130-\u318f\uac00-\ud7a3]+")
 _STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "with", "by", "at",
          "be", "it", "as", "from", "this", "that", "그리고", "또는", "및", "에서", "으로", "대한", "관련"}
@@ -51,14 +53,36 @@ class Embedder(Protocol):
 
 
 class FastEmbedder:
-    def __init__(self, model_name: str, cache_dir: str | None = None):
-        from fastembed import TextEmbedding
-        self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+    def __init__(self, model_name: str, cache_dir: str | None = None, *, lazy_load: bool = False):
+        self._model_name = model_name
+        self._cache_dir = cache_dir
         self._lock = threading.Lock()
+        # FastEmbed's lazy flag defers the ONNX session, but still imports the runtime
+        # and resolves the model cache. An already indexed corpus needs neither at startup.
+        self._model = None if lazy_load else self._open()
+        self._last_used_at: float | None = None
+
+    def _open(self):
+        from .rag_model import open_embedding
+        return open_embedding(self._model_name, self._cache_dir)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
         with self._lock:
-            return [v.tolist() for v in self._model.embed(texts)]
+            if self._model is None:
+                self._model = self._open()
+            try:
+                return [v.tolist() for v in self._model.embed(texts)]
+            finally:
+                self._last_used_at = monotonic()
+
+    def release_if_idle(self, idle_seconds: float) -> None:
+        """Release a used ONNX session between bursts of investigation or indexing."""
+        with self._lock:
+            if self._last_used_at is not None and monotonic() - self._last_used_at >= idle_seconds:
+                self._model = None
+                self._last_used_at = None
 
 
 @dataclass
@@ -226,14 +250,18 @@ def lexical_statement(query: str, *, kinds: list[str] | None = None, candidates:
     lq = lexical_query(query)
     if not lq:
         return None
-    tsq = func.to_tsquery("english", bindparam("lq", lq))
+    return _lexical_top(bindparam("lq", lq), kinds or None, candidates)
+
+
+def _lexical_top(terms, kinds, limit):
+    tsq = func.to_tsquery("english", terms)
     rank = func.ts_rank_cd(RagChunk.tsv, tsq)
     filters = [RagChunk.retired_at.is_(None), RagChunk.tsv.op("@@")(tsq)]
-    if kinds:
+    if kinds is not None:
         filters.append(func.coalesce(RagDocument.kind, literal_column("'runbook'")).in_(kinds))
     return (select(RagChunk.id, rank.label("r"))
             .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
-            .where(*filters).order_by(rank.desc(), RagChunk.id).limit(candidates))
+            .where(*filters).order_by(rank.desc(), RagChunk.id).limit(limit))
 
 
 def pool(s: Session, qv: list[float], query: str, *, kinds: list[str] | None = None,
@@ -299,30 +327,71 @@ def diversify(scored: list[tuple[float, float, int]], doc_of, kind_of, k: int,
     return out
 
 
+@lru_cache(maxsize=4)
+def _search_rows(with_lexical: bool, filter_kinds: bool):
+    # Cache only the query shape; vectors, search terms and scope remain per-request parameters.
+    kinds = bindparam("rag_kinds", expanding=True) if filter_kinds else None
+    limit = bindparam("rag_limit", type_=Integer())
+    active = RagChunk.retired_at.is_(None)
+    base_filter = [active]
+    if kinds is not None:
+        base_filter.append(func.coalesce(RagDocument.kind, literal_column("'runbook'")).in_(kinds))
+
+    qv = bindparam("rag_vector", type_=RagChunk.__table__.c.embedding.type)
+    dist = RagChunk.embedding.cosine_distance(qv)
+    vector = (select(RagChunk.id, dist.label("distance"))
+        .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
+        .where(*base_filter).order_by(dist, RagChunk.id).limit(limit).cte("vector_top"))
+    vector = select(vector.c.id, vector.c.distance,
+                    func.row_number().over(order_by=(vector.c.distance, vector.c.id)).label("rank")).cte("vector_rank")
+    query_rows = select(RagChunk, RagDocument).select_from(RagChunk)
+    if not with_lexical:
+        query_rows = query_rows.join(vector, vector.c.id == RagChunk.id).add_columns(
+            vector.c.distance, vector.c.rank, literal(None))
+    else:
+        lexical = _lexical_top(bindparam("lq", type_=String()), kinds, limit).cte("lexical_top")
+        lexical = select(lexical.c.id, func.row_number().over(
+            order_by=(lexical.c.r.desc(), lexical.c.id)).label("rank")).cte("lexical_rank")
+        ids = select(vector.c.id).union(select(lexical.c.id)).subquery()
+        # The vector branch already computed these distances. Only lexical-only hits need another one.
+        query_rows = (query_rows.join(ids, ids.c.id == RagChunk.id)
+                      .outerjoin(vector, vector.c.id == RagChunk.id)
+                      .outerjoin(lexical, lexical.c.id == RagChunk.id)
+                      .add_columns(func.coalesce(vector.c.distance, dist), vector.c.rank, lexical.c.rank))
+    return (query_rows.options(defer(RagChunk.embedding), defer(RagChunk.tsv))
+            .outerjoin(RagDocument, RagDocument.id == RagChunk.document_id))
+
+
 def search(s: Session, embedder: Embedder, query: str, k: int = 3, *, kinds: list[str] | None = None,
            candidates: int = CANDIDATES, max_per_kind: dict[str, int] | None = None, mode: str = "hybrid",
-           rrf_k: int = RRF_K) -> list[Hit]:
+           rrf_k: int = RRF_K, _query_vector: Callable[[str], Vector] | None = None) -> list[Hit]:
     if k <= 0:
         return []
     if mode not in MODES:
         raise ValueError(f"unknown retrieval mode {mode!r}")
-    qv = embedder.embed([query])[0]
+    lq = lexical_query(query) if mode != "vector" else ""
+    vector = _query_vector(query) if _query_vector is not None else embedder.embed([query])[0]
+    params = {"rag_vector": vector, "rag_limit": candidates}
+    if lq:
+        params["lq"] = lq
+    if kinds:
+        params["rag_kinds"] = kinds
+    rows = s.execute(_search_rows(bool(lq), bool(kinds)), params).all()
     max_per_kind = MAX_PER_KIND if max_per_kind is None else max_per_kind
-    vec_ids, lex_ids, meta = pool(s, qv, query, kinds=kinds, candidates=candidates, mode=mode)
-    if not meta:
-        return []
-    scored, vec_rank, lex_rank = fuse(vec_ids, lex_ids, {cid: m[3] for cid, m in meta.items()}, mode=mode,
+    by_id = {ch.id: (ch, doc, float(d)) for ch, doc, d, _, _ in rows}
+    vec_ids = [r[0].id for r in sorted((r for r in rows if r[3] is not None), key=lambda r: r[3])]
+    lex_ids = [r[0].id for r in sorted((r for r in rows if r[4] is not None), key=lambda r: r[4])]
+
+    def kind_of(cid: int) -> str:
+        doc = by_id[cid][1]
+        return (doc.kind if doc else None) or "runbook"
+
+    # The same fusion and diversity functions as offline evaluation (`rag_tuning.rank`).
+    scored, vec_rank, lex_rank = fuse(vec_ids, lex_ids, {cid: v[2] for cid, v in by_id.items()}, mode=mode,
                                       rrf_k=rrf_k, candidates=candidates)
-    chosen = diversify(scored, lambda cid: meta[cid][0], lambda cid: meta[cid][1], k, max_per_kind)
-    if not chosen:
-        return []
-    rows = {ch.id: (ch, doc) for ch, doc in s.execute(
-        select(RagChunk, RagDocument).outerjoin(RagDocument, RagDocument.id == RagChunk.document_id)
-        .where(RagChunk.id.in_([cid for _, _, cid in chosen]))).all()}
     hits: list[Hit] = []
-    for fused, d, cid in chosen:
-        ch, doc = rows[cid]
-        kind = meta[cid][1]
+    for fused, d, cid in diversify(scored, lambda c: by_id[c][0].doc, kind_of, k, max_per_kind):
+        ch, doc, _ = by_id[cid]
         # A stored chunk snapshot (even an empty/partial one) is authoritative.
         # Never fill its missing historical values from a mutable document row.
         prov = ch.provenance
@@ -332,9 +401,9 @@ def search(s: Session, embedder: Embedder, query: str, k: int = 3, *, kinds: lis
         hits.append(Hit(
             chunk_id=ch.id, doc=ch.doc, source=ch.source, chunk_ix=ch.chunk_ix, content=ch.content,
             score=round(1.0 - d, 4), hybrid_score=round(fused, 6),
-            vector_rank=vec_rank.get(ch.id), lexical_rank=lex_rank.get(ch.id),
+            vector_rank=vec_rank.get(cid), lexical_rank=lex_rank.get(cid),
             section=ch.section, char_start=ch.char_start, char_end=ch.char_end,
-            line_start=ch.line_start, line_end=ch.line_end, locator=ch.locator, kind=kind,
+            line_start=ch.line_start, line_end=ch.line_end, locator=ch.locator, kind=kind_of(cid),
             title=prov.get("title"), source_uri=prov.get("source_uri"),
             license=prov.get("license"), attribution=prov.get("attribution"),
             version_hash=prov.get("version_hash"), retrieved_at=prov.get("retrieved_at")))
@@ -351,8 +420,14 @@ class RAG:
     def __init__(self, embedder: Embedder):
         self.embedder = embedder
 
+        @lru_cache(maxsize=128)
+        def query_vector(query: str) -> Vector:
+            return Vector(embedder.embed([query])[0])
+
+        self._query_vector = query_vector
+
     def search(self, s: Session, query: str, k: int = 3, **kw) -> list[Hit]:
-        return search(s, self.embedder, query, k, **kw)
+        return search(s, self.embedder, query, k, _query_vector=self._query_vector, **kw)
 
 
 __all__ = ["Chunk", "Embedder", "FastEmbedder", "Hit", "RAG", "chunk_markdown", "diversify", "front_matter", "fuse",

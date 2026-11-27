@@ -375,8 +375,8 @@ def test_endpoint_poller_family4_signal_matches_webhook_fingerprint():
     k = family4_kube()
     sigs: list[Signal] = []
     w = Watchers(k, AppConfig(target_namespace="liveprobe-target", ), sigs.append)
-    w.poll_endpoints_once(now=0)
-    w.poll_endpoints_once(now=31)
+    for now in range(0, 601, 15):
+        w.poll_endpoints_once(now)
     alert = alert_signal({"status": "firing", "labels": {"alertname": "TargetServiceNoEndpoints", "namespace": NS,
                                                          "endpoint": "inventory"}}, AppConfig(target_namespace="liveprobe-target", ), k)
     from app.incidents import fingerprint

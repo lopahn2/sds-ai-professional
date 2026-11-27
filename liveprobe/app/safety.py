@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from . import k8s as K
 from .config import AppConfig
 from .db import audit
+from .incidents import (ADMISSION_WEBHOOK_FAILURE, CNI_VERSION_MISMATCH, DISK_PRESSURE_EVICTION,
+                        HPA_METRICS_BLOCKED, NODE_STARTUP_BLOCKED, PROXY_LDS_REJECTED, RETIRED_INGRESS_API)
 from .models import Action, AuditLog, Incident, Setting, INCIDENT_OPEN_STATES
 from . import rollback_grant
 
@@ -55,6 +57,14 @@ def high_risk_may_execute() -> bool:
 def has_network_risk(incident: Incident | None) -> bool:
     """Late NetworkDrop observations are never downgraded by an earlier routing snapshot."""
     return incident is not None and 'NetworkDrop' in (incident.signal_reasons or [])
+
+
+def needs_cluster_authority(incident: Incident | None) -> bool:
+    if incident is None:
+        return False
+    boundary = {"NetworkDrop", ADMISSION_WEBHOOK_FAILURE, CNI_VERSION_MISMATCH, DISK_PRESSURE_EVICTION,
+                HPA_METRICS_BLOCKED, NODE_STARTUP_BLOCKED, PROXY_LDS_REJECTED, RETIRED_INGRESS_API}
+    return bool(boundary.intersection(incident.signal_reasons or ()))
 
 
 def effective_policy(level: str, mode: str) -> str:
@@ -190,7 +200,7 @@ def propose(s: Session, cfg: AppConfig, incident: Incident, level: str, action_t
             name: str, actor: str = "liveprobe") -> Action:
     from .actions import incident_mode, stricter, workload_lock
     mode = global_mode(s)
-    policy = 'handoff' if has_network_risk(incident) else effective_policy(level, mode)
+    policy = 'handoff' if needs_cluster_authority(incident) else effective_policy(level, mode)
     inc_mode = incident_mode(s, incident.id) if incident.id is not None else None
     if inc_mode:
         policy = stricter(policy, inc_mode)  # per-incident override may only tighten
@@ -215,7 +225,7 @@ def propose(s: Session, cfg: AppConfig, incident: Incident, level: str, action_t
 
 
 def _authorized(s: Session, act: Action, inc: Incident | None) -> bool:
-    if inc is None or has_network_risk(inc):
+    if inc is None or needs_cluster_authority(inc):
         return False
     if act.type != "rollout_undo" or inc.status not in INCIDENT_OPEN_STATES or inc.severity_level == "HIGH_RISK":
         return False

@@ -125,25 +125,31 @@ def parse_patch(diff, root, test_root):
             offset = max(0,start-1)
             if offset < cursor or offset > len(original):
                 raise ValueError('hunk_offset')
-            output.extend(original[cursor:offset])
-            cursor = offset
             i += 1
-            consumed = produced = 0
+            required = []
+            replacement = []
             while i < len(lines) and not lines[i].startswith(('@@ ','--- ')):
                 line = lines[i]
                 if not line or line[0] not in ' +-':
                     raise ValueError('invalid_hunk_line')
                 if line[0] in ' -':
-                    if cursor >= len(original) or original[cursor] != line[1:]:
-                        raise ValueError('patch_context_mismatch')
-                    cursor += 1
-                    consumed += 1
+                    required.append(line[1:])
                 if line[0] in ' +':
-                    output.append(line[1:])
-                    produced += 1
+                    replacement.append(line[1:])
                 i += 1
-            if consumed != count or produced != newcount:
+            if len(required) != count or len(replacement) != newcount:
                 raise ValueError('hunk_count_mismatch')
+            if original[offset:offset + count] != required:
+                # A displaced hunk may use only a single exact context match in
+                # the verified source. Repeated or overlapping anchors stay invalid.
+                matches = [line for line, text in enumerate(original) if text == required[0]
+                           and original[line:line + count] == required]
+                if len(matches) != 1 or matches[0] < cursor:
+                    raise ValueError('patch_context_mismatch')
+                offset = matches[0]
+            output.extend(original[cursor:offset])
+            output.extend(replacement)
+            cursor = offset + count
             hunks += 1
         if not hunks:
             raise ValueError('missing_hunk')

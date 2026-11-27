@@ -22,6 +22,7 @@ CATALOG: dict[str, tuple[str, tuple[str, ...]]] = {
     "scale_replicas": ("Deployment", ("replicas",)),
     "set_memory_limit": ("Deployment", ("memory_limit_mi",)),
     "configmap_restore": ("ConfigMap", ("version",)),
+    "pvc_reference_restore": ("Deployment", ()),
 }
 ACTION_TYPES = tuple(CATALOG)
 # Human-readable proposal context only. These fields never enter action parameters.
@@ -38,7 +39,9 @@ ACTION_RULES = (
     "rollout_undo (previous revision; for a bad image/config rollout), rollout_restart (restart pods; for a stuck or "
     "corrupted process state), pod_delete (target = the exact Pod name from the evidence), scale_replicas (replicas 1..2), "
     "set_memory_limit (memory_limit_mi 256..768; for OOMKilled), configmap_restore (version = an exact name in the "
-    "ConfigMap evidence's approved_versions; do not invent a version or reconstruct configuration values). "
+    "ConfigMap evidence's approved_versions; do not invent a version or reconstruct configuration values), "
+    "pvc_reference_restore (only dev lp-eval-kw03, when allowlisted and a verified current FailedMount is fixed "
+    "by restoring its previously ready Deployment's read-only claim reference). "
     "Set next_action='act' and fill `action` {type, target, replicas|memory_limit_mi|version, why}. `target` is the "
     "Deployment name (Pod name for pod_delete, ConfigMap name for configmap_restore). "
     "Do NOT propose an action for application-code or data problems that a restart cannot relieve (startup exceptions that "
@@ -58,7 +61,9 @@ ACTION_RULES = (
 def bounds_text(cfg: Any) -> str:
     """Approved limits, stated to the agent so it proposes only values the executor will accept."""
     p = cfg.safe_actions
-    return (f"Approved bounds: replicas {p.replicas_min}..{p.replicas_max}; memory limit {p.memory_limit_min_mi}..{p.memory_limit_max_mi}Mi "
+    return (f"Current configured Kubernetes action allowlist: {list(cfg.allowlist)}. The executor verifies the "
+            f"incident's target identity, action eligibility and authorization before applying a proposal. "
+            f"Approved bounds: replicas {p.replicas_min}..{p.replicas_max}; memory limit {p.memory_limit_min_mi}..{p.memory_limit_max_mi}Mi "
             f"(never below the memory request); only managed Deployments in {cfg.target_namespaces}, with a non-empty matching system label. Current limits/requests are in the "
             f"Deployment evidence under `resources`. For OOMKilled, raise the limit to the smallest allowed value that "
             f"clearly exceeds the current one (no more than 2x); if the limit is already at the maximum, hand off.")

@@ -7,8 +7,9 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from ..environments import ACTIVE_ENVIRONMENTS
 from .safety import scrub, text_sha
-from .storage import DisplayReading
+from .storage import DisplayReading, Incident
 
 TEXT_LIMIT = 1200
 BATCH = 12
@@ -119,10 +120,16 @@ def run_once(control, provider_factory):
     now = control.clock()
     if not control.store.ready():
         return False
+    paused = [environment for environment in ACTIVE_ENVIRONMENTS if control.environment_paused(environment)]
     with control.store.transaction() as session:
         claimable = (DisplayReading.state.in_(("pending", "running"))) & (DisplayReading.available_at <= now)
         ordered = select(DisplayReading).where(claimable).order_by(
             DisplayReading.available_at, DisplayReading.created_at, DisplayReading.digest)
+        if paused:
+            # Keep the history and its queue intact while active environments continue to be interpreted.
+            paused_incident = select(Incident.id).where(Incident.id == DisplayReading.incident_id,
+                Incident.document["environment"].as_string().in_(paused)).exists()
+            ordered = ordered.where(~paused_incident)
         first = session.scalar(ordered.limit(1))
         if first is None:
             return False

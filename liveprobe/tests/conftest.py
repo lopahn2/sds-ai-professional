@@ -52,7 +52,7 @@ def disposable_db():
 
 
 @pytest.fixture()
-def db_url(disposable_db):
+def db_url(disposable_db, request):
     """Reset only the schema owned by this suite."""
     eng = create_engine(disposable_db, isolation_level="AUTOCOMMIT")
     try:
@@ -62,7 +62,16 @@ def db_url(disposable_db):
     finally:
         eng.dispose()
     from app import db
-    db.run_migrations(disposable_db)
+    revision = getattr(request, "param", None)
+    if revision is None:
+        db.run_migrations(disposable_db)
+    else:
+        from alembic import command
+        from alembic.config import Config
+        cfg = Config(str(ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(ROOT / "alembic"))
+        cfg.attributes["sqlalchemy_url"] = disposable_db
+        command.upgrade(cfg, revision)
     db.init_db(disposable_db)
     try:
         yield disposable_db

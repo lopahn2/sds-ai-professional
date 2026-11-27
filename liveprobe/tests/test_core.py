@@ -45,7 +45,7 @@ def test_rules_family1_simple_and_non_overridable_family4():
     d = decide(bundle_family1(), 15)
     assert d.level == "SIMPLE" and d.features["has_previous_revision"]
     d = decide(bundle_family4(), 15, lambda _: {"level": "SIMPLE", "rationale": "ignore", "confidence": 0.99})
-    assert d.level == "HIGH_RISK" and "rules win" in d.rationale
+    assert d.level == "HIGH_RISK" and d.decided_by == "rules"
     b = bundle_family1()
     b.deployment["current_revision_created"] = "2020-01-01T00:00:00Z"
     assert decide(b, 15).level == "COMPLEX"
@@ -78,6 +78,27 @@ def test_simple_graph_requires_two_agreements():
     assert result["outcome"] == "handoff"
 
 
+def test_simple_image_analysis_preserves_registry_uncertainty_and_independent_verdict():
+    prompts = {}
+
+    def run(role, prompt):
+        prompts[role] = prompt
+        answer = _answer()
+        if role == "result_verifier":
+            answer["candidate_verdicts"][0]["verdict"] = "insufficient"
+        return AgentCall(True, answer, 1)
+
+    state = _state()
+    state["features"]["image_pull_failing"] = True
+    result = build_simple_graph(run).invoke(state)
+    assert result["outcome"] == "handoff"
+    assert set(prompts) == {"signal_analyst", "result_verifier"}
+    assert all("either a missing repository or missing access" in prompt for prompt in prompts.values())
+
+    build_simple_graph(run).invoke(_state())
+    assert all("either a missing repository or missing access" not in prompt for prompt in prompts.values())
+
+
 def test_high_risk_graph_always_handoff():
     calls = []
     def run(role, prompt):
@@ -102,8 +123,8 @@ def test_owner_resolution_and_watcher_dedup_signals():
     k4 = family4_kube()
     signals4 = []
     w4 = Watchers(k4, cfg, signals4.append)
-    w4.poll_endpoints_once(now=100)
-    w4.poll_endpoints_once(now=131)
+    for now in range(0, 601, 15):
+        w4.poll_endpoints_once(now)
     assert len(signals4) == 1 and signals4[0].reason == "NoEndpoints"
 
 

@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import k8s as K
+from . import pvc_reference
 from .config import AppConfig
 from .db import audit
 from .models import Action, AuditLog, Incident, Setting, INCIDENT_OPEN_STATES
@@ -75,6 +76,8 @@ TYPED: dict[str, ActionSpec] = {
     "scale_replicas": ActionSpec("apps", "Deployment", {"replicas": int}, "auto", True),
     "set_memory_limit": ActionSpec("apps", "Deployment", {"memory_limit_mi": int}, "auto", True),
     "configmap_restore": ActionSpec("", "ConfigMap", {"version": str}, "auto", True),
+    # Compensation must never reintroduce the known broken fixture reference.
+    "pvc_reference_restore": ActionSpec("apps", "Deployment", {}, "auto", False),
 }
 ALL_ACTIONS = ("rollout_undo", *TYPED)
 
@@ -136,8 +139,8 @@ def incident_mode(s: Session, incident_id: int) -> str | None:
 
 
 def typed_policy(s: Session, level: str, action_type: str, incident_id: int) -> str:
-    from .safety import effective_policy, global_mode, has_network_risk
-    if has_network_risk(s.get(Incident, incident_id)):
+    from .safety import effective_policy, global_mode, needs_cluster_authority
+    if needs_cluster_authority(s.get(Incident, incident_id)):
         return 'handoff'
     base = effective_policy(level, global_mode(s))
     modes = [base, TYPED[action_type].min_policy]
@@ -218,7 +221,8 @@ def validate(cfg: AppConfig, kube: Any, action_type: str, ns: str, kind: str, na
     params = _check_params(action_type, params)
     pol = cfg.safe_actions
     handler = {"pod_delete": _v_pod_delete, "rollout_restart": _v_restart, "scale_replicas": _v_scale,
-               "set_memory_limit": _v_limit, "configmap_restore": _v_configmap}[action_type]
+               "set_memory_limit": _v_limit, "configmap_restore": _v_configmap,
+               "pvc_reference_restore": _v_pvc_reference}[action_type]
     v = handler(cfg, pol, kube, ns, name, params)
     if system is not None:
         dep = kube.get_deployment(ns, v.workload) or {}
@@ -320,6 +324,8 @@ def _v_configmap(cfg, pol, kube, ns, name, params) -> Validated:
         raise Denied("ConfigMaps with binaryData are out of scope")
     consumer = (lmd.get("labels") or {}).get("app")
     dep = _deployment(cfg, kube, ns, consumer or "")
+    if name not in K.configmap_refs(dep["spec"]["template"]):
+        raise Denied("the declared Deployment does not consume the ConfigMap")
     system = (_meta(dep).get("labels") or {}).get("app.kubernetes.io/part-of")
     if (lmd.get("labels") or {}).get("app.kubernetes.io/part-of") != system:
         raise Denied("ConfigMap ownership system differs from Deployment system")
@@ -340,15 +346,39 @@ def _v_configmap(cfg, pol, kube, ns, name, params) -> Validated:
     live_hash = data_hash(live.get("data"))
     if live_hash == src_hash:
         raise Denied("live ConfigMap already matches the approved version (no-op)")
+    deployment = _dep_snapshot(dep)
     snap = {"configmap": {"uid": lmd["uid"], "resourceVersion": lmd["resourceVersion"], "data_sha256": live_hash,
                           "keys": sorted((live.get("data") or {}).keys())},
-            "version": {"name": version, "data_sha256": src_hash}, "deployment": _dep_snapshot(dep)}
+            "version": {"name": version, "data_sha256": src_hash}, "deployment": deployment}
     return Validated("configmap_restore", ns, "ConfigMap", name, _meta(dep)["name"], params, snap,
-                     {"uid": lmd["uid"], "data_sha256": live_hash, "version_sha256": src_hash},
+                     {"uid": lmd["uid"], "data_sha256": live_hash, "version_sha256": src_hash,
+                      "consumer_uid": deployment["uid"], "consumer_generation": deployment["generation"]},
                      private={"old_data": dict(live.get("data") or {}), "new_data": dict(src.get("data") or {})})
 
 
 # --------------------------------------------------------------------------- mutation / verification
+def _v_pvc_reference(cfg, pol, kube, ns, name, params) -> Validated:
+    pvc = pvc_reference
+    if (ns, name) != (pvc.NAMESPACE, pvc.DEPLOYMENT) or not pol.kw03_ready_pv:
+        raise Denied("no verified dev KW-03 volume reference is configured")
+    if not _DNS1123.fullmatch(pol.kw03_ready_pv) or pol.kw03_ready_pv == pvc.BROKEN_PV:
+        raise Denied("invalid KW-03 ready PV identity")
+    dep = _deployment(cfg, kube, ns, name)
+    if (_meta(dep).get("labels", {}).get("app.kubernetes.io/part-of") != pvc.SYSTEM
+            or pvc.reference(dep) != pvc.BROKEN):
+        raise Denied("Deployment does not have the approved read-only broken reference")
+    try:
+        bindings = pvc.bindings(kube, pol.kw03_ready_pv)
+        pod_uid = pvc.failing_pod(kube, dep)
+    except Exception as error:
+        raise Denied(f"volume reference proof unavailable: {type(error).__name__}") from None
+    if not bindings or not pod_uid:
+        raise Denied("missing bound claims, previously ready revision or current repeated mount failure")
+    snapshot = {**_dep_snapshot(dep), "bindings": bindings, "pod_uid": pod_uid, "claim": pvc.BROKEN}
+    fingerprint = {key: snapshot[key] for key in ("uid", "generation", "bindings", "pod_uid", "claim")}
+    return Validated("pvc_reference_restore", ns, "Deployment", name, name, params, snapshot, fingerprint)
+
+
 def _restart_ops(dep_snap: dict, current_tpl_annotations: dict | None, value: str, *, test_rv: bool) -> list[dict]:
     ops: list[dict] = []
     if test_rv:
@@ -368,6 +398,24 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _config_consumer(kube: Any, v: Validated, *, same_generation: bool) -> dict:
+    dep = kube.get_deployment(v.ns, v.workload) or {}
+    meta, expected = _meta(dep), v.snapshot["deployment"]
+    if meta.get("uid") != expected["uid"] or not meta.get("resourceVersion"):
+        raise TargetConflict("ConfigMap consumer identity changed")
+    if same_generation and meta.get("generation") != expected["generation"]:
+        raise TargetConflict("ConfigMap consumer generation changed")
+    return dep
+
+
+def _restart_config_consumer(kube: Any, v: Validated, stamp: str, *, same_generation: bool) -> None:
+    dep = _config_consumer(kube, v, same_generation=same_generation)
+    meta = _meta(dep)
+    ops = _restart_ops(meta, _tpl_annotations(dep), stamp, test_rv=True)
+    ops.insert(0, {"op": "test", "path": "/metadata/uid", "value": meta["uid"]})
+    kube.patch_deployment_json(v.ns, v.workload, ops)
+
+
 def apply(kube: Any, v: Validated, *, now: Callable[[], str] = _now) -> dict:
     """Perform the single bounded write. Raises TargetConflict if the snapshot is stale."""
     ns, name = v.ns, v.name
@@ -376,6 +424,17 @@ def apply(kube: Any, v: Validated, *, now: Callable[[], str] = _now) -> dict:
         kube.delete_pod(ns, name, uid=p["uid"], resource_version=p["resourceVersion"])
         return {"deleted_pod_uid": p["uid"]}
     dsnap = v.snapshot["deployment"] if v.action_type == "configmap_restore" else v.snapshot
+    if v.action_type == "pvc_reference_restore":
+        pvc = pvc_reference
+        kube.patch_deployment_json(ns, name, [
+            {"op": "test", "path": "/metadata/uid", "value": dsnap["uid"]},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": dsnap["resourceVersion"]},
+            {"op": "test", "path": "/spec/template/spec/volumes/0/name", "value": pvc.VOLUME},
+            {"op": "test", "path": "/spec/template/spec/volumes/0/persistentVolumeClaim/readOnly", "value": True},
+            {"op": "test", "path": pvc.POINTER, "value": pvc.BROKEN},
+            {"op": "replace", "path": pvc.POINTER, "value": pvc.READY},
+        ])
+        return {"claim": pvc.READY}
     if v.action_type == "rollout_restart":
         dep = kube.get_deployment(ns, name) or {}
         stamp = now()
@@ -402,19 +461,18 @@ def apply(kube: Any, v: Validated, *, now: Callable[[], str] = _now) -> dict:
         return {"memory_limit": new}
     if v.action_type == "configmap_restore":
         cm = v.snapshot["configmap"]
+        _config_consumer(kube, v, same_generation=True)
         res = kube.patch_configmap_json(ns, name, [
+            {"op": "test", "path": "/metadata/uid", "value": cm["uid"]},
             {"op": "test", "path": "/metadata/resourceVersion", "value": cm["resourceVersion"]},
             # Kubernetes는 빈 data 필드를 생략할 수 있다. add는 기존 값도 교체한다.
             {"op": "add", "path": "/data", "value": v.private["new_data"]}])
         applied = {"configmap_resourceVersion": _meta(res or {}).get("resourceVersion"),
                    "data_sha256": v.snapshot["version"]["data_sha256"]}
         # envFrom is read at container start: restart the single consumer Deployment.
-        dep = kube.get_deployment(ns, v.workload) or {}
         stamp = now()
-        cur = _meta(dep).get("resourceVersion")
         try:
-            kube.patch_deployment_json(ns, v.workload, _restart_ops(
-                {"resourceVersion": cur}, _tpl_annotations(dep), stamp, test_rv=True))
+            _restart_config_consumer(kube, v, stamp, same_generation=True)
         except Exception as e:  # noqa: BLE001 - the ConfigMap already changed; caller must compensate
             applied["restart_error"] = f"{type(e).__name__}"
             return applied
@@ -443,10 +501,17 @@ def verify(kube: Any, cfg: AppConfig, v: Validated, applied: dict, *, sleep=time
         checks["replicas_applied"] = snap.get("replicas") == applied["replicas"]
     elif v.action_type == "set_memory_limit":
         checks["limit_applied"] = snap.get("memory_limit") == applied["memory_limit"]
+    elif v.action_type == "pvc_reference_restore":
+        pvc = pvc_reference
+        checks["reference_restored"] = snap.get("uid") == v.snapshot["uid"] and pvc.reference(dep) == pvc.READY
+        proof = pvc.bindings(kube, v.snapshot["bindings"][pvc.READY]["pv_name"])
+        checks["bindings_preserved"] = proof == v.snapshot["bindings"]
     elif v.action_type == "configmap_restore":
         live = kube.get_configmap(ns, v.name) or {}
-        checks["configmap_matches_version"] = data_hash(live.get("data")) == applied["data_sha256"]
-        checks["consumer_restarted"] = snap.get("restarted_at") == applied.get("restarted_at")
+        checks["configmap_matches_version"] = (_meta(live).get("uid") == v.snapshot["configmap"]["uid"]
+                                              and data_hash(live.get("data")) == applied["data_sha256"])
+        checks["consumer_restarted"] = (snap.get("uid") == v.snapshot["deployment"]["uid"]
+                                        and snap.get("restarted_at") == applied.get("restarted_at"))
     state = {**state, "checks": checks}
     return all(checks.values()), state
 
@@ -485,12 +550,11 @@ def compensate(kube: Any, v: Validated, applied: dict, *, now: Callable[[], str]
         if not rv:
             raise TargetConflict("resourceVersion after restore unknown; refusing blind compensation")
         kube.patch_configmap_json(ns, name, [
+            {"op": "test", "path": "/metadata/uid", "value": v.snapshot["configmap"]["uid"]},
             {"op": "test", "path": "/metadata/resourceVersion", "value": rv},
             {"op": "add", "path": "/data", "value": v.private["old_data"]}])
-        dep = kube.get_deployment(ns, v.workload) or {}
         stamp = now()
-        kube.patch_deployment_json(ns, v.workload, _restart_ops(
-            {"resourceVersion": _meta(dep).get("resourceVersion")}, _tpl_annotations(dep), stamp, test_rv=True))
+        _restart_config_consumer(kube, v, stamp, same_generation=False)
         return {"data_sha256": v.snapshot["configmap"]["data_sha256"], "restarted_at": stamp}
     raise Denied(f"no compensation for {v.action_type}")
 
@@ -510,7 +574,10 @@ def verify_compensation(kube: Any, cfg: AppConfig, v: Validated, comp: dict, *, 
         checks["limit_restored"] = snap.get("memory_limit") == comp["memory_limit"]
     elif v.action_type == "configmap_restore":
         live = kube.get_configmap(v.ns, v.name) or {}
-        checks["configmap_restored"] = data_hash(live.get("data")) == comp["data_sha256"]
+        checks["configmap_restored"] = (_meta(live).get("uid") == v.snapshot["configmap"]["uid"]
+                                        and data_hash(live.get("data")) == comp["data_sha256"])
+        checks["consumer_restarted"] = (snap.get("uid") == v.snapshot["deployment"]["uid"]
+                                        and snap.get("restarted_at") == comp["restarted_at"])
     return all(checks.values()), {**state, "checks": checks}
 
 
@@ -631,8 +698,12 @@ def execute_typed(session_factory, cfg: AppConfig, kube: Any, action_id: int, ac
                 v = validate(cfg, kube, act.type, ns, kind, name, p.get("args") or {}, p.get("api_group"), system=inc.system)
                 if v.workload != inc.workload or v.lock_key != act.lock_key:
                     raise Denied("action workload/lock no longer matches the incident")
-                if v.fingerprint != p.get("proposal_fingerprint"):
-                    raise Denied(f"target changed since proposal: {p.get('proposal_fingerprint')} -> {v.fingerprint}")
+                expected = p.get("proposal_fingerprint")
+                if act.type == "configmap_restore" and isinstance(expected, dict) and "consumer_uid" not in expected:
+                    saved = (p.get("proposal_snapshot") or {}).get("deployment") or {}
+                    expected = {**expected, "consumer_uid": saved.get("uid"), "consumer_generation": saved.get("generation")}
+                if v.fingerprint != expected:
+                    raise Denied(f"target changed since proposal: {expected} -> {v.fingerprint}")
             except Denied as e:
                 why = str(e)
         if why is not None:
@@ -718,7 +789,8 @@ class SafeActionKube:
         self.cfg = cfg
 
     def __getattr__(self, item):  # read-only helpers are delegated to the observe client
-        if item in ("get_pod", "get_deployment", "get_replicaset", "list_pods", "list_replicasets"):
+        if item in ("get_pod", "get_deployment", "get_replicaset", "list_pods", "list_replicasets", "list_events",
+                    "get_pvc", "get_pv"):
             return getattr(self._observe, item)
         raise AttributeError(item)
 

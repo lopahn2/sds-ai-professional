@@ -88,7 +88,7 @@ def create_app(settings=None, *, provider=None, clock=None):
     control.human_authorized = identities.authorized_subject
     app.state.control = control
     app.state.worker = AnalysisWorker(control, provider)
-    from .browser_access import install as install_browser_access, actor as browser_actor, local_read, summary
+    from .browser_access import install as install_browser_access, actor as browser_actor, incident_creator, local_read, summary
     install_browser_access(app, identities, settings, clock)
     from .merge_policy import install_merge_policy
     install_merge_policy(app, control, identities, settings, human_actor=lambda request, scope: browser_actor(app, request, scope))
@@ -138,10 +138,10 @@ def create_app(settings=None, *, provider=None, clock=None):
 
     @app.get(PREFIX + '/catalog', response_model=CatalogResponse)
     def catalog():
-        return control.catalog.public()
+        return control.public_catalog()
 
-    def human_create(request: Request):
-        return browser_actor(app, request, 'incident:create', creator=True)
+    def human_create(request: Request, body: CreateIncident):
+        return incident_creator(app, request, body)
 
     def tester(request: Request):
         return browser_actor(app, request, 'tester')
@@ -181,7 +181,7 @@ def create_app(settings=None, *, provider=None, clock=None):
         except ValueError as exc:
             raise HTTPException(422, {'code': 'list_dates_invalid', 'message_ko': str(exc)}) from exc
         result = control.list_incidents(lower=lower, upper=upper, environment=environment, service=service, system=system, state=state, group=group, work=work,
-                                       search=search, limit=limit, offset=offset, as_of=as_of)
+                                       search=search, limit=limit, offset=offset, as_of=as_of, summary_only=projected)
         if projected:
             result['incidents'] = [summary(i) for i in result['incidents']]
         return result
@@ -293,6 +293,7 @@ def create_app(settings=None, *, provider=None, clock=None):
     def approve(incident_id: str, body: Approval, request: Request, actor=Depends(approver)):
         from ..human_sessions import COOKIE
         def apply():
+            control.require_active_environment('prd')
             return control.approve(incident_id, body, browser_actor(app, request, 'prd-approver'))
         if request.headers.get('authorization'):
             return apply()

@@ -48,8 +48,8 @@ def test_endpoint_intent_at_normal_entry_points(mode, state):
     assert f["service_has_no_endpoints"] is (True if state == "missing" else False if state == "ready" else None)
     emitted = []
     watcher = Watchers(k, cfg, emitted.append)
-    watcher.poll_endpoints_once(1)
-    watcher.poll_endpoints_once(100)
+    for now in range(0, 601, 15):
+        watcher.poll_endpoints_once(now)
     assert bool(emitted) == (state == "missing")
     alert = alert_signal({"labels": {"alertname": "TargetServiceNoEndpoints", "namespace": ns,
                                      "endpoint": "inventory"}}, cfg, k)

@@ -423,7 +423,11 @@ def error_ko(raw: str | None) -> str | None:
 
 
 SIGNAL_SOURCE_KO = {"alertmanager": "Prometheus 경보(Alertmanager)", "app_log": "애플리케이션 로그 감시",
+                    "k8s_admission_audit": "Kubernetes API 감사", "k8s_cni_event": "kubelet CNI 경고",
+                    "k8s_disk_pressure": "노드 디스크 압박과 Pod 퇴출",
+                    "k8s_hpa_metrics": "자원 지표 API와 HPA 상태",
                     "pod_watch": "Pod 상태 감시", "event_watch": "Kubernetes 이벤트 감시",
+                    "workload_poller": "워크로드 상태 점검",
                     "endpoint_poller": "Service 엔드포인트 점검", "network": "네트워크 관측", "hubble": "네트워크 관측(Hubble)",
                     "evaluation": "평가 실행", "operator": "운영자"}
 

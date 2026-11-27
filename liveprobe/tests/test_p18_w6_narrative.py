@@ -181,6 +181,22 @@ def test_model_policy_reason_and_candidates_in_korean():
     assert model_policy_ko(None) is None
 
 
+def test_skipped_classifier_does_not_borrow_saved_output():
+    from types import SimpleNamespace
+    from app.routing_ko import pair_router_runs, routing_card
+
+    previous = {"level": "SIMPLE", "confidence": 0.8, "rationale": "previous attempt"}
+    run = SimpleNamespace(id=1, role="router", status="succeeded", output=previous, created_at=T0)
+    rd = SimpleNamespace(id=2, level="HIGH_RISK", decided_by="rules", confidence=None,
+                         rationale="protected resource implicated", features={"protected_resource": True},
+                         policy={"classifier_skipped": "deterministic_high_risk"}, created_at=T0)
+    assert pair_router_runs([rd], [run]) == {}
+    card = routing_card(rd, previous, None)
+    assert card["llm"] is None and card["confidence"] is None and not card["interpreting"]
+    skipped = next(step for step in card["steps"] if step["key"] == "llm")
+    assert skipped["source"] == "rules" and "고위험 규칙" in skipped["detail_ko"]
+
+
 def test_missing_observations_never_become_negative_facts():
     from app.routing_ko import features_ko
     facts = features_ko({"dependent_callers_failing": None, "latency_signal": None, "evidence_source_count": 2})

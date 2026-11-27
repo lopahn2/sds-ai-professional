@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,10 +17,12 @@ import httpx
 
 from .observation_sources import adapter_url
 from . import k8s as K
+from . import business_http
 from .config import AppConfig, Settings
 from .service_health import read_backend
 from .redact import redact, redact_obj
 from .evidence_depth import pod_runtime as _pod_runtime, probe_view as _probe_view
+from .route_latency import METRIC as ROUTE_LATENCY_METRIC, observed_samples, sample_query
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +83,11 @@ class Bundle:
                                        collected_at or utcnow(), supporting))
 
 
+def freeze_collection(bundle: Bundle) -> dict:
+    """Detached and redacted JSON for the durable workflow checkpoint."""
+    return json.loads(json.dumps(redact_obj(asdict(bundle)), default=lambda stamp: stamp.isoformat()))
+
+
 def storage_summary(template: dict) -> dict:
     """Pod 교체로 사라지는 공간인지 관측한다. 데이터 삭제 허가는 추론하지 않는다."""
     spec = template.get("spec") or {}
@@ -101,11 +108,48 @@ def storage_summary(template: dict) -> dict:
     return {"volumes": volumes, "mounts": mounts}
 
 
-def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
-    d = kube.get_deployment(ns, name)
-    if not d:
+def _missing_service_account(deployment: dict, replicasets: list[dict], namespace: str) -> dict | None:
+    metadata, spec, status = (deployment.get(key) or {} for key in ("metadata", "spec", "status"))
+    generation, revision = metadata.get("generation"), K.revision_of(deployment)
+    desired = spec.get("replicas", 1)
+    account = ((spec.get("template") or {}).get("spec") or {}).get("serviceAccountName")
+    if (not metadata.get("uid") or not generation or not revision or not account or spec.get("paused")
+            or status.get("observedGeneration") != generation or type(desired) is not int or desired < 1
+            or (status.get("updatedReplicas") or 0) >= desired
+            or (status.get("availableReplicas") or 0) < desired):
         return None
-    rss = [r for r in kube.list_replicasets(ns) if K.owner_of(r, "Deployment") == name]
+    expected = f'error looking up service account {namespace}/{account}: serviceaccount "{account}" not found'
+    current = [r for r in replicasets if K.revision_of(r) == revision and any(
+        owner.get("controller") is True and owner.get("kind") == "Deployment"
+        and owner.get("uid") == metadata["uid"] for owner in r["metadata"].get("ownerReferences") or [])]
+    if len(current) != 1:
+        return None
+    replica = current[0]
+    state = replica.get("status") or {}
+    replica_generation = replica["metadata"].get("generation")
+    if (not replica_generation or state.get("observedGeneration") != replica_generation
+            or not (replica["spec"].get("replicas") or 0) or (state.get("replicas") or 0) != 0
+            or (replica["spec"]["template"]["spec"].get("serviceAccountName") != account)):
+        return None
+    if any(c.get("type") == "ReplicaFailure" and c.get("status") == "True" and c.get("reason") == "FailedCreate"
+           and (c.get("message") or "").endswith(expected) for c in state.get("conditions") or []):
+        return {"reason": "service_account_missing", "revision": revision, "generation": generation,
+                "replicaset": replica["metadata"]["name"], "available_replicas": status["availableReplicas"]}
+    return None
+
+
+def _deployment_inputs(kube: K.Kube, ns: str, name: str) -> tuple[dict | None, list[dict]]:
+    d = kube.get_deployment(ns, name)
+    rss = [r for r in kube.list_replicasets(ns) if K.owner_of(r, "Deployment") == name] if d else []
+    return d, rss
+
+
+def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
+    d, rss = _deployment_inputs(kube, ns, name)
+    return _deployment_summary(ns, name, d, rss) if d else None
+
+
+def _deployment_summary(ns: str, name: str, d: dict, rss: list[dict]) -> dict:
     revs = sorted(
         ({"revision": K.revision_of(r), "replicaset": r["metadata"]["name"],
           "images": K.container_images(r["spec"]["template"]),
@@ -124,7 +168,9 @@ def deployment_summary(kube: K.Kube, ns: str, name: str) -> dict | None:
     rollout_times = [K.parse_ts(value) for value in (
         cur["created"] if cur else None, progressing.get("lastUpdateTime"))]
     rollout_at = max((t for t in rollout_times if t is not None), default=None)
+    account_failure = _missing_service_account(d, rss, ns)
     return {
+        **({"replica_account_failure": account_failure} if account_failure else {}),
         # Keep the immediate predecessor's observed state available even when long history is abridged.
         # This is evidence, not a claim that rollback is safe or authorized.
         "revision_context": {
@@ -162,6 +208,10 @@ def service_summary(kube: K.Kube, ns: str, name: str, pods: list[dict] | None = 
     svc = kube.get_service(ns, name)
     if not svc:
         return None
+    return _service_summary(kube, ns, name, svc, pods)
+
+
+def _service_summary(kube: K.Kube, ns: str, name: str, svc: dict, pods: list[dict] | None) -> dict:
     selector = (svc.get("spec") or {}).get("selector") or {}
     all_pods = pods if pods is not None else kube.list_pods(ns)
     matching = [p["metadata"]["name"] for p in all_pods if K.labels_match(selector, p["metadata"].get("labels") or {})]
@@ -174,8 +224,11 @@ def service_summary(kube: K.Kube, ns: str, name: str, pods: list[dict] | None = 
     }
 
 
-def _prom(settings: Settings, q: str) -> list[dict]:
-    r = httpx.get(f"{adapter_url(settings, 'prometheus')}/api/v1/query", params={"query": q}, timeout=8)
+def _prom(settings: Settings, q: str, *, limit: int | None = None) -> list[dict]:
+    params = {"query": q}
+    if limit is not None:
+        params["limit"] = str(limit)
+    r = httpx.get(f"{adapter_url(settings, 'prometheus')}/api/v1/query", params=params, timeout=8)
     r.raise_for_status()
     return r.json()["data"]["result"]
 
@@ -193,7 +246,7 @@ def loki_window(since: datetime | None, minutes: int = LOKI_WINDOW_MINUTES,
 def loki_query(ns: str, apps: list[str]) -> str:
     app_re = "|".join(re.escape(a) for a in apps)
     return (f'{{namespace={json.dumps(ns)}, app=~{json.dumps(app_re)}}}'
-            ' |~ "(?i)(error|exception|fail|refused|unavailable|timeout)"')
+            ' |~ "(?i)(error|exception|fail|refused|unavailable|timeout|flag provided but not defined:)"')
 
 
 def _loki(settings: Settings, ns: str, apps: list[str], start: datetime, end: datetime,
@@ -248,6 +301,22 @@ CORE_PROM = ("http_5xx", "http_all", "restarts")
 RESOURCE_PROM = ("pod_cpu_usage_cores", "pod_memory_working_set_bytes", "pod_cpu_throttled_ratio")
 
 
+def pool_timeout_traces(rows, workload):
+    """Keep the latest two actual scrape samples per pool series for read-only recovery."""
+    traces = []
+    for row in rows:
+        app = row["metric"].get("app")
+        if app != workload:
+            continue
+        labels = {key: row["metric"].get(key) for key in ("pod", "instance", "pool")}
+        samples = [[float(stamp), float(value)] for stamp, value in row["values"][-2:]]
+        if (any(not isinstance(label, str) or not label for label in labels.values())
+                or len(samples) != 2 or any(not math.isfinite(v) or v < 0 for sample in samples for v in sample)):
+            return []
+        traces.append({**labels, "samples": samples})
+    return traces
+
+
 def _err(e: Exception) -> str:
     return f"{type(e).__name__}: {str(e)[:200]}"
 
@@ -285,13 +354,16 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
     b = Bundle(namespace=ns, workload=workload)
     # --- pods / deployment (incl. rollout/revision history) -----------------
     all_pods: list[dict] = []
+    deployment, replicasets = None, []
     pods_error = None
     try:
         all_pods = kube.list_pods(ns)
     except Exception as e:  # noqa: BLE001
         pods_error = _err(e)
     try:
-        b.deployment = deployment_summary(kube, ns, workload)
+        deployment, replicasets = _deployment_inputs(kube, ns, workload)
+        if deployment:
+            b.deployment = _deployment_summary(ns, workload, deployment, replicasets)
         b.add("deployment", f"{ns}/Deployment/{workload}", b.deployment,
               None if b.deployment else "deployment not found")
     except Exception as e:  # noqa: BLE001
@@ -305,8 +377,16 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
 
     # --- service / endpoints ---------------------------------------------
     try:
-        b.service = service_summary(kube, ns, workload, all_pods)
-        if b.service is not None:
+        svc = kube.get_service(ns, workload)
+        if svc:
+            b.service = _service_summary(kube, ns, workload, svc, all_pods)
+            if deployment and b.service["backend_state"] == "missing" and not b.service["matching_pods"]:
+                from .selector_exclusion import PROOF_KEY, prove
+
+                proof = prove(ns, workload, svc, deployment, replicasets, all_pods, b.service,
+                              managed=cfg.safe_actions.managed_label)
+                if proof:
+                    b.service[PROOF_KEY] = proof
             b.add("service", f"{ns}/Service/{workload}", b.service)
             b.add("endpoints", f"{ns}/Endpoints/{workload}", {"ready_addresses": b.service["ready_endpoints"],
                                                             "backend_state": b.service["backend_state"]})
@@ -321,10 +401,12 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
     callers = [c for c, callees in cfg.dependencies.items() if workload in callees]
 
     # --- events ------------------------------------------------------------
+    events = []
     try:
         names = {workload} | {p["name"] for p in b.pods} | set(callers)
         evs = []
-        for e in kube.list_events(ns):
+        events = kube.list_events(ns)
+        for e in events:
             io = e.get("involvedObject") or {}
             n = io.get("name") or ""
             if n in names or any(n.startswith(f"{w}-") for w in names):
@@ -346,6 +428,55 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
         b.add("k8s_event", f"{ns}/events({workload})", b.events)
     except Exception as e:  # noqa: BLE001
         b.add("k8s_event", f"{ns}/events({workload})", error=_err(e))
+
+    if b.deployment and all_pods and events:
+        from .rollout_readiness import READINESS_404_WARNING, confirm_readiness_path
+        try:
+            proof = confirm_readiness_path(deployment, replicasets, all_pods, events, ns, utcnow())
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            log.warning("readiness change proof unavailable for %s/%s: %s", ns, workload, type(exc).__name__)
+        else:
+            if proof:
+                retained = {row["uid"] for row in b.events if row["reason"] == "Unhealthy"
+                            and row["message"].strip() == READINESS_404_WARNING}
+                if all(row["pod_uid"] in retained for row in proof["pods"]):
+                    b.deployment["rollout_readiness_failure"] = proof
+                    item = next(item for item in b.items if item.source == "deployment")
+                    item.payload = redact_obj(b.deployment)
+
+        if any(row["reason"] == "FailedMount" and "registered CSI drivers" in row["message"] for row in b.events):
+            from .workload_signals import confirm_csi_registration
+            if publish:
+                publish(b)
+            try:
+                proof = confirm_csi_registration(kube, ns, deployment, replicasets, all_pods, events, utcnow())
+            except Exception as exc:  # missing optional PVC proof leaves the normal analysis path available
+                log.warning("CSI registration proof unavailable for %s/%s: %s", ns, workload, type(exc).__name__)
+            else:
+                if proof and any(row["reason"] == "FailedMount" and row["uid"] == proof["pod_uid"]
+                                 and f'volume "{proof["persistent_volume"]}"' in row["message"]
+                                 and f'driver name {proof["driver"]} not found in the list of registered CSI drivers'
+                                 in row["message"] for row in b.events):
+                    b.deployment["csi_registration_failure"] = proof
+                    item = next(item for item in b.items if item.source == "deployment")
+                    item.payload = redact_obj(b.deployment)
+
+        from . import pvc_reference
+
+        if ((ns, workload) == (pvc_reference.NAMESPACE, pvc_reference.DEPLOYMENT)
+                and cfg.safe_actions.kw03_ready_pv and "pvc_reference_restore" in cfg.allowlist):
+            if publish:
+                publish(b)
+            try:
+                finding = pvc_reference.mount_failure(deployment, replicasets, all_pods, events, utcnow())
+                if finding and any(row["uid"] == finding["pod_uid"] and row["reason"] == "FailedMount" for row in b.events):
+                    bindings = pvc_reference.bindings(kube, cfg.safe_actions.kw03_ready_pv)
+                    if bindings:
+                        b.deployment["pvc_reference_failure"] = {**finding, "bound_claims": bindings}
+                        item = next(item for item in b.items if item.source == "deployment")
+                        item.payload = redact_obj(b.deployment)
+            except Exception as exc:
+                log.warning("PVC reference proof unavailable for %s/%s: %s", ns, workload, type(exc).__name__)
 
     if publish:
         publish(b)
@@ -381,10 +512,11 @@ def _collect_kube(kube: K.Kube, cfg: AppConfig, ns: str, workload: str, deadline
     return b
 
 
-def _collect_prom(settings: Settings, ns: str, workload: str, apps: list[str], deadline: float) -> Bundle:
-    def query(q: str):
+def _collect_prom(settings: Settings, ns: str, workload: str, apps: list[str], deadline: float,
+                  *, include_route_latency: bool = False, include_business_http: bool = False) -> Bundle:
+    def query(q: str, **options):
         _before_deadline(deadline)
-        return _prom(settings, q)
+        return _prom(settings, q, **options)
 
     b = Bundle(namespace=ns, workload=workload)
     queries = {k: q % {"ns": ns} for k, q in PROM_QUERIES.items()}
@@ -434,9 +566,38 @@ def _collect_prom(settings: Settings, ns: str, workload: str, apps: list[str], d
                     vals[pod] = round(value, 6)
             b.metrics[key] = vals
         b.metrics["pod_resource_collection_errors"] = resource_errors
-        b.add("prometheus", f"{ns}/{','.join(apps)}",
-              {**b.metrics, "_query": {"evaluated_at": evaluated_at.isoformat(), "range": "1m",
-                                       "promql": queries}})
+        if include_route_latency:
+            q = sample_query(ns, workload)
+            try:
+                rows = query(q)
+                b.metrics[ROUTE_LATENCY_METRIC] = observed_samples(rows, ns, workload, utcnow().timestamp())
+            except Exception as exc:  # optional signal-specific evidence
+                b.metrics[ROUTE_LATENCY_METRIC] = {}
+                b.metrics["business_route_collection_error"] = type(exc).__name__
+            queries[ROUTE_LATENCY_METRIC] = q
+        if include_business_http:
+            q = business_http.sample_query(ns, workload)
+            try:
+                rows = query(q, limit=business_http.MAX_SERIES + 1)
+                b.metrics[business_http.METRIC] = business_http.observed_samples(rows, utcnow().timestamp())
+            except Exception as exc:  # optional proof, preserve the core metrics on failure
+                b.metrics[business_http.METRIC] = {}
+                b.metrics['business_http_collection_error'] = type(exc).__name__
+            queries[business_http.METRIC] = q
+        payload = {**b.metrics, "_query": {"evaluated_at": evaluated_at.isoformat(), "range": "1m", "promql": queries}}
+        if ((b.metrics["db_pool_acquire_timeouts_5m"].get(workload) or 0) > 0
+                and all(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", label) for label in (ns, workload))):
+            active = b.metrics["db_pool_active"].get(workload)
+            capacity = b.metrics["db_pool_max"].get(workload)
+            pending = b.metrics["db_pool_pending_threads"].get(workload)
+            if active is not None and capacity is not None and 0 <= active < capacity and pending == 0:
+                pool_query = f'hikaricp_connections_timeout_total{{namespace="{ns}",app="{workload}"}}[1m]'
+                try:
+                    payload["_pool_timeout_traces"] = pool_timeout_traces(query(pool_query), workload)
+                    queries["pool_timeout_traces"] = pool_query
+                except Exception:  # Optional proof must leave existing current and historical measurements available.
+                    pass
+        b.add("prometheus", f"{ns}/{','.join(apps)}", payload)
     except Exception as e:  # noqa: BLE001
         b.add("prometheus", f"{ns}/{','.join(apps)}", error=_err(e))
 
@@ -483,7 +644,8 @@ def _collect_code_refs(settings: Settings, ns: str, workload: str, since: dateti
 
 
 def collect(kube: K.Kube, cfg: AppConfig, settings: Settings, ns: str, workload: str,
-            since: datetime | None = None) -> Bundle:
+            since: datetime | None = None, *, include_route_latency: bool = False,
+            include_business_http: bool = False) -> Bundle:
     """Independent Kube/Prom/Loki reads run in three bounded workers.
 
     No worker touches the returned Bundle: completed Kubernetes checkpoints are
@@ -506,8 +668,11 @@ def collect(kube: K.Kube, cfg: AppConfig, settings: Settings, ns: str, workload:
             if time.monotonic() < deadline:
                 progress = snapshot
 
+    prom_options = {"include_route_latency": True} if include_route_latency else {}
+    if include_business_http:
+        prom_options['include_business_http'] = True
     jobs = [pool.submit(_collect_kube, kube, cfg, ns, workload, deadline, publish),
-            pool.submit(_collect_prom, settings, ns, workload, apps, deadline),
+            pool.submit(_collect_prom, settings, ns, workload, apps, deadline, **prom_options),
             pool.submit(_collect_loki, settings, ns, workload, log_apps, since),
             pool.submit(_collect_code_refs, settings, ns, workload, since),
             pool.submit(_collect_depth, kube, cfg, settings, ns, workload, since, deadline)]

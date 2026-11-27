@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
+
+from .endpoint_slices import SERVICE_LABEL, current_slice_addresses, endpoint_key, is_selector_service
 
 log = logging.getLogger(__name__)
 
 _api = None
+ENDPOINT_SLICE_PAGE_SIZE = 3
+ENDPOINT_SLICE_CLUSTER_PAGE_SIZE = 50
 
 
 class Kube:
@@ -27,6 +34,26 @@ class Kube:
 
     def to_dict(self, obj: Any) -> dict:
         return self.api_client.sanitize_for_serialization(obj)
+
+    def served_api_versions(self) -> set[str]:
+        discovery = self.client.ApisApi(self.api_client).get_api_versions(_request_timeout=4)
+        return {version.group_version for group in discovery.groups for version in group.versions}
+
+    @staticmethod
+    def _list_document(load, *args, **kwargs) -> dict:
+        """Parse the wire response once for read-only collectors that use Kubernetes fields directly."""
+        response = load(*args, _preload_content=False, _request_timeout=8, **kwargs)
+        try:
+            body = response.read(cache_content=False)
+        except Exception:
+            response.close()
+            raise
+        finally:
+            response.release_conn()
+        document = json.loads(body)
+        if not isinstance(document, dict) or not isinstance(document.get("items"), list):
+            raise ValueError("Kubernetes list response is missing its items")
+        return document
 
     def executor(self, token_file: str, ca_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
                  namespace: str | None = None, cfg=None):
@@ -74,7 +101,22 @@ class Kube:
             raise
 
     def list_deployments(self, ns: str) -> list[dict]:
-        return [self.to_dict(d) for d in self.apps.list_namespaced_deployment(ns).items]
+        return [self.to_dict(d) for d in self.apps.list_namespaced_deployment(ns, _request_timeout=8).items]
+
+    def get_resource_metrics_api(self) -> dict | None:
+        from .hpa_metrics import API_SERVICE
+
+        registry = self.client.ApiregistrationV1Api(self.api_client)
+        try:
+            return self.to_dict(registry.read_api_service(API_SERVICE, _request_timeout=8))
+        except self.client.ApiException as error:
+            if error.status == 404:
+                return None
+            raise
+
+    def list_autoscalers(self, ns: str) -> list[dict]:
+        api = self.client.AutoscalingV2Api(self.api_client)
+        return self._list_document(api.list_namespaced_horizontal_pod_autoscaler, ns)["items"]
 
     def get_replicaset(self, ns: str, name: str) -> dict | None:
         try:
@@ -106,8 +148,110 @@ class Kube:
                 return None
             raise
 
+    def list_endpoint_slices(self, ns: str | None, *, name: str | None = None) -> Iterator[dict] | None:
+        discovery = self.client.DiscoveryV1Api(self.api_client)
+        load = discovery.list_namespaced_endpoint_slice if ns is not None else discovery.list_endpoint_slice_for_all_namespaces
+        scope = (ns,) if ns is not None else ()
+        selector = f"{SERVICE_LABEL}={name}" if name is not None else SERVICE_LABEL
+        page_size = ENDPOINT_SLICE_PAGE_SIZE if ns is not None else ENDPOINT_SLICE_CLUSTER_PAGE_SIZE
+
+        def read_page(continuation):
+            return self._list_document(load, *scope, label_selector=selector, limit=page_size, _continue=continuation)
+
+        def items(page):
+            version = page["metadata"].get("resourceVersion")
+            seen_tokens = set()
+            while True:
+                metadata = page["metadata"]
+                if metadata.get("resourceVersion") != version:
+                    raise RuntimeError("EndpointSlice pagination changed resource version")
+                yield from page["items"]
+                continuation = metadata.get("continue")
+                if not continuation:
+                    return
+                if continuation in seen_tokens:
+                    raise RuntimeError("EndpointSlice pagination did not advance")
+                seen_tokens.add(continuation)
+                del page
+                page = read_page(continuation)
+
+        try:
+            first = read_page(None)
+        except self.client.ApiException as error:
+            if error.status == 404:
+                return None
+            raise
+        return items(first)
+
+    def _endpoint_slice_counts(self, selected: list[dict], ns: str | None) -> dict[tuple[str, str], int] | None:
+        name = selected[0]["metadata"]["name"] if ns is not None and len(selected) == 1 else None
+
+        def snapshot():
+            slices = self.list_endpoint_slices(ns, name=name)
+            if slices is None:
+                return None
+            return {key: len(addresses) for key, addresses in current_slice_addresses(selected, slices).items()}
+
+        try:
+            return snapshot()
+        except self.client.ApiException as error:
+            if error.status != 410:
+                raise
+        # A replacement continuation from a 410 response can mix snapshots.
+        fresh = snapshot()
+        if fresh is None:
+            raise RuntimeError("EndpointSlice API became unavailable during pagination retry")
+        return fresh
+
+    def service_endpoint_counts(self, services: list[dict], ns: str | None = None) -> dict[tuple[str, str], int]:
+        target = [service for service in services if (service.get("spec") or {}).get("type") != "ExternalName"]
+        selected = [service for service in target if is_selector_service(service)]
+        endpoints = {}
+        legacy = target
+        slice_api_available = False
+        if selected:
+            counts = self._endpoint_slice_counts(selected, ns)
+            if counts is not None:
+                slice_api_available = True
+                endpoints = counts
+                legacy = [service for service in target if not is_selector_service(service)]
+        if not legacy:
+            return endpoints
+        keys = {endpoint_key(service) for service in legacy}
+        if slice_api_available or (ns is not None and len(keys) == 1):
+            legacy_rows = [self.get_endpoints(*key) for key in sorted(keys)]
+        else:
+            load = self.core.list_namespaced_endpoints if ns is not None else self.core.list_endpoints_for_all_namespaces
+            scope = (ns,) if ns is not None else ()
+            legacy_rows = [self.to_dict(item) for item in load(*scope, _request_timeout=8).items]
+        for data in legacy_rows:
+            if data is None or (data["metadata"].get("annotations") or {}).get(
+                "endpoints.kubernetes.io/over-capacity"
+            ) == "truncated":
+                continue
+            key = endpoint_key(data)
+            if key in keys:
+                endpoints[key] = ready_addresses(data)
+        return endpoints
+
     def list_events(self, ns: str) -> list[dict]:
         return [self.to_dict(e) for e in self.core.list_namespaced_event(ns, _request_timeout=8).items]
+
+    def get_pvc(self, ns: str, name: str) -> dict | None:
+        try:
+            return self.to_dict(self.core.read_namespaced_persistent_volume_claim(name, ns, _request_timeout=8))
+        except self.client.ApiException as e:
+            if e.status == 404:
+                return None
+            raise
+
+    def get_pv(self, name: str) -> dict | None:
+        try:
+            return self.to_dict(self.core.read_persistent_volume(name, _request_timeout=8))
+        except self.client.ApiException as e:
+            if e.status == 404:
+                return None
+            raise
 
     def get_node(self, name: str) -> dict | None:
         try:
@@ -139,6 +283,13 @@ class Kube:
     # --- cluster-wide, read-only inventory for the topology map (P3) --------
     def cluster_inventory(self) -> dict:
         """Nodes, pods, services and endpoints of every namespace. Read-only; fields are trimmed to what the map needs."""
+        def node_view(n: dict) -> dict:
+            md, sp, st = n.get("metadata") or {}, n.get("spec") or {}, n.get("status") or {}
+            return {"metadata": {"name": md.get("name")},
+                    "spec": {"podCIDRs": sp.get("podCIDRs"), "podCIDR": sp.get("podCIDR")},
+                    "status": {"capacity": st.get("capacity"), "addresses": st.get("addresses"),
+                               "conditions": st.get("conditions")}}
+
         def pod_view(p: dict) -> dict:
             md, st = p.get("metadata") or {}, p.get("status") or {}
             return {"metadata": {"namespace": md.get("namespace"), "name": md.get("name"), "labels": md.get("labels") or {},
@@ -152,10 +303,6 @@ class Kube:
             return {"metadata": {"namespace": md.get("namespace"), "name": md.get("name"), "labels": md.get("labels") or {}},
                     "spec": {"type": sp.get("type"), "clusterIP": sp.get("clusterIP"), "selector": sp.get("selector") or {},
                              "ports": [{"port": x.get("port")} for x in sp.get("ports") or []]}}
-        def ep_view(e: dict) -> dict:
-            md = e.get("metadata") or {}
-            return {"metadata": {"namespace": md.get("namespace"), "name": md.get("name"), "labels": md.get("labels") or {}},
-                    "subsets": [{"addresses": [{"ip": a.get("ip")} for a in s.get("addresses") or []]} for s in e.get("subsets") or []]}
         def ing_view(i: dict) -> dict:
             md, sp = i.get("metadata") or {}, i.get("spec") or {}
             rules = []
@@ -175,29 +322,47 @@ class Kube:
                     "spec": {"replicas": sp.get("replicas")},
                     "pod_labels": ((sp.get("template") or {}).get("metadata") or {}).get("labels") or {},
                     "status": {"readyReplicas": st.get("readyReplicas", 0)}}
-        errors: list[str] = []
-        extra = {"ingresses": [], "deployments": [], "namespaces": []}
-        for key, load, trim in (
-            ("ingresses", self.client.NetworkingV1Api().list_ingress_for_all_namespaces, ing_view),
-            ("deployments", self.apps.list_deployment_for_all_namespaces, dep_view),
-            ("namespaces", self.core.list_namespace, lambda n: {"metadata": {"name": (n.get("metadata") or {}).get("name")}}),
-        ):
-            try:
-                extra[key] = [trim(self.to_dict(i)) for i in load(_request_timeout=8).items]
-            except Exception as e:  # noqa: BLE001 - retain partial inventory with explicit source errors
-                errors.append(f"{key}: {type(e).__name__}")
-        return {
-            "errors": errors, **extra,
-            "nodes": [self.to_dict(n) for n in self.core.list_node(_request_timeout=8).items],
-            "pods": [pod_view(self.to_dict(p)) for p in self.core.list_pod_for_all_namespaces(_request_timeout=8).items],
-            "services": [svc_view(self.to_dict(s)) for s in self.core.list_service_for_all_namespaces(_request_timeout=8).items],
-            "endpoints": [ep_view(self.to_dict(e)) for e in self.core.list_endpoints_for_all_namespaces(_request_timeout=8).items],
-        }
+        reads = (
+            ("ingresses", self.client.NetworkingV1Api(self.api_client).list_ingress_for_all_namespaces, ing_view, False),
+            ("deployments", self.apps.list_deployment_for_all_namespaces, dep_view, False),
+            ("namespaces", self.core.list_namespace,
+             lambda n: {"metadata": {"name": (n.get("metadata") or {}).get("name")}}, False),
+            ("services", self.core.list_service_for_all_namespaces, svc_view, True),
+            ("nodes", self.core.list_node, node_view, True),
+            ("pods", self.core.list_pod_for_all_namespaces, pod_view, True),
+        )
 
-    def cluster_warning_events(self) -> list[dict]:
+        def read(task):
+            key, load, trim, required = task
+            try:
+                rows = self._list_document(load)["items"]
+                section = {key: [trim(item) for item in rows]}
+            except Exception as e:  # noqa: BLE001 - retain partial inventory with explicit source errors
+                if required:
+                    raise
+                return {key: []}, f"{key}: {type(e).__name__}"
+            if key != "services":
+                return section, None
+            try:
+                endpoints = self.service_endpoint_counts(rows)
+            except Exception as e:  # noqa: BLE001 - service status remains unobserved if discovery fails
+                return {**section, "endpoints": []}, f"endpoints: {type(e).__name__}"
+            section["endpoints"] = [{"metadata": {"namespace": ns, "name": name}, "ready_endpoints": count}
+                                    for (ns, name), count in endpoints.items()]
+            return section, None
+
+        inventory: dict = {"errors": []}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="overview-kube") as pool:
+            for section, error in pool.map(read, reads):
+                inventory.update(section)
+                if error:
+                    inventory["errors"].append(error)
+        return inventory
+
+    def cluster_warning_events(self, *, limit: int = 500) -> list[dict]:
         """Bounded raw Warning events for the operations overview; no pod logs or Secret reads."""
-        return [self.to_dict(e) for e in self.core.list_event_for_all_namespaces(
-            field_selector="type=Warning", limit=500, _request_timeout=8).items]
+        return self._list_document(self.core.list_event_for_all_namespaces,
+                                   field_selector="type=Warning", limit=limit)["items"]
 
     # --- bounded request to independent, admission-guarded controller --------
     def request_rollback(self, ns: str, name: str, *, grant: dict | None = None) -> dict:
@@ -376,9 +541,13 @@ def labels_match(selector: dict[str, str], labels: dict[str, str]) -> bool:
     return bool(selector) and all(labels.get(k) == v for k, v in selector.items())
 
 
-def ready_addresses(ep: dict | None) -> int:
+def ready_addresses(ep: dict | int | None) -> int:
+    if isinstance(ep, int):
+        return ep
     if not ep:
         return 0
+    if "ready_endpoints" in ep:
+        return ep["ready_endpoints"]
     return sum(len(s.get("addresses") or []) for s in ep.get("subsets") or [])
 
 

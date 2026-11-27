@@ -79,6 +79,23 @@ def test_shared_counts_separate_progress_approval_and_unclaimed_handoff(k8s):
     assert table_counts() == before                       # counting writes nothing
 
 
+def test_shared_counts_preserve_truthiness_of_legacy_claim_markers(k8s):
+    from app import db
+    from app.incident_counts import incident_counts
+    from app.models import Incident
+
+    unclaimed = [None, False, "", 0, [], {}]
+    claimed = [True, "operator", 1, ["operator"], {"name": "operator"}]
+    with db.session() as s:
+        for index, marker in enumerate(unclaimed + claimed, 1):
+            s.add(Incident(id=index, fingerprint=f"legacy-claim-{index}", namespace="dev", workload="order",
+                           status="handed_off", handoff={"claimed_by": marker}))
+    with db.session() as s:
+        result = incident_counts(s, ["dev"])
+    assert result["unclaimed_handoff"] == len(unclaimed)
+    assert result["by_environment"]["dev"]["unclaimed_handoff"] == len(unclaimed)
+
+
 # ------------------------------------------------------------------ 정돈-08 K8s
 def test_k8s_snapshot_is_read_only_hashed_reproducible_and_keeps_unknowns(k8s, tmp_path):
     from app import db
@@ -121,9 +138,18 @@ def test_k8s_snapshot_records_feed_existing_offline_utility_without_inventing_va
     seed()
     out = tmp_path / "k8s.json"
     export(out)
-    records = out
     result_path = tmp_path / "utility.json"
-    proc = subprocess.run([sys.executable, "-m", "evaluation.offline", "utility", "--records", str(records), "--out", str(result_path)],
+
+    def temp_alias(path):
+        # Pytest resolves the Mac system aliases. The offline CLI deliberately accepts
+        # the public aliases and keeps direct private paths denied.
+        for alias in (Path("/tmp"), Path("/var/folders")):
+            if alias.exists() and path.is_relative_to(alias.resolve()):
+                return alias / path.relative_to(alias.resolve())
+        return path
+
+    proc = subprocess.run([sys.executable, "-m", "evaluation.offline", "utility", "--records", str(temp_alias(out)),
+                           "--out", str(temp_alias(result_path))],
                           cwd=WORK, capture_output=True, text=True, env={"PYTHONPATH": f"{WORK}:{WORK / 'liveprobe'}", "PATH": "/usr/bin:/bin"})
     assert proc.returncode == 0, proc.stderr
     result = json.loads(result_path.read_text("utf-8"))

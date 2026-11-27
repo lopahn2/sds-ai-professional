@@ -1,10 +1,11 @@
 """두 화면의 개인 역할 세션과 최소 조회 투영. 기계 인증 경로는 바꾸지 않는다."""
-from fastapi import Request
+from fastapi import HTTPException, Request
 from starlette.responses import RedirectResponse
 import re
 from urllib.parse import urlsplit
 from .. import human_sessions as H
 from .. import local_operator
+from .catalog import DEV_RESERVATION
 from .safety import scrub
 
 
@@ -51,6 +52,23 @@ def actor(app, request, scope, *, creator=False):
     return H.session_actor(request, app.state.human_sessions, scope,
         origin_allowed=lambda r, netloc: H.same_host(r.headers.get('host'))(netloc),
         still_authorized=identities.authorized_subject)
+
+
+def incident_creator(app, request, body):
+    try:
+        return actor(app, request, 'incident:create', creator=True)
+    except HTTPException as denied:
+        authorization = request.headers.get('authorization')
+        if (denied.status_code != 403 or not isinstance(denied.detail, dict)
+                or denied.detail.get('code') != 'scope_forbidden' or not authorization
+                or body.environment != 'dev' or body.service != DEV_RESERVATION
+                or body.reproduction is not None or body.signal is None or body.signal.source != 'pod_log'
+                or DEV_RESERVATION not in app.state.control.catalog.dev_only):
+            raise
+        observer = app.state.identities.runner(authorization)
+        if observer.get('runner_role') != 'cluster':
+            raise denied
+        return observer
 
 
 def local_read(app, request):

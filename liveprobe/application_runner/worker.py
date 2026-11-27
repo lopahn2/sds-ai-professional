@@ -67,6 +67,18 @@ class API:
             raise ValueError('machine_endpoint_forbidden')
         req=urllib.request.Request(self.url+path,data=json.dumps(body).encode(),method='POST',
                 headers={'Authorization':'Bearer '+read_token(self.token_file),'Content-Type':'application/json'})
+        return self._json_response(req, timeout)
+
+    def active_environments(self):
+        request = urllib.request.Request(self.url + '/catalog', method='GET')
+        catalog = self._json_response(request, 5)
+        environments = catalog.get('environments') if isinstance(catalog, dict) else None
+        if (not isinstance(environments, list) or not all(env in ('dev', 'prd') for env in environments)
+                or len(environments) != len(set(environments))):
+            raise OSError('invalid_application_catalog_environments')
+        return frozenset(environments)
+
+    def _json_response(self, req, timeout):
         try:
             with self.opener.open(req,timeout=min(20,timeout)) as response:
                 data=response.read(2000001)

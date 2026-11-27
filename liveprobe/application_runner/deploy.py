@@ -1,5 +1,6 @@
 """UID/RV/이미지/template CAS와 결과불명 재조회. 자동 원복/재쓰기는 없다."""
 from contextlib import contextmanager
+from datetime import datetime
 import fcntl
 import json
 import os
@@ -93,13 +94,33 @@ def validate_business(profile,response):
     return {'ok':True,'body_sha256':digest(b),'profile_id':profile['id'],'status_code':response['status']}
 
 
+def _controller(metadata, kind):
+    return next((ref.get('uid') for ref in metadata.get('ownerReferences', ())
+                 if ref.get('kind') == kind and ref.get('controller') is True), None)
+
+
+def _log_template(template):
+    labels = {key: value for key, value in template.get('metadata', {}).get('labels', {}).items()
+              if key != 'pod-template-hash'}
+    return {**template, 'metadata': {**template.get('metadata', {}), 'labels': labels}}
+
+
+def _container_status(pod, service):
+    return next((row for row in pod.get('status', {}).get('containerStatuses', ())
+                 if row.get('name') == service), {})
+
+
+def _container_image(spec, service):
+    return next((row.get('image') for row in spec.get('containers', ()) if row.get('name') == service), None)
+
+
 class KubeTransport:
     def __init__(self,api,business_reader=None,read_only=False):
         self.api=api;self.business_reader=business_reader
         self.read_only=read_only
         self.guard=lambda:None
 
-    def _call(self,path,method,body=None,query=None):
+    def _call(self,path,method,body=None,query=None,*,allow_missing=False):
         if self.read_only and method != 'GET':raise ValueError('source_runner_cluster_write_forbidden')
         remaining=getattr(self,'write_guard',self.guard)() if method=='PATCH' else self.guard()
         timeout=min(20,remaining) if isinstance(remaining,(int,float)) else 20
@@ -111,7 +132,10 @@ class KubeTransport:
             self.guard()
             return result
         except Exception as exc:
-            if getattr(exc,'status',None)==409 or (method=='PATCH' and getattr(exc,'status',None)==422):
+            status = getattr(exc, 'status', None)
+            if status == 404 and allow_missing:
+                return None
+            if status==409 or (method=='PATCH' and status==422):
                 raise Conflict('cas_conflict') from None
             raise OSError('kubernetes_transport_failed') from None
 
@@ -148,17 +172,17 @@ class KubeTransport:
                                    'ready':c.get('ready') is True,'owned':is_owned})
         return result
 
-    def logs(self,env,service,since):
-        data=self._call(f'/api/v1/namespaces/{env}/pods','GET',query=[('labelSelector','app='+service)])
-        result=[]
-        # 로그 원문은 아래 호출 직후 정제하고 원문/예외를 저장하지 않는다.
-        from .worker import redact
-        for pod in data.get('items',[])[:4]:
-            name=pod['metadata']['name']
-            response=self.api.call_api(f'/api/v1/namespaces/{env}/pods/{name}/log','GET',
-                query_params=[('container',service),('sinceTime',since),('timestamps',True),('tailLines',200),('limitBytes',32768)],
-                response_types_map={200:'str'},auth_settings=['BearerToken'],_return_http_data_only=True,
-                _preload_content=False,_request_timeout=20)
+    def _container_logs(self, path, service, since, *, previous=False, waiting=False):
+        query = [('container', service), ('sinceTime', since), ('timestamps', True),
+                 ('tailLines', 200), ('limitBytes', 32768)]
+        if previous:
+            query.append(('previous', True))
+        remaining = self.guard()
+        timeout = min(20, remaining) if isinstance(remaining, (int, float)) else 20
+        try:
+            response = self.api.call_api(path + '/log', 'GET', query_params=query,
+                response_types_map={200: 'str'}, auth_settings=['BearerToken'], _return_http_data_only=True,
+                _preload_content=False, _request_timeout=timeout)
             # The generated client's 'str' conversion uses str(bytes), escaping every line break.
             if hasattr(response, 'read'):
                 try:
@@ -169,9 +193,73 @@ class KubeTransport:
                     response.release_conn()
             else:
                 text = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else response
-            if text and text.strip():
-                from .observations import utc_now
-                result.append({'service':service,'text':redact(text),'observed_at':utc_now()})
+        except Exception as exc:
+            status = getattr(exc, 'status', None)
+            if status == 404 or (status == 400 and (previous or waiting)):
+                return None
+            raise OSError('kubernetes_log_transport_failed') from None
+        self.guard()
+        return text if isinstance(text, str) and text.strip() else None
+
+    def _active_replica_sets(self, env, service, deployment):
+        uid = deployment['metadata']['uid']
+        template = _log_template(deployment['spec']['template'])
+        sets = self._call(f'/apis/apps/v1/namespaces/{env}/replicasets', 'GET',
+                          query=[('labelSelector', 'app=' + service)])
+        return {row['metadata']['uid'] for row in sets.get('items', ())
+                if _controller(row['metadata'], 'Deployment') == uid
+                and _log_template(row.get('spec', {}).get('template', {})) == template}
+
+    def logs(self, env, service, since, *, deployment=None):
+        from .observations import utc_now
+        from .worker import redact
+
+        path = f'/api/v1/namespaces/{env}/pods'
+        data = self._call(path, 'GET', query=[('labelSelector', 'app=' + service)])
+        cutoff = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        active_sets = None
+        expected_image = None
+        result = []
+        for pod in [row for row in data.get('items', ()) if not row['metadata'].get('deletionTimestamp')][:4]:
+            metadata = pod['metadata']
+            pod_path = path + '/' + metadata['name']
+            status = _container_status(pod, service)
+            state = status.get('state', {})
+            last = status.get('lastState', {}).get('terminated', {})
+            waiting = 'waiting' in state
+            # Without a current container ID, kubelet can fall back to the previous attempt.
+            current_terminated = state.get('terminated', {}).get('containerID')
+            if not (last and 'running' not in state and not current_terminated):
+                text = self._container_logs(pod_path, service, since, waiting=waiting)
+                if text:
+                    result.append({'service': service, 'text': redact(text), 'observed_at': utc_now()})
+            if not last.get('containerID') or not last.get('finishedAt') or not metadata.get('uid'):
+                continue
+            if datetime.fromisoformat(last['finishedAt'].replace('Z', '+00:00')) < cutoff:
+                continue
+            owner = _controller(metadata, 'ReplicaSet')
+            if not owner:
+                continue
+            if active_sets is None:
+                deployment = deployment or self.read(env, service)
+                active_sets = self._active_replica_sets(env, service, deployment)
+                expected_image = _container_image(deployment['spec']['template']['spec'], service)
+            if (owner not in active_sets or not expected_image
+                    or _container_image(pod.get('spec', {}), service) != expected_image):
+                continue
+            text = self._container_logs(pod_path, service, since, previous=True)
+            if not text:
+                continue
+            current = self._call(pod_path, 'GET', allow_missing=True)
+            # Recheck the previous attempt after streaming: the pod may have restarted or been replaced.
+            if (not current or current['metadata']['uid'] != metadata['uid']
+                    or current['metadata'].get('deletionTimestamp')
+                    or _controller(current['metadata'], 'ReplicaSet') != owner
+                    or _container_image(current.get('spec', {}), service) != expected_image
+                    or _container_status(current, service).get('lastState', {}).get('terminated') != last):
+                continue
+            result.append({'service': service, 'text': redact(text), 'observed_at': utc_now(),
+                           'previous_pod': metadata['name'], 'previous_finished_at': last['finishedAt']})
         return result
 
     def events(self,env,service,uid):

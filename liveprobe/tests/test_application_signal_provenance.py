@@ -1,5 +1,6 @@
 """최초·반복 감지 근거의 정제 이력 회귀. DB 연결 없이 실제 ingest를 실행한다."""
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
 
 from app.config import AppConfig
@@ -21,6 +22,12 @@ class _Session:
         self.rows = []
 
     def execute(self, *args, **kwargs):
+        return None
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def get(self, model, key):
         return None
 
     def scalars(self, *args, **kwargs):

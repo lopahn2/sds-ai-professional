@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any
 
+from .business_http import METRIC as BUSINESS_HTTP_METRIC
 from .proposals import PLAN_FIELDS
 from .redact import redact
 
@@ -115,6 +116,57 @@ def evidence_items(evidence: list[Any]) -> list[dict]:
         # bundle에 없는 출처와 빈 컨테이너/미관측도 수집 payload 자체를 잃지 않는다.
         if not row:
             row = [_item(f"{ref}#0", ref, _dump(e.payload))]
+        if observed and e.source == "k8s_admission_audit" and isinstance(e.payload, dict):
+            webhook, resource, http_status = (e.payload.get(k) for k in ("webhook", "resource", "http_status"))
+            if webhook and resource and http_status:
+                target = e.payload.get("object_name") or resource
+                row[0]["ko_hint"] = (f"{target} 변경 요청은 승인 웹훅 {webhook} 호출에 실패했습니다. "
+                                     f"Kubernetes API 응답은 HTTP {http_status}였습니다.")
+                row[0]["severity"] = "error"
+            requested = e.payload.get("requested_api_version")
+            current = e.payload.get("current_api_version")
+            if requested and current and http_status == 404:
+                target = e.payload.get("object_name") or "Ingress"
+                row[0]["ko_hint"] = (f"{target} 변경은 미제공 버전 {requested}에서 HTTP 404로 실패했으며, "
+                                     f"API 탐색에서 {current} 제공을 확인했습니다.")
+                row[0]["severity"] = "error"
+        if observed and e.source == "k8s_cni_event" and isinstance(e.payload, dict):
+            node, configured, supported = (e.payload.get(k) for k in ("node", "configured_version", "supported_versions"))
+            if node and configured and supported:
+                row[0]["ko_hint"] = (f"{node}의 CNI 설정 버전 {configured}이 플러그인의 지원 목록 "
+                                     f"({', '.join(supported)})에 없어 Pod 네트워크를 시작하지 못했습니다.")
+                row[0]["severity"] = "error"
+        if observed and e.source == "k8s_node_startup" and isinstance(e.payload, dict):
+            from .node_startup_feed import FAILURES
+
+            node = e.payload.get("node")
+            failure = FAILURES.get(e.payload.get("failure"))
+            if node and failure and e.payload.get("node_registered") is False:
+                version = e.payload.get("kubelet_version")
+                version_note = f" (kubelet {version})" if version else ""
+                row[0]["ko_hint"] = f"{node} 노드 미등록 · {failure.removesuffix('.')}{version_note} · 업무 요청 영향 미관측."
+                row[0]["severity"] = "error"
+        if observed and e.source == "k8s_disk_pressure" and isinstance(e.payload, dict):
+            node, pod, deployment = (e.payload.get(k) for k in ("node", "pod", "deployment"))
+            if node and pod and deployment:
+                ready, desired = (e.payload.get(k) for k in ("ready_replicas", "desired_replicas"))
+                impact = (f"{deployment}의 준비 복제본 {ready}/{desired}을 확인했으며 업무 요청 영향은 미관측입니다."
+                          if type(ready) is int and type(desired) is int else
+                          f"{deployment}의 준비 복제본과 업무 요청 영향은 미관측입니다.")
+                row[0]["ko_hint"] = f"{node}의 디스크 압박으로 {pod}가 퇴출됐고 {impact}"
+                row[0]["severity"] = "error"
+        if observed and e.source == "k8s_hpa_metrics" and isinstance(e.payload, dict):
+            if recovery := e.payload.get("recovery"):
+                recovered = recovery["hpas"]
+                names = ", ".join(f"{hpa['namespace']}/{hpa['name']}" for hpa in recovered[:4])
+                row[0]["ko_hint"] = (f"자원 지표 API의 정상 상태와 HPA {len(recovered)}개({names})의 지표 계산 재개를 "
+                                     "확인했습니다. 업무 요청 영향은 미관측입니다.")
+                row[0]["severity"] = "info"
+            if affected := e.payload.get("affected_hpas"):
+                names = ", ".join(f"{hpa['namespace']}/{hpa['name']}" for hpa in affected[:4])
+                row[0]["ko_hint"] = (f"자원 지표 API 장애로 HPA {len(affected)}개({names})의 자동 확장 계산이 "
+                                     "중단됐으며 업무 요청 영향은 미관측입니다.")
+                row[0]["severity"] = "error"
         at = e.collected_at.isoformat() if e.collected_at is not None else None
         for item in row:
             out.append({**item, "id": f"evidence:{e.id}:{item['id']}", "evidence_id": e.id,
@@ -223,6 +275,31 @@ def _metrics_ko(v: dict) -> str:
         per.append(f"{a}: " + " · ".join(parts))
     if per:
         out.append("; ".join(per) + ".")
+    responses = v.get(BUSINESS_HTTP_METRIC)
+    if isinstance(responses, dict):
+        reported = [(route, counts) for route, counts in responses.items()
+                    if isinstance(counts, dict) and any(status in counts for status in ('2xx', '5xx'))
+                    and all(isinstance(counts.get(status, 0), (int, float)) for status in ('2xx', '5xx'))]
+        reported.sort(key=lambda entry: (-entry[1].get('5xx', 0), entry[0]))
+        if reported:
+            summaries = []
+            for route, counts in reported[:3]:
+                statuses = [f'{status} {_num(counts[status], 1)}건' if status in counts else f'{status} 미관측'
+                            for status in ('2xx', '5xx')]
+                summaries.append(f'{route} ' + ' · '.join(statuses))
+            out.append('최근 1분 업무 응답 추정치 ' + ', '.join(summaries) + '.')
+        else:
+            out.append('최근 1분 업무 응답은 미관측입니다.')
+    routes = v.get("business_routes_slow_requests_1m")
+    if isinstance(routes, dict):
+        observed = [(route, row["slow_requests"]) for route, row in routes.items()
+                    if isinstance(row, dict) and isinstance(row.get("slow_requests"), (int, float))]
+        observed.sort(key=lambda entry: (-entry[1], entry[0]))
+        if observed:
+            out.append("경로별 1분간 500ms 초과 요청 추정치 " +
+                       ", ".join(f"{route} {_num(count, 1)}건" for route, count in observed[:3]) + ".")
+        else:
+            out.append("업무 경로별 지연은 미관측입니다.")
     restarts = series("restarts")
     if restarts:
         out.append(f"재시작 합계 {int(sum(restarts.values()))}회.")
